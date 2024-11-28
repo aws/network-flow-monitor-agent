@@ -51,9 +51,9 @@ To verify that the 'Amazon CloudWatch Network Flow Monitor Agent' Pods have been
 ## IAM Policy
 'Amazon CloudWatch Network Flow Monitor Agent' must have permission to access the 'Amazon CloudWatch Network Flow Monitor Agent' ingestion APIs so they can deliver network flow reports that they've collected for each instance. You grant this access by appending `CloudWatchNetworkFlowMonitorAgentPublishPolicy` managed IAM Policy to the permissions chain associated to 'Amazon CloudWatch Network Flow Monitor Agent' Pods.
 
-### Implement IAM Roles for Service Accounts (IRSA)
+### Setup IAM Roles for Service Accounts (IRSA)
 
-IAM roles for service accounts (IRSA) provide the ability to manage credentials for your applications, similar to the way that Amazon EC2 instance profiles provide credentials to Amazon EC2 instances. Implementing IRSA is the recommended way to provide all permissions required by 'Amazon CloudWatch Network Flow Monitor Agent' Pods to successfully communicate with 'Amazon CloudWatch Network Flow Monitor Agent' Ingestion APIs. For more information on how to implement IRSA: https://docs.aws.amazon.com/eks/latest/userguide/iam-roles-for-service-accounts.html
+IAM roles for service accounts (IRSA) provide the ability to manage credentials for your applications, similar to the way that Amazon EC2 instance profiles provide credentials to Amazon EC2 instances. Using IRSA is the recommended way to provide all permissions required by 'Amazon CloudWatch Network Flow Monitor Agent' Pods to successfully communicate with 'Amazon CloudWatch Network Flow Monitor Agent' Ingestion APIs. For more information on how to implement IRSA: https://docs.aws.amazon.com/eks/latest/userguide/iam-roles-for-service-accounts.html
 
 ### Confirm that 'Amazon CloudWatch Network Flow Monitor Agent' is successfully communicating with 'Amazon CloudWatch Network Flow Monitor Agent' ingestion APIs
 
