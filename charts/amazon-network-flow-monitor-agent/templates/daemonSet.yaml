@@ -1,0 +1,50 @@
+# Create Amazon CloudWatch Network Flow Monitor Agent DaemonSet
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ .Values.daemonSet.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "aws-network-flow-monitoring-agent.labels" . | nindent 4}}
+spec:
+  selector:
+    matchLabels:
+      name: {{ .Values.daemonSet.name }}
+  template:
+    metadata:
+      labels:
+        name: {{ .Values.daemonSet.name }}
+    spec:
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      hostNetwork: true
+      containers:
+        - name: {{ .Values.daemonSet.name }}
+          image: {{ include "aws-network-flow-monitoring-agent.image" . }}
+          securityContext:
+            privileged: true
+          resources:
+            limits:
+              cpu: 200m
+              memory: 200Mi
+            requests:
+              cpu: 50m
+              memory: 100Mi
+          env:
+            - name: K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: K8S_POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+      nodeSelector:
+        kubernetes.io/os: linux
+      terminationGracePeriodSeconds: 5
+      serviceAccountName: {{ .Values.serviceAccount.name }}
