@@ -1,0 +1,35 @@
+image:
+  override: '' # if defined, this value is used as the canonical image name ("{image_repo}{image_name}:{tag}")
+  tag: v1.0.0-eksbuild.4  # this is the default image tag. It might be overwritten at runtime
+  containerRegistry: '' # this gets overriden at runtime with the correct Docker Image Registry
+  name: aws-network-sonar-agent  # DO NOT try to override this
+
+clusterRole:
+  name: aws-network-flow-monitoring-agent-role
+
+clusterRoleBinding:
+  name: aws-network-flow-monitoring-agent-role-binding
+
+serviceAccount:
+  name: aws-network-flow-monitoring-agent-service-account
+
+daemonSet:
+  name: aws-network-flow-monitoring-agent
+
+affinity:
+  nodeAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      nodeSelectorTerms:
+      - matchExpressions:
+          # Don't schedule on special compute types
+        - key: eks.amazonaws.com/compute-type
+          operator: NotIn
+          values:
+            - fargate
+            - auto
+            - hybrid
+          # Only schedule on amd64 nodes
+        - key: kubernetes.io/arch
+          operator: In
+          values:
+            - amd64
