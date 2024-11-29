@@ -78,7 +78,9 @@ kubectl logs $RANDOM_AGENT_POD_NAME --namespace ${NAMESPACE} | grep HTTP
 
 If access has been granted successfully, you should see log entries similar to the following:
 ```
-...{"level":"INFO","message":"HTTP request complete","status":200,"target":"aws-network-flow-monitoring-agent::reports::publisher_endpoint","timestamp":1729519236073}{"level":"INFO","message":"HTTP request complete","status":200,"target":"aws-network-flow-monitoring-agent::reports::publisher_endpoint","timestamp":1729519263143}{"level":"INFO","message":"HTTP request complete","status":200,"target":"aws-network-flow-monitoring-agent::reports::publisher_endpoint","timestamp":1729519293406}
+{"level":"INFO","message":"HTTP request complete","status":200,"target":"amzn_sonar_agent::reports::publisher_endpoint","timestamp":1732879893535}
+{"level":"INFO","message":"HTTP request complete","status":200,"target":"amzn_sonar_agent::reports::publisher_endpoint","timestamp":1732879928102}
+{"level":"INFO","message":"HTTP request complete","status":200,"target":"amzn_sonar_agent::reports::publisher_endpoint","timestamp":1732879954342}
 ```
                         
 
