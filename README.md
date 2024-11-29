@@ -55,6 +55,11 @@ To verify that the 'Amazon CloudWatch Network Flow Monitor Agent' Pods have been
 
 IAM roles for service accounts (IRSA) provide the ability to manage credentials for your applications, similar to the way that Amazon EC2 instance profiles provide credentials to Amazon EC2 instances. Using IRSA is the recommended way to provide all permissions required by 'Amazon CloudWatch Network Flow Monitor Agent' Pods to successfully communicate with 'Amazon CloudWatch Network Flow Monitor Agent' Ingestion APIs. For more information on how to implement IRSA: https://docs.aws.amazon.com/eks/latest/userguide/iam-roles-for-service-accounts.html
 
+Few important information for your IRSA Setup:
+1. **ServiceAccount:** 'Amazon CloudWatch Network Flow Monitor Agent' Pods run using 'aws-network-flow-monitoring-agent-service-account' ServiceAccount. This will be used when defining your IAM Role trust policy;
+1. **Namespace:** All 'Amazon CloudWatch Network Flow Monitor Agent' resources are defined under 'amazon-network-flow-monitor' namespace;
+1. **Temporary credentials deployment:** By the time you are configuring permissions, 'Amazon CloudWatch Network Flow Monitor Agent' Pods have already been deployed, meaning Kubernetes WILL NOT try to deploy IAM Role credentials after ServiceAccount gets annotated with your IAM Role. A new DaemonSet rollout needs to be issued so that 'Amazon CloudWatch Network Flow Monitor Agent' Pods acquire IAM Role credentials: `kubectl rollout restart daemonset  -n amazon-network-flow-monitor aws-network-flow-monitoring-agent`
+
 ### Confirm that 'Amazon CloudWatch Network Flow Monitor Agent' is successfully communicating with 'Amazon CloudWatch Network Flow Monitor Agent' ingestion APIs
 
 You can check to make sure that your 'Amazon CloudWatch Network Flow Monitor Agent' Pods have permissions set correctly by looking up for HTTP 200 logs. For example, you can do the following: 
