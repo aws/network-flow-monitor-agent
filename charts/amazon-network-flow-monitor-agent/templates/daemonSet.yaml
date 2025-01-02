@@ -5,33 +5,40 @@ metadata:
   name: {{ .Values.daemonSet.name }}
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "aws-network-flow-monitoring-agent.labels" . | nindent 4}}
+    {{- include "aws-network-flow-monitor-agent.labels" . | nindent 4}}
 spec:
   selector:
     matchLabels:
       name: {{ .Values.daemonSet.name }}
+      {{- if .Values.podLabels }}
+      {{ toYaml .Values.podLabels | indent 6 }}
+      {{- end }}
   template:
     metadata:
+      {{- if .Values.podAnnotations }}
+      annotations:
+      {{- range $key, $value := .Values.podAnnotations }}
+        {{ $key }}: {{ $value | quote }}
+      {{- end }}
+      {{- end }}
       labels:
         name: {{ .Values.daemonSet.name }}
+        {{- if .Values.podLabels }}
+        {{ toYaml .Values.podLabels | indent 8 }}
+        {{- end }}
     spec:
-      {{- with .Values.affinity }}
-      affinity: {{- toYaml . | nindent 8 }}
-      {{- end }}
       hostNetwork: true
       containers:
         - name: {{ .Values.daemonSet.name }}
-          image: {{ include "aws-network-flow-monitoring-agent.image" . }}
+          image: {{ include "aws-network-flow-monitor-agent.image" . }}
           securityContext:
             privileged: true
-          resources:
-            limits:
-              cpu: 100m
-              memory: 200Mi
-            requests:
-              cpu: 50m
-              memory: 100Mi
+          resources: {{ toYaml .Values.resources | nindent 12 }}
           env:
+            {{- range $key, $value := .Values.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
             - name: K8S_NODE_NAME
               valueFrom:
                 fieldRef:
@@ -48,3 +55,10 @@ spec:
         kubernetes.io/os: linux
       terminationGracePeriodSeconds: 5
       serviceAccountName: {{ .Values.serviceAccount.name }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
