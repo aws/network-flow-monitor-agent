@@ -1,20 +1,39 @@
 image:
   override: '' # if defined, this value is used as the canonical image name ("{image_repo}{image_name}:{tag}")
-  tag: v1.0.0-eksbuild.4  # this is the default image tag. It might be overwritten at runtime
+  tag: v1.0.1-eksbuild.2  # this is the default image tag. It might be overwritten at runtime
   containerRegistry: '' # this gets overriden at runtime with the correct Docker Image Registry
   name: aws-network-sonar-agent  # DO NOT try to override this
 
 clusterRole:
-  name: aws-network-flow-monitoring-agent-role
+  name: aws-network-flow-monitor-agent-role
 
 clusterRoleBinding:
-  name: aws-network-flow-monitoring-agent-role-binding
+  name: aws-network-flow-monitor-agent-role-binding
 
 serviceAccount:
-  name: aws-network-flow-monitoring-agent-service-account
+  name: aws-network-flow-monitor-agent-service-account
 
 daemonSet:
-  name: aws-network-flow-monitoring-agent
+  name: aws-network-flow-monitor-agent
+
+# Common labels to add to all network-flow-monitor-agent resources. Evaluated as a template.
+additionalLabels: {}
+
+# Useful parameters that provide additional flexibility
+podLabels: {}
+podAnnotations: {}
+tolerations: []
+
+env:
+  NFM_AGENT_LOG_LEVEL: INFO
+
+resources:
+  limits:
+    cpu: 100m
+    memory: 200Mi
+  requests:
+    cpu: 50m
+    memory: 100Mi
 
 affinity:
   nodeAffinity:
@@ -26,7 +45,6 @@ affinity:
           operator: NotIn
           values:
             - fargate
-            - auto
             - hybrid
           # Only schedule on amd64 nodes
         - key: kubernetes.io/arch

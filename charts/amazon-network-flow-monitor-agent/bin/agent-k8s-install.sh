@@ -15,7 +15,7 @@ VALUES_FILENAME=values.yaml
 # Publicly Accessible Docker Image Repository for 'Amazon CloudWatch Network Flow Monitor'
 CONTAINER_REGISTRY="602401143452.dkr.ecr.us-west-2.amazonaws.com"
 
-export LATEST_KNOWN_IMAGE_TAG="v1.0.0-eksbuild.4"
+export LATEST_KNOWN_IMAGE_TAG="v1.0.1-eksbuild.2"
 export IMAGE_TAG=${IMAGE_TAG:-$LATEST_KNOWN_IMAGE_TAG}
 
 # Will install 'Amazon CloudWatch Network Flow Monitor Agent' Manifest Files to an existing K8s Cluster

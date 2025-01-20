@@ -1,12 +1,12 @@
 # Chart.yaml file schema: https://helm.sh/docs/topics/charts/#the-chartyaml-file
 apiVersion: v2
-name: aws-network-flow-monitoring-agent
+name: aws-network-flow-monitor-agent
 description: A Helm chart for Amazon CloudWatch Network Flow Monitor Agent
 type: application
 
 # This version needs to increase every time the chart and its templates
 # change. This should follow SemVer.
-version: 1.0.0
+version: 1.0.1
 
 # Keep this in sync with Amazon CloudWatch Network Flow Monitor Agent package version
 # used when building the its Docker image

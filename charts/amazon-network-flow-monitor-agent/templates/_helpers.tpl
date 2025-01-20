@@ -1,7 +1,7 @@
 {{/*
-Get the current recommended 'aws-network-flow-monitoring-agent' image for a given k8s version
+Get the current recommended 'aws-network-flow-monitor-agent' image for a given k8s version
 */}}
-{{- define "aws-network-flow-monitoring-agent.image" -}}
+{{- define "aws-network-flow-monitor-agent.image" -}}
 {{- if .Values.image.override -}}
 {{- .Values.image.override -}}
 {{- else -}}
@@ -19,25 +19,32 @@ Get the current recommended 'aws-network-flow-monitoring-agent' image for a give
 {{/*
 Common labels
 */}}
-{{- define "aws-network-flow-monitoring-agent.labels" -}}
-{{ include "aws-network-flow-monitoring-agent.selectorLabels" . }}
+{{- define "aws-network-flow-monitor-agent.labels" -}}
+{{ include "aws-network-flow-monitor-agent.selectorLabels" . }}
 {{- if .Chart.AppVersion }}
 app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- end }}
 app.kubernetes.io/managed-by: EKS
+{{ include "aws-network-flow-monitor-agent.additionalLabels" . }}
+{{- end }}
+
+{{- define "aws-network-flow-monitor-agent.additionalLabels" -}}
+{{- if .Values.additionalLabels }}
+{{- tpl (.Values.additionalLabels | toYaml) . }}
+{{- end }}
 {{- end }}
 
 {{/*
 Expand the name of the chart.
 */}}
-{{- define "aws-network-flow-monitoring-agent.name" -}}
+{{- define "aws-network-flow-monitor-agent.name" -}}
 {{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
 {{/*
 Selector labels
 */}}
-{{- define "aws-network-flow-monitoring-agent.selectorLabels" -}}
-app.kubernetes.io/name: {{ include "aws-network-flow-monitoring-agent.name" . }}
+{{- define "aws-network-flow-monitor-agent.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "aws-network-flow-monitor-agent.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
