@@ -55,6 +55,9 @@ spec:
         kubernetes.io/os: linux
       terminationGracePeriodSeconds: 5
       serviceAccountName: {{ .Values.serviceAccount.name }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
       {{- with .Values.tolerations }}
       tolerations:
         {{- toYaml . | nindent 8 }}
