@@ -1,0 +1,6 @@
+[workspace]
+resolver = "2"
+members = ["nfm-controller", "nfm-common"]
+
+[workspace.metadata]
+bpf_target = "bpfel-unknown-none"

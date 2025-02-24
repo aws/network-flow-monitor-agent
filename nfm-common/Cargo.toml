@@ -1,0 +1,20 @@
+[package]
+name = "nfm-common"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+aya = { version = "0.13", optional = true }
+aya-ebpf = { version = "*", optional = true}
+bitflags = { version = "2", optional = true, features = ["serde"] }
+libc = { version = "0.2", optional = true }
+serde = { version = "1.0", features = ["derive"], optional = true }
+
+[lib]
+path = "src/mod.rs"
+
+[features]
+default = []
+bpf = ["aya-ebpf", "bitflags"]
+user = ["aya", "bitflags", "libc", "serde"]

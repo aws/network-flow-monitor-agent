@@ -1,0 +1,1532 @@
+{
+  "resourceMetrics": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "instance_id",
+            "value": {
+              "stringValue": "instance-id"
+            }
+          },
+          {
+            "key": "machine_id",
+            "value": {
+              "stringValue": "machine-id"
+            }
+          },
+          {
+            "key": "compute_platform",
+            "value": {
+              "stringValue": "EC2_PLAIN"
+            }
+          },
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "agent-service"
+            }
+          },
+          {
+            "key": "service.version",
+            "value": {
+              "stringValue": "0.1.0"
+            }
+          },
+          {
+            "key": "agent.build_ts",
+            "value": {
+              "stringValue": "build-time"
+            }
+          },
+          {
+            "key": "report.version",
+            "value": {
+              "stringValue": "1.1"
+            }
+          }
+        ],
+        "droppedAttributesCount": 0
+      },
+      "scopeMetrics": [
+        {
+          "scope": {
+            "name": "network_stats",
+            "version": "",
+            "attributes": [
+              {
+                "key": "local_address",
+                "value": {
+                  "stringValue": "1.2.3.4"
+                }
+              },
+              {
+                "key": "local_port",
+                "value": {
+                  "intValue": "443"
+                }
+              },
+              {
+                "key": "protocol",
+                "value": {
+                  "stringValue": "TCP"
+                }
+              },
+              {
+                "key": "remote_address",
+                "value": {
+                  "stringValue": "5.6.7.8"
+                }
+              },
+              {
+                "key": "remote_port",
+                "value": {
+                  "intValue": "0"
+                }
+              }
+            ],
+            "droppedAttributesCount": 0
+          },
+          "metrics": [
+            {
+              "name": "bytes_delivered",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "histogram": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "count": 1,
+                    "sum": 47.0,
+                    "bucketCounts": [],
+                    "explicitBounds": [],
+                    "exemplars": [],
+                    "flags": 0,
+                    "min": null,
+                    "max": null
+                  }
+                ],
+                "aggregationTemporality": 1
+              }
+            },
+            {
+              "name": "bytes_received",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "histogram": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "count": 1,
+                    "sum": 43.0,
+                    "bucketCounts": [],
+                    "explicitBounds": [],
+                    "exemplars": [],
+                    "flags": 0,
+                    "min": null,
+                    "max": null
+                  }
+                ],
+                "aggregationTemporality": 1
+              }
+            },
+            {
+              "name": "connect_attempts",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "histogram": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "count": 1,
+                    "sum": 14.0,
+                    "bucketCounts": [],
+                    "explicitBounds": [],
+                    "exemplars": [],
+                    "flags": 0,
+                    "min": null,
+                    "max": null
+                  }
+                ],
+                "aggregationTemporality": 1
+              }
+            },
+            {
+              "name": "retrans_close",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "histogram": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "count": 1,
+                    "sum": 18.0,
+                    "bucketCounts": [],
+                    "explicitBounds": [],
+                    "exemplars": [],
+                    "flags": 0,
+                    "min": null,
+                    "max": null
+                  }
+                ],
+                "aggregationTemporality": 1
+              }
+            },
+            {
+              "name": "retrans_est",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "histogram": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "count": 1,
+                    "sum": 19.0,
+                    "bucketCounts": [],
+                    "explicitBounds": [],
+                    "exemplars": [],
+                    "flags": 0,
+                    "min": null,
+                    "max": null
+                  }
+                ],
+                "aggregationTemporality": 1
+              }
+            },
+            {
+              "name": "retrans_syn",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "histogram": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "count": 1,
+                    "sum": 20.0,
+                    "bucketCounts": [],
+                    "explicitBounds": [],
+                    "exemplars": [],
+                    "flags": 0,
+                    "min": null,
+                    "max": null
+                  }
+                ],
+                "aggregationTemporality": 1
+              }
+            },
+            {
+              "name": "rtos_close",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "histogram": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "count": 1,
+                    "sum": 15.0,
+                    "bucketCounts": [],
+                    "explicitBounds": [],
+                    "exemplars": [],
+                    "flags": 0,
+                    "min": null,
+                    "max": null
+                  }
+                ],
+                "aggregationTemporality": 1
+              }
+            },
+            {
+              "name": "rtos_est",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "histogram": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "count": 1,
+                    "sum": 16.0,
+                    "bucketCounts": [],
+                    "explicitBounds": [],
+                    "exemplars": [],
+                    "flags": 0,
+                    "min": null,
+                    "max": null
+                  }
+                ],
+                "aggregationTemporality": 1
+              }
+            },
+            {
+              "name": "rtos_syn",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "histogram": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "count": 1,
+                    "sum": 17.0,
+                    "bucketCounts": [],
+                    "explicitBounds": [],
+                    "exemplars": [],
+                    "flags": 0,
+                    "min": null,
+                    "max": null
+                  }
+                ],
+                "aggregationTemporality": 1
+              }
+            },
+            {
+              "name": "segments_delivered",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "histogram": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "count": 1,
+                    "sum": 59.0,
+                    "bucketCounts": [],
+                    "explicitBounds": [],
+                    "exemplars": [],
+                    "flags": 0,
+                    "min": null,
+                    "max": null
+                  }
+                ],
+                "aggregationTemporality": 1
+              }
+            },
+            {
+              "name": "segments_received",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "histogram": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "count": 1,
+                    "sum": 53.0,
+                    "bucketCounts": [],
+                    "explicitBounds": [],
+                    "exemplars": [],
+                    "flags": 0,
+                    "min": null,
+                    "max": null
+                  }
+                ],
+                "aggregationTemporality": 1
+              }
+            },
+            {
+              "name": "severed_connect",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "histogram": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "count": 1,
+                    "sum": 2.0,
+                    "bucketCounts": [],
+                    "explicitBounds": [],
+                    "exemplars": [],
+                    "flags": 0,
+                    "min": null,
+                    "max": null
+                  }
+                ],
+                "aggregationTemporality": 1
+              }
+            },
+            {
+              "name": "severed_establish",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "histogram": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "count": 1,
+                    "sum": 1.0,
+                    "bucketCounts": [],
+                    "explicitBounds": [],
+                    "exemplars": [],
+                    "flags": 0,
+                    "min": null,
+                    "max": null
+                  }
+                ],
+                "aggregationTemporality": 1
+              }
+            },
+            {
+              "name": "sockets_closed",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "histogram": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "count": 1,
+                    "sum": 1.0,
+                    "bucketCounts": [],
+                    "explicitBounds": [],
+                    "exemplars": [],
+                    "flags": 0,
+                    "min": null,
+                    "max": null
+                  }
+                ],
+                "aggregationTemporality": 1
+              }
+            },
+            {
+              "name": "sockets_closing",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "histogram": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "count": 1,
+                    "sum": 2.0,
+                    "bucketCounts": [],
+                    "explicitBounds": [],
+                    "exemplars": [],
+                    "flags": 0,
+                    "min": null,
+                    "max": null
+                  }
+                ],
+                "aggregationTemporality": 1
+              }
+            },
+            {
+              "name": "sockets_completed",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "histogram": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "count": 1,
+                    "sum": 44.0,
+                    "bucketCounts": [],
+                    "explicitBounds": [],
+                    "exemplars": [],
+                    "flags": 0,
+                    "min": null,
+                    "max": null
+                  }
+                ],
+                "aggregationTemporality": 1
+              }
+            },
+            {
+              "name": "sockets_connecting",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "histogram": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "count": 1,
+                    "sum": 4.0,
+                    "bucketCounts": [],
+                    "explicitBounds": [],
+                    "exemplars": [],
+                    "flags": 0,
+                    "min": null,
+                    "max": null
+                  }
+                ],
+                "aggregationTemporality": 1
+              }
+            },
+            {
+              "name": "sockets_established",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "histogram": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "count": 1,
+                    "sum": 3.0,
+                    "bucketCounts": [],
+                    "explicitBounds": [],
+                    "exemplars": [],
+                    "flags": 0,
+                    "min": null,
+                    "max": null
+                  }
+                ],
+                "aggregationTemporality": 1
+              }
+            },
+            {
+              "name": "connect_us",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "histogram": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "count": 2,
+                    "sum": 25.0,
+                    "bucketCounts": [],
+                    "explicitBounds": [],
+                    "exemplars": [],
+                    "flags": 0,
+                    "min": 12.0,
+                    "max": 13.0
+                  }
+                ],
+                "aggregationTemporality": 1
+              }
+            },
+            {
+              "name": "rtt_us",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "histogram": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "count": 3,
+                    "sum": 44.0,
+                    "bucketCounts": [],
+                    "explicitBounds": [],
+                    "exemplars": [],
+                    "flags": 0,
+                    "min": 14.0,
+                    "max": 15.0
+                  }
+                ],
+                "aggregationTemporality": 1
+              }
+            },
+            {
+              "name": "rtt_smoothed_us",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "histogram": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "count": 4,
+                    "sum": 66.0,
+                    "bucketCounts": [],
+                    "explicitBounds": [],
+                    "exemplars": [],
+                    "flags": 0,
+                    "min": 16.0,
+                    "max": 17.0
+                  }
+                ],
+                "aggregationTemporality": 1
+              }
+            }
+          ],
+          "schemaUrl": ""
+        },
+        {
+          "scope": {
+            "name": "process_stats",
+            "version": "",
+            "attributes": [],
+            "droppedAttributesCount": 0
+          },
+          "metrics": [
+            {
+              "name": "cpu_util",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "gauge": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "exemplars": [],
+                    "flags": 0,
+                    "asDouble": 0.04
+                  }
+                ]
+              }
+            },
+            {
+              "name": "mem_used_kb",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "gauge": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "exemplars": [],
+                    "flags": 0,
+                    "asInt": 512
+                  }
+                ]
+              }
+            },
+            {
+              "name": "mem_used_ratio",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "gauge": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "exemplars": [],
+                    "flags": 0,
+                    "asDouble": 0.06
+                  }
+                ]
+              }
+            },
+            {
+              "name": "sockets_tracked",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "gauge": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "exemplars": [],
+                    "flags": 0,
+                    "asInt": 100
+                  }
+                ]
+              }
+            }
+          ],
+          "schemaUrl": ""
+        },
+        {
+          "scope": {
+            "name": "host_stats",
+            "version": "",
+            "attributes": [
+              {
+                "key": "interface_id",
+                "value": {
+                  "stringValue": "iface-id-1"
+                }
+              }
+            ],
+            "droppedAttributesCount": 0
+          },
+          "metrics": [
+            {
+              "name": "bw_in_allowance_exceeded",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "sum": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "exemplars": [],
+                    "flags": 0,
+                    "asInt": 211
+                  }
+                ],
+                "aggregationTemporality": 1,
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "bw_out_allowance_exceeded",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "sum": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "exemplars": [],
+                    "flags": 0,
+                    "asInt": 223
+                  }
+                ],
+                "aggregationTemporality": 1,
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "conntrack_allowance_available",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "sum": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "exemplars": [],
+                    "flags": 0,
+                    "asInt": 239
+                  }
+                ],
+                "aggregationTemporality": 1,
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "conntrack_allowance_exceeded",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "sum": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "exemplars": [],
+                    "flags": 0,
+                    "asInt": 227
+                  }
+                ],
+                "aggregationTemporality": 1,
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "linklocal_allowance_exceeded",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "sum": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "exemplars": [],
+                    "flags": 0,
+                    "asInt": 229
+                  }
+                ],
+                "aggregationTemporality": 1,
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "pps_allowance_exceeded",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "sum": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "exemplars": [],
+                    "flags": 0,
+                    "asInt": 233
+                  }
+                ],
+                "aggregationTemporality": 1,
+                "isMonotonic": true
+              }
+            }
+          ],
+          "schemaUrl": ""
+        },
+        {
+          "scope": {
+            "name": "host_stats",
+            "version": "",
+            "attributes": [
+              {
+                "key": "interface_id",
+                "value": {
+                  "stringValue": "iface-id-2"
+                }
+              }
+            ],
+            "droppedAttributesCount": 0
+          },
+          "metrics": [
+            {
+              "name": "bw_in_allowance_exceeded",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "sum": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "exemplars": [],
+                    "flags": 0,
+                    "asInt": 211
+                  }
+                ],
+                "aggregationTemporality": 1,
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "bw_out_allowance_exceeded",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "sum": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "exemplars": [],
+                    "flags": 0,
+                    "asInt": 223
+                  }
+                ],
+                "aggregationTemporality": 1,
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "conntrack_allowance_available",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "sum": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "exemplars": [],
+                    "flags": 0,
+                    "asInt": 239
+                  }
+                ],
+                "aggregationTemporality": 1,
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "conntrack_allowance_exceeded",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "sum": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "exemplars": [],
+                    "flags": 0,
+                    "asInt": 227
+                  }
+                ],
+                "aggregationTemporality": 1,
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "linklocal_allowance_exceeded",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "sum": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "exemplars": [],
+                    "flags": 0,
+                    "asInt": 229
+                  }
+                ],
+                "aggregationTemporality": 1,
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "pps_allowance_exceeded",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "sum": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "exemplars": [],
+                    "flags": 0,
+                    "asInt": 233
+                  }
+                ],
+                "aggregationTemporality": 1,
+                "isMonotonic": true
+              }
+            }
+          ],
+          "schemaUrl": ""
+        },
+        {
+          "scope": {
+            "name": "counters",
+            "version": "",
+            "attributes": [],
+            "droppedAttributesCount": 0
+          },
+          "metrics": [
+            {
+              "name": "active_connect_events",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "sum": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "exemplars": [],
+                    "flags": 0,
+                    "asInt": 1
+                  }
+                ],
+                "aggregationTemporality": 1,
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "active_established_events",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "sum": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "exemplars": [],
+                    "flags": 0,
+                    "asInt": 2
+                  }
+                ],
+                "aggregationTemporality": 1,
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "map_insertion_errors",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "sum": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "exemplars": [],
+                    "flags": 0,
+                    "asInt": 18
+                  }
+                ],
+                "aggregationTemporality": 1,
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "other_errors",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "sum": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "exemplars": [],
+                    "flags": 0,
+                    "asInt": 17
+                  }
+                ],
+                "aggregationTemporality": 1,
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "other_events",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "sum": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "exemplars": [],
+                    "flags": 0,
+                    "asInt": 8
+                  }
+                ],
+                "aggregationTemporality": 1,
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "passive_established_events",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "sum": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "exemplars": [],
+                    "flags": 0,
+                    "asInt": 3
+                  }
+                ],
+                "aggregationTemporality": 1,
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "retrans_events",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "sum": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "exemplars": [],
+                    "flags": 0,
+                    "asInt": 6
+                  }
+                ],
+                "aggregationTemporality": 1,
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "rto_events",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "sum": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "exemplars": [],
+                    "flags": 0,
+                    "asInt": 7
+                  }
+                ],
+                "aggregationTemporality": 1,
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "rtt_events",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "sum": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "exemplars": [],
+                    "flags": 0,
+                    "asInt": 5
+                  }
+                ],
+                "aggregationTemporality": 1,
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "rtts_invalid",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "sum": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "exemplars": [],
+                    "flags": 0,
+                    "asInt": 15
+                  }
+                ],
+                "aggregationTemporality": 1,
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "set_flags_errors",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "sum": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "exemplars": [],
+                    "flags": 0,
+                    "asInt": 16
+                  }
+                ],
+                "aggregationTemporality": 1,
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "socket_events",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "sum": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "exemplars": [],
+                    "flags": 0,
+                    "asInt": 9
+                  }
+                ],
+                "aggregationTemporality": 1,
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "sockets_invalid",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "sum": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "exemplars": [],
+                    "flags": 0,
+                    "asInt": 10
+                  }
+                ],
+                "aggregationTemporality": 1,
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "state_change_events",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "sum": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "exemplars": [],
+                    "flags": 0,
+                    "asInt": 4
+                  }
+                ],
+                "aggregationTemporality": 1,
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "remote_nat_reversal_errors",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "sum": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "exemplars": [],
+                    "flags": 0,
+                    "asInt": 0
+                  }
+                ],
+                "aggregationTemporality": 1,
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "restarts",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "sum": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "exemplars": [],
+                    "flags": 0,
+                    "asInt": 0
+                  }
+                ],
+                "aggregationTemporality": 1,
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "socket_agg_above_limit",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "sum": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "exemplars": [],
+                    "flags": 0,
+                    "asInt": 0
+                  }
+                ],
+                "aggregationTemporality": 1,
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "socket_agg_completed",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "sum": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "exemplars": [],
+                    "flags": 0,
+                    "asInt": 0
+                  }
+                ],
+                "aggregationTemporality": 1,
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "socket_agg_missing_props",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "sum": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "exemplars": [],
+                    "flags": 0,
+                    "asInt": 0
+                  }
+                ],
+                "aggregationTemporality": 1,
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "socket_deltas_above_limit",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "sum": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "exemplars": [],
+                    "flags": 0,
+                    "asInt": 0
+                  }
+                ],
+                "aggregationTemporality": 1,
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "socket_deltas_completed",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "sum": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "exemplars": [],
+                    "flags": 0,
+                    "asInt": 0
+                  }
+                ],
+                "aggregationTemporality": 1,
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "socket_deltas_missing_props",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "sum": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "exemplars": [],
+                    "flags": 0,
+                    "asInt": 0
+                  }
+                ],
+                "aggregationTemporality": 1,
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "socket_eviction_completed",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "sum": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "exemplars": [],
+                    "flags": 0,
+                    "asInt": 0
+                  }
+                ],
+                "aggregationTemporality": 1,
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "socket_eviction_failed",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "sum": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "exemplars": [],
+                    "flags": 0,
+                    "asInt": 0
+                  }
+                ],
+                "aggregationTemporality": 1,
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "sockets_added",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "sum": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "exemplars": [],
+                    "flags": 0,
+                    "asInt": 0
+                  }
+                ],
+                "aggregationTemporality": 1,
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "sockets_natd",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "sum": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "exemplars": [],
+                    "flags": 0,
+                    "asInt": 0
+                  }
+                ],
+                "aggregationTemporality": 1,
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "sockets_stale",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "sum": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "exemplars": [],
+                    "flags": 0,
+                    "asInt": 0
+                  }
+                ],
+                "aggregationTemporality": 1,
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "publish_report_failed",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "sum": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "exemplars": [],
+                    "flags": 0,
+                    "asInt": 10
+                  }
+                ],
+                "aggregationTemporality": 1,
+                "isMonotonic": true
+              }
+            }
+          ],
+          "schemaUrl": ""
+        }
+      ],
+      "schemaUrl": ""
+    }
+  ]
+}

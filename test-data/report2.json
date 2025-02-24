@@ -1,0 +1,135 @@
+{
+  "network_stats": [
+    {
+      "flow": {
+        "protocol": "TCP",
+        "local_address": "1.2.3.4",
+        "remote_address": "5.6.7.8",
+        "local_port": 0,
+        "remote_port": 28015
+      },
+      "stats": {
+        "sockets_connecting": 4,
+        "sockets_established": 3,
+        "sockets_closing": 2,
+        "sockets_closed": 1,
+        "sockets_completed": 44,
+        "severed_connect": 2,
+        "severed_establish": 1,
+        "connect_attempts": 14,
+        "bytes_received": 43,
+        "bytes_delivered": 47,
+        "segments_received": 53,
+        "segments_delivered": 59,
+        "retrans_syn": 20,
+        "retrans_est": 19,
+        "retrans_close": 18,
+        "rtos_syn": 17,
+        "rtos_est": 16,
+        "rtos_close": 15,
+        "connect_us": {
+            "count": 2,
+            "min": 12,
+            "max": 13,
+            "sum": 25
+        },
+        "rtt_us": {
+            "count": 3,
+            "min": 14,
+            "max": 15,
+            "sum": 44
+        },
+        "rtt_smoothed_us": {
+            "count": 4,
+            "min": 16,
+            "max": 17,
+            "sum": 66
+        }
+      }
+    }
+  ],
+  "process_stats": {
+    "counters": {
+      "event_related": {
+        "active_connect_events": 0,
+        "active_established_events": 0,
+        "passive_established_events": 0,
+        "state_change_events": 0,
+        "rtt_events": 0,
+        "retrans_events": 0,
+        "rto_events": 0,
+        "other_events": 0,
+        "socket_events": 0,
+        "sockets_invalid": 0,
+        "map_insertion_errors": 0,
+        "rtts_invalid": 0,
+        "set_flags_errors": 0,
+        "other_errors": 0
+      },
+      "process_related": {
+        "remote_nat_reversal_errors": 0,
+        "restarts": 0,
+        "sockets_added": 0,
+        "sockets_natd": 0,
+        "sockets_stale": 0,
+        "sockets_aggregated": 0,
+        "socket_deltas_completed": 0,
+        "socket_deltas_missing_props": 0,
+        "socket_deltas_above_limit": 0,
+        "socket_agg_completed": 0,
+        "socket_agg_missing_props": 0,
+        "socket_agg_above_limit": 0,
+        "socket_eviction_completed": 0,
+        "socket_eviction_failed": 0
+      }
+    },
+    "usage": [
+      {
+        "cpu_util": 0.04,
+        "mem_used_kb": 512,
+        "mem_used_ratio": 0.06,
+        "sockets_tracked": 49
+      }
+    ]
+  },
+  "host_stats": {
+      "interface_stats": [
+          {
+              "interface_id": "iface-id-1",
+              "stats": {
+                  "bw_in_allowance_exceeded": 211,
+                  "bw_out_allowance_exceeded": 223,
+                  "conntrack_allowance_exceeded": 227,
+                  "linklocal_allowance_exceeded": 229,
+                  "pps_allowance_exceeded": 233,
+                  "conntrack_allowance_available": 239
+              }
+          }
+      ]
+  },
+  "env_metadata": [
+    [
+      "instance_id",
+      {
+        "String": "instance-id"
+      }
+    ]
+  ],
+  "service_metadata": {
+    "name": {
+      "String": "test-service"
+    },
+    "version": {
+      "String": "1.0"
+    },
+    "build_ts": {
+      "String": "build-time"
+    }
+  },
+  "failed_reports": 0,
+  "report_version": "1.1",
+  "k8s_metadata": {
+    "node_name": null,
+    "cluster_name": null
+  }
+}

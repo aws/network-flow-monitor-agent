@@ -1,0 +1,30 @@
+[package]
+name = "nfm-bpf"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+aya-ebpf = "0.1"
+aya-log-common = "0.1"
+nfm-common = { path = "../nfm-common", features = ["bpf"] }
+
+[[bin]]
+name = "nfm-bpf"
+path = "src/main.rs"
+
+[profile.dev]
+codegen-units = 1
+debug-assertions = false
+lto = true
+opt-level = 3
+panic = "abort"
+
+[profile.release]
+codegen-units = 1
+debug-assertions = false
+lto = true
+panic = "abort"
+
+[workspace]
+members = []
