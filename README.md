@@ -9,7 +9,8 @@ This application runs on Linux kernel version 5.8 and newer.
 
 ## Installation
 
-> [!TIP] [Instructions are
+> [!TIP]
+> [Instructions are
 > available](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch-NetworkFlowMonitor-agents.html)
 > to deploy across a fleet of EC2 instances or EKS clusters and integrate with
 > Amazon CloudWatch Network Flow Monitor.
