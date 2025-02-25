@@ -67,6 +67,7 @@ impl MultiPublisher {
                 get_credentials_provider(),
                 RealTimeClock {},
                 opt.report_compression,
+                opt.https_proxy.clone(),
             )));
         };
         publisher_builder.build()
@@ -196,6 +197,7 @@ mod tests {
             endpoint: "a".to_string(),
             endpoint_region: "b".to_string(),
             cgroup: "c".to_string(),
+            https_proxy: "d".to_string(),
             top_k: 100,
             notrack_secs: 0,
             usage_data: OnOff::Off,

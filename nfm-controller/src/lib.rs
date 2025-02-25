@@ -100,6 +100,10 @@ pub struct Options {
     #[clap(short = 'r', long, default_value = "")]
     endpoint_region: String,
 
+    /// HTTPS proxy endpoint
+    #[clap(short = 'x', long, default_value = "")]
+    https_proxy: String,
+
     /// Enable log reports
     #[clap(short = 'l', long, default_value_t = OnOff::Off)]
     log_reports: OnOff,
@@ -437,6 +441,7 @@ mod test {
                     endpoint: "a".to_string(),
                     endpoint_region: "b".to_string(),
                     cgroup: "c".to_string(),
+                    https_proxy: "d".to_string(),
                     top_k: 100,
                     notrack_secs: 0,
                     usage_data: OnOff::On,

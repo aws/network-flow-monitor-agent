@@ -11,6 +11,7 @@ use aws_credential_types::provider::ProvideCredentials;
 use clap::ValueEnum;
 use log::{error, info, warn};
 use reqwest::blocking::Client;
+use reqwest::Proxy;
 use serde::Serialize;
 use std::fmt;
 use std::io::prelude::Write;
@@ -59,9 +60,21 @@ where
         credentials_provider: P,
         clock: C,
         compression: ReportCompression,
+        https_proxy: String,
     ) -> Self {
+        let mut builder = Client::builder().use_rustls_tls();
+
+        if !https_proxy.is_empty() {
+            info!("HTTPS proxy configured: {}", https_proxy);
+            if let Ok(proxy) = Proxy::https(&https_proxy) {
+                builder = builder.proxy(proxy);
+            } else {
+                warn!("Invalid HTTPS proxy URL: {}", https_proxy);
+            }
+        }
+
         ReportPublisherOTLP {
-            client: Client::builder().use_rustls_tls().build().unwrap(),
+            client: builder.build().unwrap(),
             endpoint,
             region,
             credentials_provider,
@@ -308,6 +321,7 @@ mod tests {
             provider,
             mock_clock.clone(),
             ReportCompression::None,
+            "".to_string(), // https proxy
         );
         let mut report = NfmReport::new();
 
@@ -370,6 +384,67 @@ mod tests {
             }
         }
         assert!(found, "header '{}' not found", header);
+    }
+
+    #[test]
+    fn test_https_proxy_configuration() {
+        let creds = Credentials::new("AKID", "SECRET", Some("TOKEN".into()), None, "test");
+        let provider = SharedCredentialsProvider::new(creds);
+        let mock_clock = FakeClock {
+            now_us: 1718716821050,
+        };
+
+        // Test empty proxy string
+        assert!(matches!(
+            ReportPublisherOTLP::new(
+                "http://localhost".to_string(),
+                "us-west-1".to_string(),
+                provider.clone(),
+                mock_clock.clone(),
+                ReportCompression::None,
+                "".to_string(),
+            ),
+            ReportPublisherOTLP { .. }
+        ));
+
+        // Test valid HTTPS proxy - should create successfully
+        assert!(matches!(
+            ReportPublisherOTLP::new(
+                "http://localhost".to_string(),
+                "us-west-1".to_string(),
+                provider.clone(),
+                mock_clock.clone(),
+                ReportCompression::None,
+                "https://127.0.0.1:8443".to_string(),
+            ),
+            ReportPublisherOTLP { .. }
+        ));
+
+        // Test invalid proxy URL - should still create successfully but log warning
+        assert!(matches!(
+            ReportPublisherOTLP::new(
+                "http://localhost".to_string(),
+                "us-west-1".to_string(),
+                provider.clone(),
+                mock_clock.clone(),
+                ReportCompression::None,
+                "not-a-valid-url".to_string(),
+            ),
+            ReportPublisherOTLP { .. }
+        ));
+
+        // Test invalid proxy port - should still create successfully but log warning
+        assert!(matches!(
+            ReportPublisherOTLP::new(
+                "http://localhost".to_string(),
+                "us-west-1".to_string(),
+                provider.clone(),
+                mock_clock.clone(),
+                ReportCompression::None,
+                "https://127.0.0.1:invalid-port".to_string(),
+            ),
+            ReportPublisherOTLP { .. }
+        ));
     }
 
     #[test]
@@ -488,6 +563,7 @@ mod tests {
             provider,
             mock_clock.clone(),
             compression,
+            "".to_string(), // https proxy
         )
     }
 
