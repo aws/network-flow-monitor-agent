@@ -60,17 +60,14 @@ where
         credentials_provider: P,
         clock: C,
         compression: ReportCompression,
-        https_proxy: String,
+        proxy: String,
     ) -> Self {
         let mut builder = Client::builder().use_rustls_tls();
 
-        if !https_proxy.is_empty() {
-            info!("HTTPS proxy configured: {}", https_proxy);
-            if let Ok(proxy) = Proxy::https(&https_proxy) {
-                builder = builder.proxy(proxy);
-            } else {
-                warn!("Invalid HTTPS proxy URL: {}", https_proxy);
-            }
+        if !proxy.is_empty() {
+            info!("Proxy configured: {}", proxy);
+            let proxy_instance = Proxy::https(&proxy).expect("Invalid proxy URL provided");
+            builder = builder.proxy(proxy_instance);
         }
 
         ReportPublisherOTLP {
@@ -321,7 +318,7 @@ mod tests {
             provider,
             mock_clock.clone(),
             ReportCompression::None,
-            "".to_string(), // https proxy
+            "".to_string(), // proxy
         );
         let mut report = NfmReport::new();
 
@@ -387,7 +384,7 @@ mod tests {
     }
 
     #[test]
-    fn test_https_proxy_configuration() {
+    fn test_proxy_configuration() {
         let creds = Credentials::new("AKID", "SECRET", Some("TOKEN".into()), None, "test");
         let provider = SharedCredentialsProvider::new(creds);
         let mock_clock = FakeClock {
@@ -407,7 +404,7 @@ mod tests {
             ReportPublisherOTLP { .. }
         ));
 
-        // Test valid HTTPS proxy - should create successfully
+        // Test valid proxy - should create successfully
         assert!(matches!(
             ReportPublisherOTLP::new(
                 "http://localhost".to_string(),
@@ -419,32 +416,44 @@ mod tests {
             ),
             ReportPublisherOTLP { .. }
         ));
+    }
 
-        // Test invalid proxy URL - should still create successfully but log warning
-        assert!(matches!(
-            ReportPublisherOTLP::new(
-                "http://localhost".to_string(),
-                "us-west-1".to_string(),
-                provider.clone(),
-                mock_clock.clone(),
-                ReportCompression::None,
-                "not-a-valid-url".to_string(),
-            ),
-            ReportPublisherOTLP { .. }
-        ));
+    #[test]
+    #[should_panic(expected = "Invalid proxy URL provided")]
+    fn test_invalid_proxy_url() {
+        let creds = Credentials::new("AKID", "SECRET", Some("TOKEN".into()), None, "test");
+        let provider = SharedCredentialsProvider::new(creds);
+        let mock_clock = FakeClock {
+            now_us: 1718716821050,
+        };
 
-        // Test invalid proxy port - should still create successfully but log warning
-        assert!(matches!(
-            ReportPublisherOTLP::new(
-                "http://localhost".to_string(),
-                "us-west-1".to_string(),
-                provider.clone(),
-                mock_clock.clone(),
-                ReportCompression::None,
-                "https://127.0.0.1:invalid-port".to_string(),
-            ),
-            ReportPublisherOTLP { .. }
-        ));
+        ReportPublisherOTLP::new(
+            "http://localhost".to_string(),
+            "us-west-1".to_string(),
+            provider,
+            mock_clock,
+            ReportCompression::None,
+            "http::not-a-valid-url".to_string(),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid proxy URL provided")]
+    fn test_invalid_proxy_port() {
+        let creds = Credentials::new("AKID", "SECRET", Some("TOKEN".into()), None, "test");
+        let provider = SharedCredentialsProvider::new(creds);
+        let mock_clock = FakeClock {
+            now_us: 1718716821050,
+        };
+
+        ReportPublisherOTLP::new(
+            "http://localhost".to_string(),
+            "us-west-1".to_string(),
+            provider,
+            mock_clock,
+            ReportCompression::None,
+            "https://127.0.0.1:invalid-port".to_string(),
+        );
     }
 
     #[test]
@@ -563,7 +572,7 @@ mod tests {
             provider,
             mock_clock.clone(),
             compression,
-            "".to_string(), // https proxy
+            "".to_string(), // proxy
         )
     }
 
