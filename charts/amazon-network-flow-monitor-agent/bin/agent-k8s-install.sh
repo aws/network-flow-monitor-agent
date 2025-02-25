@@ -13,7 +13,8 @@ HELM_CHARTS_DIR="$(dirname "$(realpath "$0")")/../"
 VALUES_FILENAME=values.yaml
 
 # Publicly Accessible Docker Image Repository for 'Amazon CloudWatch Network Flow Monitor'
-CONTAINER_REGISTRY="602401143452.dkr.ecr.us-west-2.amazonaws.com"
+PROD_CONTAINER_REGISTRY="602401143452.dkr.ecr.us-west-2.amazonaws.com"
+export CONTAINER_REGISTRY=${CONTAINER_REGISTRY:-$PROD_CONTAINER_REGISTRY}
 
 export LATEST_KNOWN_IMAGE_TAG="v1.0.1-eksbuild.2"
 export IMAGE_TAG=${IMAGE_TAG:-$LATEST_KNOWN_IMAGE_TAG}

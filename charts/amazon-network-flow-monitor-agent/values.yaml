@@ -1,6 +1,6 @@
 image:
   override: '' # if defined, this value is used as the canonical image name ("{image_repo}{image_name}:{tag}")
-  tag: v1.0.1-eksbuild.2  # this is the default image tag. It might be overwritten at runtime
+  tag: v1.0.2-eksbuild.1  # this is the default image tag. It might be overwritten at runtime
   containerRegistry: '' # this gets overriden at runtime with the correct Docker Image Registry
   name: aws-network-sonar-agent  # DO NOT try to override this
 
@@ -19,10 +19,13 @@ daemonSet:
 # Common labels to add to all network-flow-monitor-agent resources. Evaluated as a template.
 additionalLabels: {}
 
-# Useful parameters that provide additional flexibility
+# Useful parameters that provide flexibility to customers
 podLabels: {}
 podAnnotations: {}
 tolerations: []
+
+# allow user to change the internal addon name labels
+nameOverride: ""
 
 env:
   NFM_AGENT_LOG_LEVEL: INFO
@@ -51,3 +54,5 @@ affinity:
           operator: In
           values:
             - amd64
+
+priorityClassName: ""
