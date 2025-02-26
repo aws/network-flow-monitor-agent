@@ -65,7 +65,7 @@ where
         let mut builder = Client::builder().use_rustls_tls();
 
         if !proxy.is_empty() {
-            let proxy_instance = Proxy::https(&proxy).expect("Invalid proxy URL provided");
+            let proxy_instance = Proxy::all(&proxy).expect("Invalid proxy URL provided");
             builder = builder.proxy(proxy_instance);
         }
 
