@@ -65,7 +65,6 @@ where
         let mut builder = Client::builder().use_rustls_tls();
 
         if !proxy.is_empty() {
-            info!("Proxy configured: {}", proxy);
             let proxy_instance = Proxy::https(&proxy).expect("Invalid proxy URL provided");
             builder = builder.proxy(proxy_instance);
         }
@@ -80,6 +79,23 @@ where
         }
     }
 
+    pub fn new_without_proxy(
+        endpoint: String,
+        region: String,
+        credentials_provider: P,
+        clock: C,
+        compression: ReportCompression,
+    ) -> Self {
+        let no_proxy = String::new();
+        Self::new(
+            endpoint,
+            region,
+            credentials_provider,
+            clock,
+            compression,
+            no_proxy,
+        )
+    }
     fn build_headers(&self, datetime: chrono::DateTime<chrono::Utc>) -> reqwest::header::HeaderMap {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(
@@ -312,13 +328,12 @@ mod tests {
             now_us: 1718716821050,
         };
 
-        let publisher = ReportPublisherOTLP::new(
+        let publisher = ReportPublisherOTLP::new_without_proxy(
             format!("http://{}", address),
             "us-west-1".to_string(),
             provider,
             mock_clock.clone(),
             ReportCompression::None,
-            "".to_string(), // proxy
         );
         let mut report = NfmReport::new();
 
@@ -404,7 +419,7 @@ mod tests {
             ReportPublisherOTLP { .. }
         ));
 
-        // Test valid proxy - should create successfully
+        // Test valid https proxy - should create successfully
         assert!(matches!(
             ReportPublisherOTLP::new(
                 "http://localhost".to_string(),
@@ -413,6 +428,18 @@ mod tests {
                 mock_clock.clone(),
                 ReportCompression::None,
                 "https://127.0.0.1:8443".to_string(),
+            ),
+            ReportPublisherOTLP { .. }
+        ));
+        // Test valid http proxy - should create successfully
+        assert!(matches!(
+            ReportPublisherOTLP::new(
+                "http://localhost".to_string(),
+                "us-west-1".to_string(),
+                provider.clone(),
+                mock_clock.clone(),
+                ReportCompression::None,
+                "http://127.0.0.1".to_string(),
             ),
             ReportPublisherOTLP { .. }
         ));
@@ -566,13 +593,12 @@ mod tests {
             now_us: 1718716821050,
         };
 
-        ReportPublisherOTLP::new(
+        ReportPublisherOTLP::new_without_proxy(
             "http://localhost".to_string(),
             "us-west-1".to_string(),
             provider,
             mock_clock.clone(),
             compression,
-            "".to_string(), // proxy
         )
     }
 

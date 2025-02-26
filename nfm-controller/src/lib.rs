@@ -100,7 +100,7 @@ pub struct Options {
     #[clap(short = 'r', long, default_value = "")]
     endpoint_region: String,
 
-    /// Proxy endpoint for all HTTPS traffic
+    /// Proxy endpoint for published reports
     #[clap(short = 'x', long, default_value = "")]
     proxy: String,
 
