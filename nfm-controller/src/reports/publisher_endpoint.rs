@@ -408,13 +408,12 @@ mod tests {
 
         // Test empty proxy string
         assert!(matches!(
-            ReportPublisherOTLP::new(
+            ReportPublisherOTLP::new_without_proxy(
                 "http://localhost".to_string(),
                 "us-west-1".to_string(),
                 provider.clone(),
                 mock_clock.clone(),
                 ReportCompression::None,
-                "".to_string(),
             ),
             ReportPublisherOTLP { .. }
         ));
