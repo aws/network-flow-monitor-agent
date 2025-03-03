@@ -54,5 +54,6 @@ affinity:
           operator: In
           values:
             - amd64
+            - arm64
 
 priorityClassName: ""
