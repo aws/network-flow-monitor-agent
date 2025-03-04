@@ -17,7 +17,7 @@ fn main() -> shadow_rs::SdResult<()> {
 
 fn set_up_toolchain() {
     Command::new("rustup")
-        .args(&["component", "add", "rust-src"])
+        .args(["component", "add", "rust-src"])
         .status()
         .expect("Failed to add rust-src");
 
@@ -27,7 +27,7 @@ fn set_up_toolchain() {
         .is_err()
     {
         Command::new("cargo")
-            .args(&["install", "bpf-linker"])
+            .args(["install", "bpf-linker"])
             .status()
             .expect("Failed to install bpf-linker");
     }
@@ -48,7 +48,7 @@ fn build_ebpf(release: bool) {
         .expect("Failed to get BPF target triple");
 
     let bpf_obj_path = target_dir
-        .join(&target_triple)
+        .join(target_triple)
         .join(if release { "release" } else { "debug" })
         .join("nfm-bpf");
     println!(
