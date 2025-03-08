@@ -55,7 +55,6 @@ impl fmt::Display for OnOff {
     }
 }
 
-// GRCOV_STOP_COVERAGE
 #[derive(Debug, Parser, Serialize)]
 #[command(name = "network-flow-monitor-agent", version, about, long_about = None)]
 pub struct Options {
@@ -183,7 +182,6 @@ pub fn on_load(opt: Options) -> Result<(), anyhow::Error> {
 
     Ok(())
 }
-// GRCOV_BEGIN_COVERAGE
 
 fn do_work(
     mut provider: impl EventProvider,

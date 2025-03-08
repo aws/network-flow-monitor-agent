@@ -7,10 +7,15 @@ use std::process::Command;
 use which::which;
 
 fn main() -> shadow_rs::SdResult<()> {
-    set_up_toolchain();
+    // We skip the eBPF build if running under tarpaulin, which measures code test coverage.
+    // tarpaulin is incompatible with `no_std` and BPF's different target architecture.
+    let should_build_ebpf = std::env::var("CARGO_CFG_TARPAULIN").is_err();
 
-    let release = std::env::var("PROFILE").unwrap() == "release";
-    build_ebpf(release);
+    if should_build_ebpf {
+        set_up_toolchain();
+        let release = std::env::var("PROFILE").unwrap() == "release";
+        build_ebpf(release);
+    }
 
     shadow_rs::new()
 }

@@ -30,6 +30,12 @@ jobs:
       - name: Install tarpaulin
         run: cargo install cargo-tarpaulin
       - name: Check code coverage
-        run: cargo tarpaulin --ignore-tests --out xml
+        run: |
+          BPF_OBJECT_PATH="${{ github.workspace }}/target/ebpf/bpfel-unknown-none/release/nfm-bpf" \
+          cargo tarpaulin --ignore-tests \
+          --workspace \
+          --exclude nfm-bpf \
+          --exclude-files '**/build.rs' \
+          --out xml
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v3
+        uses: codecov/codecov-action@v5
