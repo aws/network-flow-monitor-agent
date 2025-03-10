@@ -1,5 +1,7 @@
 # Network Flow Monitor Agent
 
+[![CI](https://github.com/aws/network-flow-monitor-agent/actions/workflows/ci.yaml/badge.svg?branch=main)](https://github.com/aws/network-flow-monitor-agent/actions/workflows/ci.yaml)
+
 This is an on-host agent that passively collects performance statistics related
 to various communication protocols of interest, beginning with TCP.  The
 statistics can be published in an OpenTelemetry format to an ingestion
@@ -39,7 +41,7 @@ cargo build --release
 > ```
 
 To run the application with statistics printed to stdout, use the following
-command.  Run this as root or with the `CAP_BPF` capability. 
+command.  Run this as root or with the `CAP_BPF` capability.
 
 ```bash
 target/release/network-flow-monitor-agent --cgroup /mnt/cgroup-nfm --publish-reports off --log-reports on
