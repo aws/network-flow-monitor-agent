@@ -1,6 +1,7 @@
 # Network Flow Monitor Agent
 
 [![CI](https://github.com/aws/network-flow-monitor-agent/actions/workflows/ci.yaml/badge.svg?branch=main)](https://github.com/aws/network-flow-monitor-agent/actions/workflows/ci.yaml)
+[![codecov](https://codecov.io/github/aws/network-flow-monitor-agent/graph/badge.svg?token=T4XUR6NZRM)](https://codecov.io/github/aws/network-flow-monitor-agent)
 
 This is an on-host agent that passively collects performance statistics related
 to various communication protocols of interest, beginning with TCP.  The
