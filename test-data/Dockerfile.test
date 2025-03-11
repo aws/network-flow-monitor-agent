@@ -1,0 +1,18 @@
+FROM ubuntu:24.04
+
+# Print env details to aid in diagnostics.
+RUN cat /etc/os-release && ldd --version
+
+RUN apt-get update && apt-get install -y \
+    python3 \
+    python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY target/release/network-flow-monitor-agent /usr/local/bin/
+COPY test-data/integration-* /test-context/
+
+RUN chmod +x /test-context/integration-*
+
+# Set the entrypoint with unbuffered output.
+ENV PYTHONUNBUFFERED=1
+ENTRYPOINT ["/test-context/integration-entrypoint"]

@@ -45,13 +45,23 @@ To run the application with statistics printed to stdout, use the following
 command.  Run this as root or with the `CAP_BPF` capability.
 
 ```bash
-target/release/network-flow-monitor-agent --cgroup /mnt/cgroup-nfm --publish-reports off --log-reports on
+target/release/network-flow-monitor-agent --cgroup /mnt/cgroup-nfm \
+   --publish-reports off --log-reports on
 ```
 
-To see the available command-line options, run:
+### Testing
+
+Run GitHub actions locally using the [act](https://nektosact.com/) CLI:
 
 ```bash
-target/release/network-flow-monitor-agent --help
+act workflow_dispatch --privileged
+```
+
+Run only integration tests by building and running the test suite's docker container:
+
+```bash
+docker build -t integration-tests -f test-data/Dockerfile.test .
+docker run --privileged -t integration-tests
 ```
 
 ## License

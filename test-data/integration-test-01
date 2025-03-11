@@ -1,0 +1,146 @@
+#!/usr/bin/python3
+
+import http.client
+import http.server
+import json
+from queue import Queue, Empty
+import socketserver
+import threading
+import time
+
+def start_http_server():
+    # Define a simple 200-OK HTTP server.
+    class Handler(http.server.SimpleHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header('Content-type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(b'Hello from test server!')
+            
+        def log_message(self, format, *args):
+            # Suppress logging.
+            pass
+
+    # Run in a thread.
+    server = socketserver.TCPServer(('localhost', 8080), Handler)
+    server_thread = threading.Thread(target=server.serve_forever)
+    server_thread.daemon = True
+    server_thread.start()
+    return server
+
+def send_http_request():
+    print('Sending test HTTP request...', end='')
+
+    try:
+        # Use a new TCP connection for each HTTP request.
+        conn = http.client.HTTPConnection('localhost', 8080)
+        conn.request('GET', '/')
+        response = conn.getresponse()
+        if response.status == 200:
+            print('succeeded')
+            return True
+        else:
+            print(f'failed: {response.status}')
+            return False
+    except Exception as e:
+        print(f'failed: {e}')
+        return False
+    finally:
+        conn.close()
+
+class LogReader:
+    def __init__(self, file_path):
+        self.queue = Queue()
+        self.reader_thread = threading.Thread(
+            target=self._read_log,
+            args=(file_path, self.queue)
+        )
+        self.reader_thread.daemon = True
+        self.reader_thread.start()
+
+    def _read_log(self, file_path, queue):
+        with open(file_path, 'r') as f:
+            while True:
+                line = f.readline()
+                if line:
+                    queue.put(line)
+                else:
+                    time.sleep(0.1)
+
+    # Reads log lines until validator_fn returns True or the timeout has elapsed.
+    def read_until(self, validator_fn, timeout_secs):
+        start_time = time.time()
+        while True:
+            try:
+                line = self.queue.get(timeout=0.1)
+                try:
+                    data = json.loads(line)
+                    if validator_fn(data):
+                        print('succeeded')
+                        return True
+                except json.JSONDecodeError as e:
+                    print('failed')
+                    print(f'Invalid JSON in log: {line.strip()}')
+                    return False
+            except Empty:
+                pass
+
+            if time.time() - start_time > timeout_secs:
+                print('failed')
+                print(f'Timed out after {timeout_secs} sec')
+                return False
+
+def await_agent_readiness(file_path, timeout_secs):
+    def validator(data):
+        if data['message'] == 'Aggregating across sockets':
+            return True
+        return False
+
+    print('Awaiting agent readiness....', end='')
+    reader = LogReader(file_path)
+    return reader.read_until(validator, timeout_secs)
+
+def count_logged_connections(file_path, expected_count, timeout_secs):
+    counts = {'client': 0, 'server': 0}
+
+    def validator(data):
+        if data['message'] != 'Publishing report':
+            return False
+
+        for net_stat in data['report']['network_stats']:
+            if net_stat['flow']['local_address'] == '127.0.0.1':
+                new_count = net_stat['stats']['sockets_completed']
+                if net_stat['flow']['remote_port'] == 8080:
+                    counts['client'] += new_count
+                elif net_stat['flow']['local_port'] == 8080:
+                    counts['server'] += new_count
+
+        if counts['client'] == expected_count and counts['server'] == expected_count:
+            return True 
+        return False
+
+    print('Awaiting agent results......', end='')
+    reader = LogReader(file_path)
+    success = reader.read_until(validator, timeout_secs)
+    if success:
+        print('[SUCCESS] The agent reported all TCP connections from both client and server')
+
+    return success
+
+def main():
+    if not await_agent_readiness(file_path='/test-context/agent.log', timeout_secs=5):
+        exit(1)
+
+    # Start an HTTP server and send a few requests.
+    server = start_http_server()
+    for _ in range(3):
+        if not send_http_request():
+            exit(1)
+    server.shutdown()
+    
+    # Validate the results.
+    success = count_logged_connections(file_path='/test-context/agent.log', expected_count=3, timeout_secs=15)
+    exit(0 if success else 1)
+
+if __name__ == '__main__':
+    main()

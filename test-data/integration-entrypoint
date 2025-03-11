@@ -1,0 +1,27 @@
+#!/bin/bash
+
+set -o errexit
+set -o pipefail
+set -o nounset
+
+clean_up() {
+    kill $MONITOR_PID
+}
+trap clean_up EXIT
+
+# Set up the cgroup.
+mkdir -p /mnt/cgroup-nfm
+if ! grep -qs '/mnt/cgroup-nfm cgroup2' /proc/mounts; then
+    mount -t cgroup2 none /mnt/cgroup-nfm
+fi
+
+# Start the agent in the background.
+rm -f /test-context/agent.log
+network-flow-monitor-agent --cgroup /mnt/cgroup-nfm --publish-reports off \
+    --log-reports on --publish-secs 5 > /test-context/agent.log &
+MONITOR_PID=$!
+
+# Run all tests in the test suite.
+for test_script in `ls /test-context/integration-test*`; do
+    $test_script
+done
