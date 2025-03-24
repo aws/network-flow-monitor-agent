@@ -29,7 +29,7 @@ rm -rf "${OUT_DIR}/bin/$FOLDER/linux"
 
 echo "Creating the rpm package $FOLDER"
 
-SPEC_FILE="packaging/linux/amazon-nfm-agent.spec"
+SPEC_FILE="packaging/linux/network-flow-monitor-agent.spec"
 BUILD_ROOT="${OUT_DIR}/bin/$FOLDER/linux"
 
 # Ensure build root exists
@@ -42,5 +42,5 @@ rpmbuild -bb \
          --define "_sourcedir $(pwd)" \
          --buildroot "${BUILD_ROOT}" \
          "${SPEC_FILE}"
-cp ${OUT_DIR}/bin/$FOLDER/linux/rpmbuild/RPMS/$TARGET/*.rpm ${OUT_DIR}/bin/$FOLDER/amazon-nfm-agent.rpm
+cp ${OUT_DIR}/bin/$FOLDER/linux/rpmbuild/RPMS/$TARGET/*.rpm ${OUT_DIR}/bin/$FOLDER/network-flow-monitor-agent.rpm
 rm -rf ${OUT_DIR}/bin/$FOLDER/linux/rpmbuild/RPMS/$TARGET/*

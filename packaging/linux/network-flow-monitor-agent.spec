@@ -1,4 +1,4 @@
-Name:       amazon-nfm-agent
+Name:       network-flow-monitor-agent
 Summary:    Network Flow Monitor Agent
 Release:    %release
 Version:    0.1
