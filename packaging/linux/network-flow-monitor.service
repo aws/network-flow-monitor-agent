@@ -1,0 +1,16 @@
+[Unit]
+Description=Network Flow Monitor Agent
+
+[Service]
+Type=simple
+ExecStart=/opt/aws/network-flow-monitor/network-flow-monitor-start
+Restart=always
+RestartSec=5
+User=networkflowmonitor
+
+LimitAS=100M
+LimitNICE=+10
+CPUQuota=5%
+
+[Install]
+WantedBy=multi-user.target

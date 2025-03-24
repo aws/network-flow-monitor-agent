@@ -1,0 +1,85 @@
+#!/bin/bash
+
+set -o errexit
+set -o pipefail
+set -o nounset
+set -o xtrace
+
+INI_FILE="/opt/aws/network-flow-monitor/etc/network-flow-monitor.ini"
+DEFAULT_CGROUP="/mnt/cgroupnefmon"
+
+# Function to read an ini file and print out key/value pairs
+function parse_ini_file() {
+    local ini_file=$1
+    local section=$2
+    eval "$(awk -F= -v section="$section" '
+        /^\[/{section=0}
+        /^\['"$section"'\]/{section=1; next}
+        section==1 && $1 !~ /^($|#|;)/ {
+            gsub(/^[ \t]+|[ \t]+$/, "", $1);
+            gsub(/^[ \t]+|[ \t]+$/, "", $2);
+            print $1"=\""$2"\""
+        }' "$ini_file")"
+}
+
+# Function to validate the cgroup. If default is provided, will check if cgroup for Network Flow Monitor is
+# available and mounted. If not will emit message and exit 1
+function parse_cgroup() {
+    local cgroup_dir="${1:-default}"
+
+    if [ "$cgroup_dir" = "default" ]; then
+        # Create and mount the default directory if needed.
+        cgroup_dir=$DEFAULT_CGROUP
+        if [ ! -d "$cgroup_dir" ]; then
+            echo "Directory: [$cgroup_dir] missing. Cannot start agent without it. Exiting"
+            exit 1
+        fi
+        if ! mountpoint -q "$cgroup_dir"; then
+            echo "cgroup isn't mounted. Mount it by running as root/sudo: [# mount -t cgroup2 networkflowmonitor-cgroup $cgroup_dir]"
+        fi
+    fi
+    echo $cgroup_dir
+}
+
+# Function to validate the region. If default is provided, the region is retrieved from IMDSv2.
+function parse_region() {
+    local region_input="${1:-default}"
+
+    if [ "$region_input" = "default" ]; then
+        # Retrieve region from IMDSv2
+        token=$(curl -X PUT -H "X-aws-ec2-metadata-token-ttl-seconds: 300" "http://169.254.169.254/latest/api/token" 2> /dev/null)
+        region=$(curl -H "X-aws-ec2-metadata-token: $token" "http://169.254.169.254/latest/dynamic/instance-identity/document" 2> /dev/null | grep -oP '(?<="region" : ")[^"]*')
+        echo "$region"
+    else
+        echo "$region_input"
+    fi
+}
+
+# Function to generate the endpoint where the agent is going to publish. If the
+# endpoint configured is "default", this function will generate the appropriate
+# endpoint.
+function parse_endpoint() {
+    local endpoint_input="${1:-default}"
+    local region_input="$2"
+
+    if [ "$endpoint_input" = "default" ]; then
+        # Generate the endpoint using the region
+        endpoint="https://networkflowmonitorreports.$region_input.api.aws/publish"
+        echo "$endpoint"
+    else
+        echo "$endpoint_input"
+    fi
+}
+
+
+parse_ini_file "$INI_FILE" "config"
+CGROUP=$(parse_cgroup $cgroup)
+REGION=$(parse_region $region)
+ENDPOINT=$(parse_endpoint $endpoint $REGION)
+
+echo "Starting Network Flow Monitor Agent"
+echo "cgroup: ${CGROUP}"
+echo "endpoint: ${ENDPOINT}"
+echo "endpoint-region: ${REGION}"
+
+/opt/aws/network-flow-monitor/network-flow-monitor-agent --cgroup ${CGROUP} --endpoint ${ENDPOINT} --endpoint-region ${REGION}
