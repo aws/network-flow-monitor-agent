@@ -13,10 +13,10 @@ function load_ini_section() {
     local ini_file=$1
     local section=$2
 
-    # Declare variables with defaults
-    cgroup="default"
-    endpoint="default"
-    region="default"
+    # Initialize with defaults
+    declare -g cgroup="default"
+    declare -g region="default"
+    declare -g endpoint="default"
 
     while IFS='=' read -r key value; do
         # Skip empty lines, comments, and section headers
@@ -29,8 +29,7 @@ function load_ini_section() {
         # Validate key name (only allow alphanumeric and underscore)
         [[ ! "$key" =~ ^[a-zA-Z0-9_]+$ ]] && continue
 
-        # Export the variable so it's available in the script scope
-        export "$key=$value"
+        declare -g "$key=$value"
     done < <(sed -n "/^\[$section\]/,/^\[/p" "$ini_file")
 }
 
