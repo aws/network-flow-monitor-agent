@@ -8,7 +8,7 @@ Restart=always
 RestartSec=5
 User=networkflowmonitor
 
-LimitAS=100M
+MemoryMax=100M
 LimitNICE=+10
 CPUQuota=5%
 

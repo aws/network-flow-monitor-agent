@@ -1,25 +1,37 @@
 #!/bin/bash
 
 set -o errexit
-set -o pipefail
 set -o nounset
+set -o pipefail
 set -o xtrace
 
 INI_FILE="/opt/aws/network-flow-monitor/etc/network-flow-monitor.ini"
-DEFAULT_CGROUP="/mnt/cgroupnefmon"
+DEFAULT_CGROUP="/mnt/cgroup-nfm"
 
-# Function to read an ini file and print out key/value pairs
-function parse_ini_file() {
+# Function to load variables from an INI file section into the current shell scope
+function load_ini_section() {
     local ini_file=$1
     local section=$2
-    eval "$(awk -F= -v section="$section" '
-        /^\[/{section=0}
-        /^\['"$section"'\]/{section=1; next}
-        section==1 && $1 !~ /^($|#|;)/ {
-            gsub(/^[ \t]+|[ \t]+$/, "", $1);
-            gsub(/^[ \t]+|[ \t]+$/, "", $2);
-            print $1"=\""$2"\""
-        }' "$ini_file")"
+
+    # Declare variables with defaults
+    cgroup="default"
+    endpoint="default"
+    region="default"
+
+    while IFS='=' read -r key value; do
+        # Skip empty lines, comments, and section headers
+        [[ -z "$key" || "$key" =~ ^[[:space:]]*[#\;] || "$key" =~ ^\[ ]] && continue
+
+        # Trim whitespace
+        key=$(echo "$key" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        value=$(echo "$value" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+        # Validate key name (only allow alphanumeric and underscore)
+        [[ ! "$key" =~ ^[a-zA-Z0-9_]+$ ]] && continue
+
+        # Export the variable so it's available in the script scope
+        export "$key=$value"
+    done < <(sed -n "/^\[$section\]/,/^\[/p" "$ini_file")
 }
 
 # Function to validate the cgroup. If default is provided, will check if cgroup for Network Flow Monitor is
@@ -72,7 +84,8 @@ function parse_endpoint() {
 }
 
 
-parse_ini_file "$INI_FILE" "config"
+load_ini_section "$INI_FILE" "config"
+
 CGROUP=$(parse_cgroup $cgroup)
 REGION=$(parse_region $region)
 ENDPOINT=$(parse_endpoint $endpoint $REGION)
