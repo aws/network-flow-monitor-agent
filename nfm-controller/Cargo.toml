@@ -43,8 +43,8 @@ env_logger = "0.10"
 flate2 = "1.0"
 futures = "0.3"
 hashbrown = "0.15"
-k8s-openapi = { version = "0.23", features = ["latest"] }
-kube = { version = "0.97", features = ["runtime", "derive", "rustls-tls"], default-features = false }
+k8s-openapi = { version = "0.24", features = ["latest"] }
+kube = { version = "0.99", features = ["runtime", "derive", "rustls-tls"], default-features = false }
 libc = "0.2"
 log = "0.4"
 netlink-packet-core = { version = "0.7" }
