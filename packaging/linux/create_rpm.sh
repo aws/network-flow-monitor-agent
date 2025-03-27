@@ -6,7 +6,7 @@ set -o pipefail
 set -o xtrace
 
 
-TARGET_ARCH=$1
+TARGET_ARCH=`uname -p`
 
 if [ -z "$TARGET_ARCH" ]
  then
