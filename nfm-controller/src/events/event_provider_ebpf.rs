@@ -279,7 +279,8 @@ impl<C: Clock> EventProviderEbpf<C> {
 
     fn decrease_sampling_interval(&mut self) {
         if self.ebpf_control_data.sampling_interval > 1 {
-            self.ebpf_control_data.sampling_interval -= 1;
+            self.ebpf_control_data.sampling_interval -=
+                self.ebpf_control_data.sampling_interval.div_ceil(7);
             self.send_control_data();
         }
     }
