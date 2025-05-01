@@ -28,6 +28,7 @@ use aya_obj::generated::BPF_ANY;
 use hashbrown::{hash_map::Entry, HashMap, HashSet};
 use log::info;
 use procfs::{Current, Meminfo};
+use std::cmp::min;
 use std::fs::File;
 use std::mem;
 
@@ -267,9 +268,16 @@ impl<C: Clock> EventProviderEbpf<C> {
     }
 
     fn increase_sampling_interval(&mut self) {
-        if self.ebpf_control_data.sampling_interval > 1 {
-            self.ebpf_control_data.sampling_interval =
-                self.ebpf_control_data.sampling_interval.saturating_mul(3) / 2;
+        // With 1000 sampling rate, the probability of picking up a new connection
+        // is 1/1000.
+        let max_sampling_interval = 1000;
+        if self.ebpf_control_data.sampling_interval > max_sampling_interval {
+            return;
+        } else if self.ebpf_control_data.sampling_interval > 1 {
+            self.ebpf_control_data.sampling_interval = min(
+                max_sampling_interval,
+                self.ebpf_control_data.sampling_interval.saturating_mul(3) / 2,
+            );
         } else {
             self.ebpf_control_data.sampling_interval = 2;
         }
