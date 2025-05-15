@@ -38,7 +38,7 @@ mkdir -p "${BUILD_ROOT}"
 
 rpmbuild -bb \
          --target $TARGET_ARCH \
-         --define "AGENT_VERSION 0.1.3" \
+         --define "AGENT_VERSION 0.1.4" \
          --define "_topdir ${OUT_DIR}/bin/linux/rpmbuild" \
          --define "_sourcedir $(pwd)" \
          --buildroot "${BUILD_ROOT}" \
