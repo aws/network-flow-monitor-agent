@@ -8,9 +8,10 @@ pub mod reports;
 pub mod utils;
 
 use aya::util::KernelVersion;
+use caps::{CapSet, Capability};
 use clap::{Parser, ValueEnum};
 use kubernetes::kubernetes_metadata_collector::KubernetesMetadataCollector;
-use log::{error, info};
+use log::{error, info, warn};
 use metadata::eni::EniMetadataProvider;
 use metadata::env_metadata_provider::{MultiMetadataProvider, MultiMetadataProviderImpl};
 use metadata::host::HostMetadataProvider;
@@ -138,6 +139,27 @@ pub fn check_kernel_version() -> Result<(), anyhow::Error> {
     }
 }
 
+/// Drop Linux capabilities that are no longer needed after eBPF program initialization
+fn drop_capabilities() -> Result<(), anyhow::Error> {
+    info!("Dropping CAP_SYS_ADMIN and CAP_BPF capabilities");
+
+    let mut caps = caps::read(None, CapSet::Effective)
+        .map_err(|e| anyhow::anyhow!("Failed to read current capabilities: {}", e))?;
+    caps.remove(&Capability::CAP_SYS_ADMIN);
+    caps::set(None, CapSet::Effective, &caps)
+        .map_err(|e| anyhow::anyhow!("Failed to drop capabilities: {}", e))?;
+
+    // Also drop from permitted capabilities to prevent re-enabling
+    let mut permitted_caps = caps::read(None, CapSet::Permitted)
+        .map_err(|e| anyhow::anyhow!("Failed to read permitted capabilities: {}", e))?;
+    permitted_caps.remove(&Capability::CAP_SYS_ADMIN);
+    caps::set(None, CapSet::Permitted, &permitted_caps)
+        .map_err(|e| anyhow::anyhow!("Failed to drop permitted capabilities: {}", e))?;
+
+    info!("Successfully dropped CAP_SYS_ADMIN and CAP_BPF capabilities");
+    Ok(())
+}
+
 pub fn on_load(opt: Options) -> Result<(), anyhow::Error> {
     check_kernel_version()?;
 
@@ -156,6 +178,12 @@ pub fn on_load(opt: Options) -> Result<(), anyhow::Error> {
                 return Err(e);
             }
         };
+
+    // Drop capabilities now that eBPF program is loaded and attached
+    if let Err(e) = drop_capabilities() {
+        warn!("Failed to drop capabilities: {}", e);
+    }
+
     let nat_resolver: Box<dyn NatResolver> = if opt.resolve_nat == OnOff::On {
         Box::new(NatResolverImpl::initialize())
     } else {
