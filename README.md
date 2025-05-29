@@ -64,6 +64,10 @@ docker build -t integration-tests -f test-data/Dockerfile.test .
 docker run --privileged -t integration-tests
 ```
 
+Some unit tests need privileges to run:
+```
+sudo -E cargo test --features privileged
+```
 ### Distributions
 You can download the official release from our permanent URLs. For more information, refer to [link](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch-NetworkFlowMonitor-agents-download-agent-commandline.html)
 
