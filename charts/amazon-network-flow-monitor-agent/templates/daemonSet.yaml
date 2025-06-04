@@ -51,6 +51,8 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            - name: RUST_LOG
+              value: "{{.Values.env.RUST_LOG}}"
       nodeSelector:
         kubernetes.io/os: linux
       terminationGracePeriodSeconds: 5

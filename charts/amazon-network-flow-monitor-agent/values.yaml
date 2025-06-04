@@ -28,7 +28,7 @@ tolerations: []
 nameOverride: ""
 
 env:
-  NFM_AGENT_LOG_LEVEL: INFO
+  RUST_LOG: info
 
 resources:
   limits:
