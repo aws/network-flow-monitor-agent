@@ -6,11 +6,12 @@ use crate::events::nat_resolver::NatResolver;
 use crate::events::network_event::{AggregateResults, FlowProperties, NetworkStats};
 use crate::events::{AggSockStats, SockCache, SockOperationResult, SockWrapper};
 use crate::reports::{CountersOverall, ProcessCounters};
+use crate::utils::cpu::get_total_cpu_core_count;
 use crate::utils::Clock;
 use nfm_common::constants::{
-    AGG_FLOWS_MAX_ENTRIES, EBPF_PROGRAM_NAME, MAX_ENTRIES_SK_PROPS_HI, MAX_ENTRIES_SK_PROPS_LO,
-    MAX_ENTRIES_SK_STATS_HI, MAX_ENTRIES_SK_STATS_LO, NFM_CONTROL_MAP_NAME, NFM_COUNTERS_MAP_NAME,
-    NFM_SK_PROPS_MAP_NAME, NFM_SK_STATS_MAP_NAME, SK_STATS_TO_PROPS_RATIO,
+    AGG_FLOWS_MAX_ENTRIES, EBPF_PROGRAM_NAME, MAX_ENTRIES_SK_STATS_HI, MAX_ENTRIES_SK_STATS_LO,
+    NFM_CONTROL_MAP_NAME, NFM_COUNTERS_MAP_NAME, NFM_SK_PROPS_MAP_NAME, NFM_SK_STATS_MAP_NAME,
+    SK_STATS_TO_PROPS_MIN_RATIO,
 };
 use nfm_common::network::{
     ControlData, CpuSockKey, EventCounters, SingletonKey, SockContext, SockKey, SockStats,
@@ -80,11 +81,16 @@ pub fn map_max_entries(mem_total_bytes: u64) -> (u64, u64) {
 
     // This divisor was chosen arbitrarily based on experimentation.
     let divisor: u64 = 5_000_000_000;
-    let sock_props_max_entries = (mem_total_bytes / divisor * MAX_ENTRIES_SK_PROPS_LO)
-        .clamp(MAX_ENTRIES_SK_PROPS_LO, MAX_ENTRIES_SK_PROPS_HI);
-    let sock_stats_max_entries = (sock_props_max_entries * SK_STATS_TO_PROPS_RATIO)
-        .clamp(MAX_ENTRIES_SK_STATS_LO, MAX_ENTRIES_SK_STATS_HI);
 
+    // At worst a socket can consume up to cpu count of entries in sk_stats.
+    // Assuming on average each sock will use half cpu count of entries.
+    let cpu_core_count = get_total_cpu_core_count();
+    let stats_to_props_ratio = min(SK_STATS_TO_PROPS_MIN_RATIO, (cpu_core_count / 2) as u64);
+    let sock_stats_max_entries = (mem_total_bytes / divisor * MAX_ENTRIES_SK_STATS_LO)
+        .clamp(MAX_ENTRIES_SK_STATS_LO, MAX_ENTRIES_SK_STATS_HI);
+    let sock_props_max_entries = sock_stats_max_entries / stats_to_props_ratio;
+
+    info!(sock_props_max_entries, sock_stats_max_entries; "Calculated SK props and stats map sizes");
     (sock_props_max_entries, sock_stats_max_entries)
 }
 
@@ -103,7 +109,18 @@ impl<C: Clock> EventProvider for EventProviderEbpf<C> {
         info!("Aggregating across sockets");
 
         // Apply adaptive sampling if we're receiving events faster than we can process.
-        if self.ebpf_counters().map_insertion_errors > 0 {
+        let ebpf_counters = self.ebpf_counters();
+
+        // if we are observing sk_stats being full, we should completely stop allowing new connections
+        // as they would (possibly) not have any space to store their data
+        if ebpf_counters.get_sk_stats_insertion_errors_sum() > 0 {
+            self.ebpf_control_data.block_new_sockets = 1;
+        } else {
+            self.ebpf_control_data.block_new_sockets = 0;
+        }
+
+        // if we are observing sk_props being full, we should slow down new connection intake.
+        if ebpf_counters.get_insertion_errors_sum() > 0 {
             self.increase_sampling_interval();
         } else {
             self.decrease_sampling_interval();
@@ -160,8 +177,9 @@ impl<C: Clock> EventProvider for EventProviderEbpf<C> {
         self.agg_socks_handled = self.sock_cache.len().try_into().unwrap();
         let (num_cpus_min, num_cpus_max, num_cpus_avg) = self.sock_cache.num_cpus();
 
-        // Evict sockets.
-        let (socks_to_evict, num_stale) = self.sock_cache.perform_eviction();
+        // Evict sockets. Every notrack_us also trigger explicit eviction based on staleness of the entries.
+        let (socks_to_evict, num_stale) =
+            self.sock_cache.perform_eviction(Some(staleness_timestamp));
         let sock_eviction_result = self.perform_bpf_eviction(socks_to_evict);
 
         // Update counters.
@@ -888,6 +906,6 @@ mod test {
     fn test_calculate_ebpf_memory_usage_max() {
         // Will deliberately break at sock struct changes and provide a manual review step
         let result = calculate_ebpf_memory_usage(MAX_ENTRIES_SK_PROPS_HI, MAX_ENTRIES_SK_STATS_HI);
-        assert!(result == 8080);
+        assert_eq!(result, 8760);
     }
 }

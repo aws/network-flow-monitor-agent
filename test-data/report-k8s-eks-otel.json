@@ -1069,7 +1069,7 @@
               }
             },
             {
-              "name": "map_insertion_errors",
+              "name": "sk_props_insertion_errors",
               "description": "",
               "unit": "",
               "metadata": [],
@@ -1082,6 +1082,46 @@
                     "exemplars": [],
                     "flags": 0,
                     "asInt": 18
+                  }
+                ],
+                "aggregationTemporality": 1,
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "sk_stats_insertion_errors",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "sum": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "exemplars": [],
+                    "flags": 0,
+                    "asInt": 19
+                  }
+                ],
+                "aggregationTemporality": 1,
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "sk_stats_insertion_rollback_errors",
+              "description": "",
+              "unit": "",
+              "metadata": [],
+              "sum": {
+                "dataPoints": [
+                  {
+                    "attributes": [],
+                    "startTimeUnixNano": "1718716821050000",
+                    "timeUnixNano": "1718716821050000",
+                    "exemplars": [],
+                    "flags": 0,
+                    "asInt": 20
                   }
                 ],
                 "aggregationTemporality": 1,

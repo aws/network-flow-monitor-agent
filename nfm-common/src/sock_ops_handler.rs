@@ -9,7 +9,9 @@ pub type SockOpsResult = Result<(), SockOpsResultCode>;
 pub enum SockOpsResultCode {
     OperationUnknown,
     ContextInvalid,
+    MapReadError,
     MapInsertionError,
+    MapInsertionErrorRolledBack,
     SetCbFlagsError,
     RttInvalid,
     SampleDiscard,
@@ -43,7 +45,9 @@ impl BpfControlConveyor {
         let control_option = bpf_map_get!(self, NFM_CONTROL, &SINGLETON_KEY);
         if let Some(control_data) = control_option {
             let sampling_interval = control_data.sampling_interval;
-            sampling_interval <= 1 || bpf_get_rand_u32!(self) % sampling_interval == 0
+            let block_new_sockets = control_data.block_new_sockets;
+            block_new_sockets == 0
+                && (sampling_interval <= 1 || bpf_get_rand_u32!(self) % sampling_interval == 0)
         } else {
             true
         }
@@ -142,13 +146,9 @@ impl<'a> TcpSockOpsHandler<'a> {
             BPF_NOEXIST
         );
         if res.is_err() {
-            self.counters.map_insertion_errors += 1;
+            self.counters.sk_props_insertion_errors += 1;
             return Err(SockOpsResultCode::MapInsertionError);
         }
-
-        // Register to receive events only for successfully recorded sockets, meaning after success
-        // of the above map insertion.
-        self.configure_flags()?;
 
         match self.get_or_add_sock_stats() {
             Ok(stats_raw) => unsafe {
@@ -163,8 +163,12 @@ impl<'a> TcpSockOpsHandler<'a> {
                         .state_flags
                         .insert(SockStateFlags::ENTERED_ESTABLISH);
                 }
+                // Register to receive events only for successfully recorded sockets, meaning after success
+                // of the above map insertions.
+                self.configure_flags()?;
                 Ok(())
             },
+            Err(SockOpsResultCode::MapInsertionError) => self.request_sk_props_eviction(),
             Err(e) => Err(e),
         }
     }
@@ -216,6 +220,7 @@ impl<'a> TcpSockOpsHandler<'a> {
                 sock_stats.state_flags.insert(new_flags);
                 Ok(())
             },
+            Err(SockOpsResultCode::MapInsertionError) => self.request_sk_props_eviction(),
             Err(e) => Err(e),
         }
     }
@@ -257,6 +262,7 @@ impl<'a> TcpSockOpsHandler<'a> {
 
                 Ok(())
             },
+            Err(SockOpsResultCode::MapInsertionError) => self.request_sk_props_eviction(),
             Err(e) => Err(e),
         }
     }
@@ -282,6 +288,7 @@ impl<'a> TcpSockOpsHandler<'a> {
 
                 Ok(())
             },
+            Err(SockOpsResultCode::MapInsertionError) => self.request_sk_props_eviction(),
             Err(e) => Err(e),
         }
     }
@@ -299,6 +306,7 @@ impl<'a> TcpSockOpsHandler<'a> {
                 };
                 Ok(())
             },
+            Err(SockOpsResultCode::MapInsertionError) => self.request_sk_props_eviction(),
             Err(e) => Err(e),
         }
     }
@@ -315,6 +323,7 @@ impl<'a> TcpSockOpsHandler<'a> {
                 sock_stats.segments_delivered = event_stats.segments_delivered;
                 Ok(())
             },
+            Err(SockOpsResultCode::MapInsertionError) => self.request_sk_props_eviction(),
             Err(e) => Err(e),
         }
     }
@@ -338,18 +347,46 @@ impl<'a> TcpSockOpsHandler<'a> {
                     &new_stats,
                     BPF_NOEXIST
                 ) {
+                    // todo: no need to do a map re-read, we have the memory address of the inserted object
+                    // Ok(_) => Ok(&mut new_stats) will work
                     Ok(_) => match bpf_map_get_ptr_mut!(self, NFM_SK_STATS, &self.composite_key) {
                         Some(stats) => Ok(stats),
-                        None => {
-                            self.counters.map_insertion_errors += 1;
-                            Err(SockOpsResultCode::MapInsertionError)
-                        }
+                        None => Err(SockOpsResultCode::MapReadError),
                     },
                     Err(_) => {
-                        self.counters.map_insertion_errors += 1;
+                        // if this happens, there is a chance that we will miss a termination event.
+                        // which means we can possibly fail to mark a socket for eviction from the cache.
+                        // because of this reason we should communicate back a signal to evict relevant SK_PROPS entry from user space cache.
                         Err(SockOpsResultCode::MapInsertionError)
                     }
                 }
+            }
+        }
+    }
+
+    fn request_sk_props_eviction(&mut self) -> SockOpsResult {
+        // prevent new events from being raised for this socket
+        let _ = self.ctx.set_cb_flags(0);
+
+        // request sock context to be removed from user space
+        let mut sock_context = SockContext::from_sock_ops(self.ctx, true);
+        sock_context.unreliable = true;
+        match bpf_map_insert!(
+            self,
+            NFM_SK_PROPS,
+            &self.composite_key,
+            &sock_context,
+            BPF_ANY
+        ) {
+            Ok(_) => {
+                self.counters.sk_stats_insertion_errors += 1;
+                Err(SockOpsResultCode::MapInsertionErrorRolledBack)
+            }
+            Err(_) => {
+                // these can likely cause misses on termination events, subsequently stuck entries in sock_cache.
+                // but they will be cleaned up periodically by staleness checks.
+                self.counters.sk_stats_insertion_rollback_errors += 1;
+                Err(SockOpsResultCode::MapInsertionError)
             }
         }
     }
@@ -1065,7 +1102,7 @@ mod test {
             mock_ebpf_maps.counters().active_connect_events,
             (MAX_ENTRIES_SK_PROPS_HI + 10).try_into().unwrap()
         );
-        assert_eq!(mock_ebpf_maps.counters().map_insertion_errors, 10);
+        assert_eq!(mock_ebpf_maps.counters().sk_props_insertion_errors, 10);
     }
 
     #[test]
@@ -1097,7 +1134,7 @@ mod test {
                 [BPF_TCP_ESTABLISHED, BPF_TCP_CLOSE],
                 &mut mock_ebpf_maps,
                 mock_ktime_us,
-                Err(SockOpsResultCode::MapInsertionError),
+                Err(SockOpsResultCode::MapInsertionErrorRolledBack),
             );
 
             cookie += 3;
@@ -1114,7 +1151,103 @@ mod test {
             mock_ebpf_maps.counters().state_change_events,
             (MAX_ENTRIES_SK_STATS_HI + 10).try_into().unwrap()
         );
-        assert_eq!(mock_ebpf_maps.counters().map_insertion_errors, 10);
+        assert_eq!(mock_ebpf_maps.counters().sk_stats_insertion_errors, 10);
+    }
+
+    #[test]
+    fn test_ebpf_sock_op_too_many_events_rollback_failed() {
+        let mut mock_ktime_us: u64 = 99;
+        let mut cookie: u64 = 197;
+        let mut mock_ebpf_maps = MockEbpfMaps::new();
+        let props_event_count = MAX_ENTRIES_SK_PROPS_HI - 1;
+
+        // fill props to limit, leave 1 empty for testing sk_props ok sk_stats not-ok
+        for _ in 0..props_event_count {
+            run_sock_ops_test(
+                cookie,
+                BPF_SOCK_OPS_TCP_CONNECT_CB,
+                &mut mock_ebpf_maps,
+                mock_ktime_us,
+                Ok(()),
+            );
+
+            cookie += 3;
+            mock_ktime_us += 10;
+        }
+
+        // fill stats to limit
+        let stats_events_count = MAX_ENTRIES_SK_STATS_HI - props_event_count;
+        for _ in 0..stats_events_count {
+            run_sock_ops_test_with_args(
+                cookie,
+                BPF_TCP_ESTABLISHED,
+                BPF_SOCK_OPS_STATE_CB,
+                [BPF_TCP_ESTABLISHED, BPF_TCP_CLOSE],
+                &mut mock_ebpf_maps,
+                mock_ktime_us,
+                Ok(()),
+            );
+
+            cookie += 3;
+            mock_ktime_us += 10;
+        }
+
+        // try to add 1 more props. props has 1 slot now, but stats is full.
+        // so it should roll back succesfully
+        run_sock_ops_test(
+            cookie,
+            BPF_SOCK_OPS_TCP_CONNECT_CB,
+            &mut mock_ebpf_maps,
+            mock_ktime_us,
+            Err(SockOpsResultCode::MapInsertionErrorRolledBack),
+        );
+        cookie += 3;
+        mock_ktime_us += 10;
+
+        // now both props and stats are full.
+        // try to add to stats, through all data ans props events, should fail, and also rollback should fail
+        let data_events = [
+            BPF_SOCK_OPS_STATE_CB,
+            BPF_SOCK_OPS_RTT_CB,
+            BPF_SOCK_OPS_RETRANS_CB,
+            BPF_SOCK_OPS_RTO_CB,
+            BPF_SOCK_OPS_PARSE_HDR_OPT_CB,
+        ];
+        for op_code in data_events {
+            run_sock_ops_test_with_args(
+                cookie,
+                BPF_TCP_ESTABLISHED,
+                op_code,
+                [BPF_TCP_ESTABLISHED, BPF_TCP_CLOSE],
+                &mut mock_ebpf_maps,
+                mock_ktime_us,
+                Err(SockOpsResultCode::MapInsertionError), // rollback failed
+            );
+
+            cookie += 3;
+            mock_ktime_us += 10;
+        }
+
+        // Validate results.
+        assert!(MAX_ENTRIES_SK_STATS_HI > 0);
+        assert_eq!(
+            mock_ebpf_maps.NFM_SK_STATS.data.len(),
+            MAX_ENTRIES_SK_STATS_HI.try_into().unwrap()
+        );
+        assert_eq!(mock_ebpf_maps.counters().rtt_events, 1.try_into().unwrap());
+        assert_eq!(mock_ebpf_maps.counters().rto_events, 1.try_into().unwrap());
+        assert_eq!(
+            mock_ebpf_maps.counters().retrans_events,
+            1.try_into().unwrap()
+        );
+        assert_eq!(
+            mock_ebpf_maps.counters().state_change_events,
+            (stats_events_count + 1).try_into().unwrap()
+        );
+        assert_eq!(
+            mock_ebpf_maps.counters().sk_stats_insertion_rollback_errors,
+            data_events.len().try_into().unwrap()
+        );
     }
 
     #[test]
@@ -1163,6 +1296,55 @@ mod test {
         assert!(conveyor.should_handle_event(BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB));
 
         // We also capture other events.
+        assert!(conveyor.should_handle_event(BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB));
+        assert!(conveyor.should_handle_event(BPF_SOCK_OPS_RETRANS_CB));
+        assert!(conveyor.should_handle_event(BPF_SOCK_OPS_RTT_CB));
+        assert!(conveyor.should_handle_event(BPF_SOCK_OPS_RTO_CB));
+    }
+
+    #[test]
+    fn test_ebpf_sock_op_strict_blockage() {
+        let mut mock_ebpf_maps = MockEbpfMaps::new();
+        mock_ebpf_maps.mock_rand = 1;
+        mock_ebpf_maps
+            .NFM_CONTROL
+            .insert(
+                &SINGLETON_KEY,
+                &ControlData {
+                    sampling_interval: 1,
+                    block_new_sockets: 0,
+                },
+                BPF_ANY,
+            )
+            .unwrap();
+        let conveyor = BpfControlConveyor { mock_ebpf_maps };
+
+        // We capture all events.
+        assert!(conveyor.should_handle_event(BPF_SOCK_OPS_TCP_CONNECT_CB));
+        assert!(conveyor.should_handle_event(BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB));
+        assert!(conveyor.should_handle_event(BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB));
+        assert!(conveyor.should_handle_event(BPF_SOCK_OPS_RETRANS_CB));
+        assert!(conveyor.should_handle_event(BPF_SOCK_OPS_RTT_CB));
+        assert!(conveyor.should_handle_event(BPF_SOCK_OPS_RTO_CB));
+
+        let mut mock_ebpf_maps = MockEbpfMaps::new();
+        mock_ebpf_maps.mock_rand = 2;
+        mock_ebpf_maps
+            .NFM_CONTROL
+            .insert(
+                &SINGLETON_KEY,
+                &ControlData {
+                    sampling_interval: 1,
+                    block_new_sockets: 1,
+                },
+                BPF_ANY,
+            )
+            .unwrap();
+        let conveyor = BpfControlConveyor { mock_ebpf_maps };
+
+        // We block all new socket events.
+        assert!(!conveyor.should_handle_event(BPF_SOCK_OPS_TCP_CONNECT_CB));
+        assert!(!conveyor.should_handle_event(BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB));
         assert!(conveyor.should_handle_event(BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB));
         assert!(conveyor.should_handle_event(BPF_SOCK_OPS_RETRANS_CB));
         assert!(conveyor.should_handle_event(BPF_SOCK_OPS_RTT_CB));

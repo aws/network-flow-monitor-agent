@@ -191,6 +191,10 @@ impl SockOpsContext {
     }
 
     pub fn set_cb_flags(&self, flags: i32) -> Result<(), i64> {
+        if flags == 0 {
+            // reset flags
+            return Ok(());
+        }
         assert!(flags as u32 & BPF_SOCK_OPS_RTT_CB_FLAG > 0);
         assert!(flags as u32 & BPF_SOCK_OPS_RTO_CB_FLAG > 0);
         assert!(flags as u32 & BPF_SOCK_OPS_STATE_CB_FLAG > 0);

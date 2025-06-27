@@ -25,6 +25,9 @@ pub struct CpuSockKey {
 #[cfg_attr(not(feature = "bpf"), derive(serde::Serialize))]
 pub struct ControlData {
     pub sampling_interval: u32,
+    // while sampling interval gives a probabilistic new socket allowance,
+    // block_new_sockets can totally reject all new sockets.
+    pub block_new_sockets: u32,
 }
 
 #[repr(C)]
@@ -44,7 +47,9 @@ pub struct EventCounters {
 
     // Error counters.
     pub sockets_invalid: u32,
-    pub map_insertion_errors: u32,
+    pub sk_props_insertion_errors: u32,
+    pub sk_stats_insertion_errors: u32,
+    pub sk_stats_insertion_rollback_errors: u32,
     pub rtts_invalid: u32,
     pub set_flags_errors: u32,
     pub other_errors: u32,
@@ -62,9 +67,10 @@ pub struct SockContext {
     pub remote_port: u16,
     pub address_family: u32,
     pub is_client: bool,
+    pub unreliable: bool, // used to mark if any events are missed for this socket. should be evicted asap
 
     // Pad the struct length to a multiple of 8 to appease the verifier.
-    pub _pad: [u8; 3],
+    pub _pad: [u8; 2],
 }
 
 bitflags! {
@@ -241,14 +247,6 @@ impl SockContext {
         }
     }
 
-    pub fn service_port(&self) -> u16 {
-        if self.is_client {
-            self.remote_port
-        } else {
-            self.local_port
-        }
-    }
-
     pub fn ipv6_to_bytes(parts: [u32; 4]) -> Ipv6Bytes {
         let mut bytes: Ipv6Bytes = [0; 16];
         for (i, part) in parts.iter().enumerate() {
@@ -288,9 +286,15 @@ impl EventCounters {
         self.socket_events = self.socket_events.wrapping_add(other.socket_events);
 
         self.sockets_invalid = self.sockets_invalid.wrapping_add(other.sockets_invalid);
-        self.map_insertion_errors = self
-            .map_insertion_errors
-            .wrapping_add(other.map_insertion_errors);
+        self.sk_props_insertion_errors = self
+            .sk_props_insertion_errors
+            .wrapping_add(other.sk_props_insertion_errors);
+        self.sk_stats_insertion_errors = self
+            .sk_stats_insertion_errors
+            .wrapping_add(other.sk_stats_insertion_errors);
+        self.sk_stats_insertion_rollback_errors = self
+            .sk_stats_insertion_rollback_errors
+            .wrapping_add(other.sk_stats_insertion_rollback_errors);
         self.rtts_invalid = self.rtts_invalid.wrapping_add(other.rtts_invalid);
         self.set_flags_errors = self.set_flags_errors.wrapping_add(other.set_flags_errors);
         self.other_errors = self.other_errors.wrapping_add(other.other_errors);
@@ -318,13 +322,31 @@ impl EventCounters {
             socket_events: self.socket_events.wrapping_sub(rhs.socket_events),
 
             sockets_invalid: self.sockets_invalid.wrapping_sub(rhs.sockets_invalid),
-            map_insertion_errors: self
-                .map_insertion_errors
-                .wrapping_sub(rhs.map_insertion_errors),
+            sk_props_insertion_errors: self
+                .sk_props_insertion_errors
+                .wrapping_sub(rhs.sk_props_insertion_errors),
+            sk_stats_insertion_errors: self
+                .sk_stats_insertion_errors
+                .wrapping_sub(rhs.sk_stats_insertion_errors),
+            sk_stats_insertion_rollback_errors: self
+                .sk_stats_insertion_rollback_errors
+                .wrapping_sub(rhs.sk_stats_insertion_rollback_errors),
             rtts_invalid: self.rtts_invalid.wrapping_sub(rhs.rtts_invalid),
             set_flags_errors: self.set_flags_errors.wrapping_sub(rhs.set_flags_errors),
             other_errors: self.other_errors.wrapping_sub(rhs.other_errors),
         }
+    }
+
+    // Returns the sum of insertion errors occurring across sock props and stats maps within ebpf program
+    pub fn get_insertion_errors_sum(&self) -> u32 {
+        self.sk_props_insertion_errors
+            + self.sk_stats_insertion_errors
+            + self.sk_stats_insertion_rollback_errors
+    }
+
+    // returns sum of errors relating only to sk_stats.
+    pub fn get_sk_stats_insertion_errors_sum(&self) -> u32 {
+        self.sk_stats_insertion_errors + self.sk_stats_insertion_rollback_errors
     }
 }
 
@@ -547,7 +569,9 @@ mod tests {
             socket_events: u32::MAX - 9,
 
             sockets_invalid: u32::MAX - 10,
-            map_insertion_errors: u32::MAX - 18,
+            sk_props_insertion_errors: u32::MAX - 18,
+            sk_stats_insertion_errors: u32::MAX - 19,
+            sk_stats_insertion_rollback_errors: u32::MAX - 20,
             rtts_invalid: u32::MAX - 13,
             set_flags_errors: u32::MAX - 14,
             other_errors: u32::MAX - 15,
@@ -564,7 +588,9 @@ mod tests {
             socket_events: 18,
 
             sockets_invalid: 19,
-            map_insertion_errors: 27,
+            sk_props_insertion_errors: 27,
+            sk_stats_insertion_errors: 28,
+            sk_stats_insertion_rollback_errors: 29,
             rtts_invalid: 22,
             set_flags_errors: 23,
             other_errors: 24,
@@ -732,5 +758,17 @@ mod tests {
         };
         let actual_diff_wrapped = stats_b.subtract(&stats_a);
         assert_eq!(actual_diff_wrapped, expected_diff_wrapped);
+    }
+
+    #[test]
+    fn test_event_counters_insertion_sum() {
+        let counters = EventCounters {
+            sk_props_insertion_errors: 1,
+            sk_stats_insertion_errors: 2,
+            sk_stats_insertion_rollback_errors: 3,
+            ..Default::default()
+        };
+        assert_eq!(counters.get_insertion_errors_sum(), 6);
+        assert_eq!(counters.get_sk_stats_insertion_errors_sum(), 5);
     }
 }

@@ -35,7 +35,10 @@ impl SockWrapper {
         }
     }
 
-    pub fn update_context(&mut self, context: SockContext, now_us: u64) {
+    pub fn update_context(&mut self, mut context: SockContext, now_us: u64) {
+        if context.unreliable {
+            context.is_client = self.context.is_client; // if unreliable, rely on local info about socket being client
+        }
         self.context = context;
         self.context_external = None;
         self.agg_stats.stats.last_touched_us = now_us;
@@ -49,7 +52,7 @@ impl SockWrapper {
     }
 
     pub fn should_evict(&self) -> bool {
-        self.is_complete || self.is_stale
+        self.is_complete || self.is_stale || self.context.unreliable
     }
 }
 
@@ -70,7 +73,7 @@ impl SockOperationResult {
 
 #[derive(Default)]
 pub struct SockCache {
-    cache: HashMap<SockKey, SockWrapper>,
+    pub(crate) cache: HashMap<SockKey, SockWrapper>,
     max_sock_entries: usize,
 }
 
@@ -238,8 +241,13 @@ impl SockCache {
 
     // Evicts all closed and stale sockets from this cache.  Returns a map of all evicted entries,
     // and the count of those that were stale.
-    pub fn perform_eviction(&mut self) -> (HashMap<SockKey, SockWrapper>, u64) {
+    // if explicit_staleness_ts is supplied, any entry with last touched ts older than that will be evicted too.
+    pub fn perform_eviction(
+        &mut self,
+        explicit_staleness_ts: Option<u64>,
+    ) -> (HashMap<SockKey, SockWrapper>, u64) {
         let mut num_stale: u64 = 0;
+        let _explicit_staleness_ts = explicit_staleness_ts.unwrap_or(0);
 
         let socks_evicted = self
             .cache
@@ -247,8 +255,9 @@ impl SockCache {
                 if sock_wrap.is_stale {
                     num_stale += 1;
                 }
-
-                sock_wrap.should_evict()
+                let is_explicitly_stale =
+                    _explicit_staleness_ts > sock_wrap.agg_stats.stats.last_touched_us;
+                sock_wrap.should_evict() || is_explicitly_stale
             })
             .collect();
 
@@ -680,7 +689,7 @@ mod test {
     #[test]
     fn test_get_sockets_to_evict_empty() {
         let mut sock_cache = SockCache::new();
-        let (socks_evicted, num_stale) = sock_cache.perform_eviction();
+        let (socks_evicted, num_stale) = sock_cache.perform_eviction(None);
 
         assert!(socks_evicted.is_empty());
         assert_eq!(num_stale, 0);
@@ -721,7 +730,7 @@ mod test {
             }
         );
 
-        let (socks_evicted, num_stale) = sock_cache.perform_eviction();
+        let (socks_evicted, num_stale) = sock_cache.perform_eviction(None);
         assert_eq!(socks_evicted.len(), 0);
         assert_eq!(num_stale, 0);
         assert_eq!(sock_cache.len(), sock_keys.len());
@@ -784,7 +793,7 @@ mod test {
         );
 
         // Perform eviction and validate.
-        let (socks_evicted, num_stale) = sock_cache.perform_eviction();
+        let (socks_evicted, num_stale) = sock_cache.perform_eviction(None);
         assert_eq!(socks_evicted.len(), 2);
         assert_eq!(num_stale, 0);
         assert_eq!(sock_cache.len(), sock_keys.len() - 2);
@@ -846,7 +855,7 @@ mod test {
         );
 
         // Perform eviction and validate.
-        let (socks_evicted, num_stale) = sock_cache.perform_eviction();
+        let (socks_evicted, num_stale) = sock_cache.perform_eviction(None);
         assert_eq!(socks_evicted.len(), 2);
         assert_eq!(num_stale, 2);
         assert_eq!(sock_cache.len(), sock_keys.len() - 2);
@@ -912,7 +921,7 @@ mod test {
         );
 
         // Perform eviction and validate.
-        let (socks_evicted, num_stale) = sock_cache.perform_eviction();
+        let (socks_evicted, num_stale) = sock_cache.perform_eviction(None);
         assert_eq!(num_stale, 0);
         assert_eq!(sock_cache.len(), 0);
 
@@ -937,5 +946,90 @@ mod test {
         assert_eq!(sock_cache.get_last_touched(&sock_key_invalid), 0);
         assert_eq!(sock_cache.get_last_touched(&sock_key1), now_us);
         assert_eq!(sock_cache.get_last_touched(&sock_key2), now_us + 26);
+    }
+
+    #[test]
+    fn test_sock_cache_explicit_staleness() {
+        let mut sock_cache = SockCache::new();
+
+        let sock_key1: SockKey = 1;
+        let sock_key2: SockKey = 2;
+
+        let now_us = 1;
+        sock_cache.add_context(sock_key1, SockContext::default(), now_us);
+        sock_cache.add_context(sock_key2, SockContext::default(), now_us + 1);
+
+        let (socks_evicted, num_stale) = sock_cache.perform_eviction(None);
+        assert_eq!(socks_evicted.len(), 0);
+        assert_eq!(num_stale, 0);
+        assert_eq!(sock_cache.len(), 2);
+
+        let (socks_evicted, num_stale) = sock_cache.perform_eviction(Some(now_us + 2));
+        assert_eq!(socks_evicted.len(), 2);
+        assert_eq!(num_stale, 0);
+        assert_eq!(sock_cache.len(), 0);
+    }
+
+    #[test]
+    fn test_sock_cache_unreliable_entries() {
+        let mut sock_cache = SockCache::new();
+
+        let sock_key1: SockKey = 1;
+        let sock_key2: SockKey = 2;
+
+        let now_us = 1;
+        // add unreliable entries
+        sock_cache.add_context(
+            sock_key1,
+            SockContext {
+                unreliable: true,
+                ..Default::default()
+            },
+            now_us,
+        );
+        sock_cache.add_context(
+            sock_key2,
+            SockContext {
+                unreliable: false,
+                ..Default::default()
+            },
+            now_us + 1,
+        );
+
+        let (socks_evicted, num_stale) = sock_cache.perform_eviction(None);
+        assert_eq!(socks_evicted.len(), 1);
+        assert_eq!(num_stale, 0);
+        assert_eq!(sock_cache.len(), 1);
+    }
+
+    #[test]
+    fn test_sock_cache_unreliable_update() {
+        /* Check that updates to is_client via unreliables are not touching the field */
+        let mut sock_cache = SockCache::new();
+        let sock_key: SockKey = 1;
+        let now_us = 1;
+        // add a reliable entries
+        sock_cache.add_context(
+            sock_key,
+            SockContext {
+                is_client: true,
+                ..Default::default()
+            },
+            now_us,
+        );
+        // try to override
+        sock_cache.add_context(
+            sock_key,
+            SockContext {
+                unreliable: true,
+                is_client: false,
+                local_ipv4: 5,
+                ..Default::default()
+            },
+            now_us + 1,
+        );
+        assert_eq!(sock_cache.get(&sock_key).unwrap().context.is_client, true); // is not updated
+        assert_eq!(sock_cache.get(&sock_key).unwrap().context.local_ipv4, 5); // is updated
+        assert_eq!(sock_cache.len(), 1);
     }
 }
