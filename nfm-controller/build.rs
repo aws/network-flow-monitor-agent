@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use cargo_metadata::MetadataCommand;
+use shadow_rs::ShadowBuilder;
 use std::path::Path;
 use std::process::Command;
 use which::which;
-use shadow_rs::ShadowBuilder;
 
 fn main() {
     // We skip the eBPF build if running under tarpaulin, which measures code test coverage.
