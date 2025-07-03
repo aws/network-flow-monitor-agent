@@ -5,8 +5,9 @@ use cargo_metadata::MetadataCommand;
 use std::path::Path;
 use std::process::Command;
 use which::which;
+use shadow_rs::ShadowBuilder;
 
-fn main() -> shadow_rs::SdResult<()> {
+fn main() {
     // We skip the eBPF build if running under tarpaulin, which measures code test coverage.
     // tarpaulin is incompatible with `no_std` and BPF's different target architecture.
     let should_build_ebpf = std::env::var("CARGO_CFG_TARPAULIN").is_err();
@@ -17,7 +18,7 @@ fn main() -> shadow_rs::SdResult<()> {
         build_ebpf(release);
     }
 
-    shadow_rs::new()
+    ShadowBuilder::builder().build().unwrap();
 }
 
 fn set_up_toolchain() {
