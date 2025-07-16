@@ -22,6 +22,7 @@ pub struct SockWrapper {
     pub agg_stats: AggSockStats,
     pub is_stale: bool,
     pub is_complete: bool,
+    pub cycles_not_fully_initialized: Option<u8>,
 }
 
 impl SockWrapper {
@@ -32,11 +33,15 @@ impl SockWrapper {
             agg_stats,
             is_stale: false,
             is_complete: false,
+            cycles_not_fully_initialized: Some(0),
         }
     }
 
-    pub fn update_context(&mut self, context: SockContext, now_us: u64) {
-        self.context = context;
+    pub fn update_context(&mut self, new_context: SockContext, now_us: u64) {
+        if !self.context.is_valid() && new_context.is_valid() {
+            self.cycles_not_fully_initialized = None;
+        }
+        self.context = new_context;
         self.context_external = None;
         self.agg_stats.stats.last_touched_us = now_us;
         self.is_stale = false;
@@ -44,12 +49,21 @@ impl SockWrapper {
     }
 
     pub fn update_status(&mut self, staleness_timestamp: u64) {
-        self.is_complete = self.agg_stats.stats.is_closed() && self.context.is_valid();
         self.is_stale = self.agg_stats.stats.last_touched_us <= staleness_timestamp;
+        if self.context.is_valid() {
+            self.cycles_not_fully_initialized = None;
+            self.is_complete = self.agg_stats.stats.is_closed();
+        } else {
+            self.cycles_not_fully_initialized = match self.cycles_not_fully_initialized {
+                Some(cycles) => Some(cycles.saturating_add(1)),
+                None => Some(0),
+            };
+            self.is_complete = false;
+        }
     }
 
     pub fn should_evict(&self) -> bool {
-        self.is_complete || self.is_stale
+        self.is_complete || self.is_stale || self.cycles_not_fully_initialized.unwrap_or(0) > 1
     }
 }
 
@@ -213,24 +227,36 @@ impl SockCache {
                     result.completed += 1;
                 }
                 Entry::Vacant(v) => {
+                    // These counters provide insight into the number of sockets added with no SockContext,
+                    // and the number added with no SockContext while above the intended cache capacity.
                     if num_socks < self.max_sock_entries {
-                        // Leave values on the incoming structure unchanged, as the whole amount is a delta.
-                        let mut wrapper = SockWrapper::new(
-                            SockContext::default(),
-                            AggSockStats {
-                                stats: incoming.stats,
-                                cpus: incoming.cpus.clone(),
-                            },
-                        );
-                        wrapper.update_status(staleness_timestamp);
-                        v.insert(wrapper);
-
                         result.partial += 1;
                     } else {
                         result.failed += 1;
                     }
+
+                    // Leave values on the incoming structure unchanged, as the whole amount is a delta.
+                    let mut wrapper = SockWrapper::new(
+                        SockContext::default(),
+                        AggSockStats {
+                            stats: incoming.stats,
+                            cpus: incoming.cpus.clone(),
+                        },
+                    );
+                    wrapper.update_status(staleness_timestamp);
+                    v.insert(wrapper);
                 }
             };
+        }
+
+        // Update the status of sockets not represented in this round of stats.
+        for (sock_key, wrapper) in self.cache.iter_mut() {
+            if !incoming_stats.contains_key(sock_key) {
+                wrapper.is_stale = wrapper.agg_stats.stats.last_touched_us <= staleness_timestamp;
+                if let Some(cycles) = wrapper.cycles_not_fully_initialized {
+                    wrapper.cycles_not_fully_initialized = Some(cycles.saturating_add(1));
+                }
+            }
         }
 
         result
@@ -258,7 +284,7 @@ impl SockCache {
 
 #[cfg(test)]
 mod test {
-    use crate::events::{AggSockStats, SockCache, SockOperationResult};
+    use crate::events::{AggSockStats, SockCache, SockOperationResult, SockWrapper};
     use nfm_common::network::{SockContext, SockKey, SockStateFlags, SockStats, AF_INET, AF_INET6};
 
     use hashbrown::HashMap;
@@ -937,5 +963,360 @@ mod test {
         assert_eq!(sock_cache.get_last_touched(&sock_key_invalid), 0);
         assert_eq!(sock_cache.get_last_touched(&sock_key1), now_us);
         assert_eq!(sock_cache.get_last_touched(&sock_key2), now_us + 26);
+    }
+
+    #[test]
+    fn test_sock_wrapper_should_evict() {
+        // Test case 1: Socket is complete (closed).
+        let mut wrapper = SockWrapper::new(
+            SockContext {
+                address_family: AF_INET,
+                ..Default::default()
+            },
+            AggSockStats::default(),
+        );
+        wrapper.is_complete = true;
+        assert!(wrapper.should_evict());
+
+        // Test case 2: Socket is stale.
+        let mut wrapper = SockWrapper::new(SockContext::default(), AggSockStats::default());
+        wrapper.is_stale = true;
+        assert!(wrapper.should_evict());
+
+        // Test case 3: Socket has been partially initialized for more than one cycle.
+        let mut wrapper = SockWrapper::new(SockContext::default(), AggSockStats::default());
+        wrapper.cycles_not_fully_initialized = Some(2);
+        assert!(wrapper.should_evict());
+
+        // Test case 4: Socket has been partially initialized for exactly one cycle.
+        let mut wrapper = SockWrapper::new(SockContext::default(), AggSockStats::default());
+        wrapper.cycles_not_fully_initialized = Some(1);
+        assert!(!wrapper.should_evict());
+
+        // Test case 5: Socket is fully initialized (cycles_not_fully_initialized is None).
+        let mut wrapper = SockWrapper::new(SockContext::default(), AggSockStats::default());
+        wrapper.cycles_not_fully_initialized = None;
+        assert!(!wrapper.should_evict());
+    }
+
+    #[test]
+    fn test_sock_wrapper_update_status() {
+        let now_us = 100;
+        let staleness_ts = 50;
+
+        // Test case 1: Valid context, not closed.
+        let mut wrapper = SockWrapper::new(
+            SockContext {
+                address_family: AF_INET,
+                ..Default::default()
+            },
+            AggSockStats {
+                stats: SockStats {
+                    last_touched_us: now_us,
+                    ..Default::default()
+                },
+                cpus: vec![],
+            },
+        );
+        wrapper.cycles_not_fully_initialized = Some(1);
+        wrapper.update_status(staleness_ts);
+        assert!(!wrapper.is_stale);
+        assert!(!wrapper.is_complete);
+        assert_eq!(wrapper.cycles_not_fully_initialized, None);
+
+        // Test case 2: Valid context, closed.
+        let mut wrapper = SockWrapper::new(
+            SockContext {
+                address_family: AF_INET,
+                ..Default::default()
+            },
+            AggSockStats {
+                stats: SockStats {
+                    last_touched_us: now_us,
+                    state_flags: SockStateFlags::CLOSED,
+                    ..Default::default()
+                },
+                cpus: vec![],
+            },
+        );
+        wrapper.update_status(staleness_ts);
+        assert!(!wrapper.is_stale);
+        assert!(wrapper.is_complete);
+        assert_eq!(wrapper.cycles_not_fully_initialized, None);
+
+        // Test case 3: Invalid context, not stale.
+        let mut wrapper = SockWrapper::new(
+            SockContext::default(),
+            AggSockStats {
+                stats: SockStats {
+                    last_touched_us: now_us,
+                    ..Default::default()
+                },
+                cpus: vec![],
+            },
+        );
+        wrapper.update_status(staleness_ts);
+        assert!(!wrapper.is_stale);
+        assert!(!wrapper.is_complete);
+        assert_eq!(wrapper.cycles_not_fully_initialized, Some(1));
+
+        // Test case 4: Invalid context, stale.
+        let mut wrapper = SockWrapper::new(
+            SockContext::default(),
+            AggSockStats {
+                stats: SockStats {
+                    last_touched_us: staleness_ts,
+                    ..Default::default()
+                },
+                cpus: vec![],
+            },
+        );
+        wrapper.update_status(staleness_ts);
+        assert!(wrapper.is_stale);
+        assert!(!wrapper.is_complete);
+        assert_eq!(wrapper.cycles_not_fully_initialized, Some(1));
+
+        // Test case 5: Invalid context, increment cycles.
+        let mut wrapper = SockWrapper::new(SockContext::default(), AggSockStats::default());
+        wrapper.cycles_not_fully_initialized = Some(1);
+        wrapper.update_status(staleness_ts);
+        assert_eq!(wrapper.cycles_not_fully_initialized, Some(2));
+    }
+
+    #[test]
+    fn test_sock_wrapper_update_context() {
+        let now_us = 100;
+
+        // Test case 1: Update from invalid to valid context.
+        let mut wrapper = SockWrapper::new(SockContext::default(), AggSockStats::default());
+        wrapper.cycles_not_fully_initialized = Some(1);
+        wrapper.update_context(
+            SockContext {
+                address_family: AF_INET,
+                ..Default::default()
+            },
+            now_us,
+        );
+        assert_eq!(wrapper.cycles_not_fully_initialized, None);
+        assert_eq!(wrapper.agg_stats.stats.last_touched_us, now_us);
+
+        // Test case 2: Update from valid to valid context.
+        let mut wrapper = SockWrapper::new(
+            SockContext {
+                address_family: AF_INET,
+                ..Default::default()
+            },
+            AggSockStats::default(),
+        );
+        wrapper.cycles_not_fully_initialized = None;
+        wrapper.update_context(
+            SockContext {
+                address_family: AF_INET6,
+                ..Default::default()
+            },
+            now_us,
+        );
+        assert_eq!(wrapper.cycles_not_fully_initialized, None);
+
+        // Test case 3: Update from valid to invalid context.
+        let mut wrapper = SockWrapper::new(
+            SockContext {
+                address_family: AF_INET,
+                ..Default::default()
+            },
+            AggSockStats::default(),
+        );
+        wrapper.cycles_not_fully_initialized = None;
+        wrapper.update_context(SockContext::default(), now_us);
+        assert_eq!(wrapper.cycles_not_fully_initialized, None);
+    }
+
+    #[test]
+    fn test_sock_cache_update_stats_missing_entries() {
+        let now_us = 100;
+        let staleness_ts = 50;
+        let mut sock_cache = SockCache::new();
+
+        // Add sockets to the cache with a valid context.
+        for sock_key in vec![1, 3] {
+            let context = SockContext {
+                address_family: AF_INET6,
+                ..Default::default()
+            };
+            assert!(context.is_valid());
+            sock_cache.add_context(sock_key, context, now_us);
+        }
+
+        // Add sockets to the cache with an invalid context.
+        for sock_key in vec![2, 4] {
+            sock_cache.add_context(sock_key, SockContext::default(), now_us);
+        }
+
+        // Apply a stats update for one valid and one invalid socket.
+        let mut sock_stream: HashMap<SockKey, AggSockStats> = HashMap::new();
+        sock_stream.insert(
+            1,
+            AggSockStats {
+                stats: SockStats {
+                    last_touched_us: now_us + 10,
+                    ..Default::default()
+                },
+                cpus: vec![0],
+            },
+        );
+        sock_stream.insert(
+            2,
+            AggSockStats {
+                stats: SockStats {
+                    last_touched_us: now_us + 10,
+                    ..Default::default()
+                },
+                cpus: vec![0],
+            },
+        );
+        sock_cache.update_stats_and_get_deltas(&mut sock_stream, staleness_ts);
+
+        // Confirm that only socket 1 is now fully initialized, sockets 2 thru 4 have their cycles_not_fully_initialized incremented.
+        assert_eq!(
+            sock_cache.get(&1).unwrap().cycles_not_fully_initialized,
+            None
+        );
+        assert_eq!(
+            sock_cache.get(&2).unwrap().cycles_not_fully_initialized,
+            Some(1)
+        );
+        assert_eq!(
+            sock_cache.get(&3).unwrap().cycles_not_fully_initialized,
+            Some(1)
+        );
+        assert_eq!(
+            sock_cache.get(&4).unwrap().cycles_not_fully_initialized,
+            Some(1)
+        );
+
+        // Apply another stats update.
+        sock_cache.update_stats_and_get_deltas(&mut sock_stream, staleness_ts);
+
+        // Confirm that sockets 2 thru 4 have their cycles_not_fully_initialized incremented again.
+        assert_eq!(
+            sock_cache.get(&1).unwrap().cycles_not_fully_initialized,
+            None
+        );
+        assert_eq!(
+            sock_cache.get(&2).unwrap().cycles_not_fully_initialized,
+            Some(2)
+        );
+        assert_eq!(
+            sock_cache.get(&3).unwrap().cycles_not_fully_initialized,
+            Some(2)
+        );
+        assert_eq!(
+            sock_cache.get(&4).unwrap().cycles_not_fully_initialized,
+            Some(2)
+        );
+
+        // Perform eviction and check that sockets with cycles > 1 are evicted.
+        let (evicted, _) = sock_cache.perform_eviction();
+        assert_eq!(evicted.len(), 3);
+        assert_eq!(sock_cache.len(), 1);
+        assert_eq!(
+            sock_cache.get(&1).unwrap().cycles_not_fully_initialized,
+            None
+        );
+    }
+
+    #[test]
+    fn test_sock_cache_eviction_with_partially_initialized() {
+        let now_us = 100;
+        let staleness_ts = 50;
+        let mut sock_cache = SockCache::new();
+
+        // Add sockets with different states.
+        // Socket 1: Valid context, not closed.
+        sock_cache.add_context(
+            1,
+            SockContext {
+                address_family: AF_INET,
+                ..Default::default()
+            },
+            now_us,
+        );
+
+        // Socket 2: Valid context, closed.
+        let mut sock2 = SockWrapper::new(
+            SockContext {
+                address_family: AF_INET,
+                ..Default::default()
+            },
+            AggSockStats {
+                stats: SockStats {
+                    last_touched_us: now_us,
+                    state_flags: SockStateFlags::CLOSED,
+                    ..Default::default()
+                },
+                cpus: vec![],
+            },
+        );
+        sock2.update_status(staleness_ts);
+        sock_cache.cache.insert(2, sock2);
+
+        // Socket 3: Invalid context, cycles = 1.
+        let mut sock3 = SockWrapper::new(
+            SockContext::default(),
+            AggSockStats {
+                stats: SockStats {
+                    last_touched_us: now_us,
+                    ..Default::default()
+                },
+                cpus: vec![],
+            },
+        );
+        sock3.update_status(staleness_ts);
+        sock_cache.cache.insert(3, sock3);
+
+        // Socket 4: Invalid context, cycles = 2.
+        let mut sock4 = SockWrapper::new(
+            SockContext::default(),
+            AggSockStats {
+                stats: SockStats {
+                    last_touched_us: now_us,
+                    ..Default::default()
+                },
+                cpus: vec![],
+            },
+        );
+        sock4.cycles_not_fully_initialized = Some(2);
+        sock_cache.cache.insert(4, sock4);
+
+        // Socket 5: Stale.
+        let mut sock5 = SockWrapper::new(
+            SockContext::default(),
+            AggSockStats {
+                stats: SockStats {
+                    last_touched_us: staleness_ts - 10,
+                    ..Default::default()
+                },
+                cpus: vec![],
+            },
+        );
+        sock5.update_status(staleness_ts);
+        sock_cache.cache.insert(5, sock5);
+
+        // Perform eviction.
+        let (evicted, num_stale) = sock_cache.perform_eviction();
+
+        // Check results.
+        assert_eq!(evicted.len(), 3); // Sockets 2, 4, and 5 should be evicted.
+        assert_eq!(num_stale, 1); // Only socket 5 is stale.
+        assert!(evicted.contains_key(&2)); // Eviction reason: Closed socket.
+        assert!(evicted.contains_key(&4)); // Eviction reason: Partially initialized for 2 cycles.
+        assert!(evicted.contains_key(&5)); // Eviction reason: Stale socket.
+        assert!(!evicted.contains_key(&1)); // Retention reason: Valid, not closed.
+        assert!(!evicted.contains_key(&3)); // Retention reason: Partially initialized for only 1 cycle.
+
+        // Check remaining sockets.
+        assert_eq!(sock_cache.len(), 2);
+        assert!(sock_cache.get(&1).is_some());
+        assert!(sock_cache.get(&3).is_some());
     }
 }
