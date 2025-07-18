@@ -6,11 +6,12 @@ use crate::events::nat_resolver::NatResolver;
 use crate::events::network_event::{AggregateResults, FlowProperties, NetworkStats};
 use crate::events::{AggSockStats, SockCache, SockOperationResult, SockWrapper};
 use crate::reports::{CountersOverall, ProcessCounters};
+use crate::utils::cpu::get_total_cpu_core_count;
 use crate::utils::Clock;
 use nfm_common::constants::{
-    AGG_FLOWS_MAX_ENTRIES, EBPF_PROGRAM_NAME, MAX_ENTRIES_SK_PROPS_HI, MAX_ENTRIES_SK_PROPS_LO,
-    MAX_ENTRIES_SK_STATS_HI, MAX_ENTRIES_SK_STATS_LO, NFM_CONTROL_MAP_NAME, NFM_COUNTERS_MAP_NAME,
-    NFM_SK_PROPS_MAP_NAME, NFM_SK_STATS_MAP_NAME, SK_STATS_TO_PROPS_RATIO,
+    AGG_FLOWS_MAX_ENTRIES, EBPF_PROGRAM_NAME, EMPIRICAL_MEMORY_DIVISOR, MAX_ENTRIES_SK_STATS_HI,
+    MAX_ENTRIES_SK_STATS_LO, NFM_CONTROL_MAP_NAME, NFM_COUNTERS_MAP_NAME, NFM_SK_PROPS_MAP_NAME,
+    NFM_SK_STATS_MAP_NAME, SK_STATS_TO_PROPS_MIN_RATIO, SK_STATS_TO_PROPS_RATIO_CPU_COUNT_DIVISOR,
 };
 use nfm_common::network::{
     ControlData, CpuSockKey, EventCounters, SingletonKey, SockContext, SockKey, SockStats,
@@ -27,6 +28,7 @@ use aya::{
 use aya_obj::generated::BPF_ANY;
 use hashbrown::{hash_map::Entry, HashMap, HashSet};
 use log::info;
+use nfm_common::SK_STATS_TO_PROPS_MAX_RATIO;
 use procfs::{Current, Meminfo};
 use std::cmp::min;
 use std::fs::File;
@@ -58,8 +60,8 @@ fn instantiate_ebpf_object(
 ) -> Result<Ebpf> {
     // Embed the eBPF raw bytes at compile time, and load them into the kernel at runtime.
     let ebpf_bytes = include_bytes_aligned!(env!("BPF_OBJECT_PATH"));
-    info!(sock_props_max_entries, sock_stats_max_entries; "Loading eBPF program");
-    EbpfLoader::new()
+    info!("Loading eBPF program");
+    let result = EbpfLoader::new()
         .verifier_log_level(VerifierLogLevel::VERBOSE | VerifierLogLevel::STATS)
         .btf(Btf::from_sys_fs().ok().as_ref())
         .set_max_entries(
@@ -71,20 +73,29 @@ fn instantiate_ebpf_object(
             sock_stats_max_entries.try_into().unwrap(),
         )
         .load(ebpf_bytes)
-        .context("Failed to parse eBPF program")
+        .context("Failed to parse eBPF program");
+    info!("Succesfully loaded eBPF program");
+    result
+}
+
+// At worst a socket can consume up to cpu count of entries in sk_stats.
+// Assuming on average each sock will use half cpu count of entries.
+pub fn get_stats_to_props_ratio() -> u64 {
+    ((get_total_cpu_core_count() / SK_STATS_TO_PROPS_RATIO_CPU_COUNT_DIVISOR) as u64)
+        .clamp(SK_STATS_TO_PROPS_MIN_RATIO, SK_STATS_TO_PROPS_MAX_RATIO)
 }
 
 pub fn map_max_entries(mem_total_bytes: u64) -> (u64, u64) {
     // We want our two BPF maps to consume less than a certain percentage of total memory, and the
     // stats map to be a certain factor larger than the props map.
 
-    // This divisor was chosen arbitrarily based on experimentation.
-    let divisor: u64 = 5_000_000_000;
-    let sock_props_max_entries = (mem_total_bytes / divisor * MAX_ENTRIES_SK_PROPS_LO)
-        .clamp(MAX_ENTRIES_SK_PROPS_LO, MAX_ENTRIES_SK_PROPS_HI);
-    let sock_stats_max_entries = (sock_props_max_entries * SK_STATS_TO_PROPS_RATIO)
+    let sock_stats_max_entries = ((mem_total_bytes / EMPIRICAL_MEMORY_DIVISOR)
+        * MAX_ENTRIES_SK_STATS_LO)
         .clamp(MAX_ENTRIES_SK_STATS_LO, MAX_ENTRIES_SK_STATS_HI);
 
+    let sock_props_max_entries = sock_stats_max_entries / get_stats_to_props_ratio();
+
+    info!(sock_props_max_entries, sock_stats_max_entries; "Calculated sock props and stats map sizes");
     (sock_props_max_entries, sock_stats_max_entries)
 }
 
@@ -103,7 +114,7 @@ impl<C: Clock> EventProvider for EventProviderEbpf<C> {
         info!("Aggregating across sockets");
 
         // Apply adaptive sampling if we're receiving events faster than we can process.
-        if self.ebpf_counters().map_insertion_errors > 0 {
+        if self.ebpf_counters().get_insertion_errors_sum() > 0 {
             self.increase_sampling_interval();
         } else {
             self.decrease_sampling_interval();
@@ -457,7 +468,7 @@ impl SocketQueries {
 #[cfg(test)]
 mod test {
     use crate::events::event_provider_ebpf::{
-        calculate_ebpf_memory_usage, map_max_entries, SocketQueries,
+        calculate_ebpf_memory_usage, get_stats_to_props_ratio, map_max_entries, SocketQueries,
     };
     use crate::events::network_event::{AggregateResults, FlowProperties, InetProtocol};
     use crate::events::{AggSockStats, SockCache, SockOperationResult};
@@ -775,7 +786,10 @@ mod test {
     fn test_map_max_entries_low_mem() {
         let mem_total_bytes: u64 = 1;
         let (max_sk_props, max_sk_stats) = map_max_entries(mem_total_bytes);
-        assert_eq!(max_sk_props, MAX_ENTRIES_SK_PROPS_LO);
+        assert_eq!(
+            max_sk_props,
+            MAX_ENTRIES_SK_STATS_LO / get_stats_to_props_ratio()
+        );
         assert_eq!(max_sk_stats, MAX_ENTRIES_SK_STATS_LO);
     }
 
@@ -783,7 +797,10 @@ mod test {
     fn test_map_max_entries_lowish_mem() {
         let mem_total_bytes: u64 = 400_000_000;
         let (max_sk_props, max_sk_stats) = map_max_entries(mem_total_bytes);
-        assert_eq!(max_sk_props, MAX_ENTRIES_SK_PROPS_LO);
+        assert_eq!(
+            max_sk_props,
+            MAX_ENTRIES_SK_STATS_LO / get_stats_to_props_ratio()
+        );
         assert_eq!(max_sk_stats, MAX_ENTRIES_SK_STATS_LO);
     }
 
@@ -791,7 +808,10 @@ mod test {
     fn test_map_max_entries_medium_mem() {
         let mem_total_bytes: u64 = 1_000_000_000;
         let (max_sk_props, max_sk_stats) = map_max_entries(mem_total_bytes);
-        assert_eq!(max_sk_props, MAX_ENTRIES_SK_PROPS_LO);
+        assert_eq!(
+            max_sk_props,
+            MAX_ENTRIES_SK_STATS_LO / get_stats_to_props_ratio()
+        );
         assert_eq!(max_sk_stats, MAX_ENTRIES_SK_STATS_LO);
     }
 
@@ -810,7 +830,10 @@ mod test {
     fn test_map_max_entries_highest_mem() {
         let mem_total_bytes: u64 = u64::MAX;
         let (max_sk_props, max_sk_stats) = map_max_entries(mem_total_bytes);
-        assert_eq!(max_sk_props, MAX_ENTRIES_SK_PROPS_HI);
+        assert_eq!(
+            max_sk_props,
+            MAX_ENTRIES_SK_STATS_HI / get_stats_to_props_ratio()
+        );
         assert_eq!(max_sk_stats, MAX_ENTRIES_SK_STATS_HI);
     }
 
@@ -888,6 +911,6 @@ mod test {
     fn test_calculate_ebpf_memory_usage_max() {
         // Will deliberately break at sock struct changes and provide a manual review step
         let result = calculate_ebpf_memory_usage(MAX_ENTRIES_SK_PROPS_HI, MAX_ENTRIES_SK_STATS_HI);
-        assert!(result == 8080);
+        assert_eq!(result, 14600);
     }
 }

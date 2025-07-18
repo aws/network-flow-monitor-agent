@@ -9,7 +9,9 @@ pub type SockOpsResult = Result<(), SockOpsResultCode>;
 pub enum SockOpsResultCode {
     OperationUnknown,
     ContextInvalid,
-    MapInsertionError,
+    MapReadError,
+    PropsMapInsertionError,
+    StatsMapInsertionError,
     SetCbFlagsError,
     RttInvalid,
     SampleDiscard,
@@ -142,13 +144,9 @@ impl<'a> TcpSockOpsHandler<'a> {
             BPF_NOEXIST
         );
         if res.is_err() {
-            self.counters.map_insertion_errors += 1;
-            return Err(SockOpsResultCode::MapInsertionError);
+            self.counters.props_insertion_errors += 1;
+            return Err(SockOpsResultCode::PropsMapInsertionError);
         }
-
-        // Register to receive events only for successfully recorded sockets, meaning after success
-        // of the above map insertion.
-        self.configure_flags()?;
 
         match self.get_or_add_sock_stats() {
             Ok(stats_raw) => unsafe {
@@ -163,6 +161,9 @@ impl<'a> TcpSockOpsHandler<'a> {
                         .state_flags
                         .insert(SockStateFlags::ENTERED_ESTABLISH);
                 }
+                // Register to receive events only for successfully recorded sockets, meaning after success
+                // of the above map insertions.
+                self.configure_flags()?;
                 Ok(())
             },
             Err(e) => Err(e),
@@ -341,13 +342,13 @@ impl<'a> TcpSockOpsHandler<'a> {
                     Ok(_) => match bpf_map_get_ptr_mut!(self, NFM_SK_STATS, &self.composite_key) {
                         Some(stats) => Ok(stats),
                         None => {
-                            self.counters.map_insertion_errors += 1;
-                            Err(SockOpsResultCode::MapInsertionError)
+                            self.counters.stats_read_errors += 1;
+                            Err(SockOpsResultCode::MapReadError)
                         }
                     },
                     Err(_) => {
-                        self.counters.map_insertion_errors += 1;
-                        Err(SockOpsResultCode::MapInsertionError)
+                        self.counters.stats_insertion_errors += 1;
+                        Err(SockOpsResultCode::StatsMapInsertionError)
                     }
                 }
             }
@@ -1048,7 +1049,7 @@ mod test {
                 BPF_SOCK_OPS_TCP_CONNECT_CB,
                 &mut mock_ebpf_maps,
                 mock_ktime_us,
-                Err(SockOpsResultCode::MapInsertionError),
+                Err(SockOpsResultCode::PropsMapInsertionError),
             );
 
             cookie += 3;
@@ -1065,7 +1066,7 @@ mod test {
             mock_ebpf_maps.counters().active_connect_events,
             (MAX_ENTRIES_SK_PROPS_HI + 10).try_into().unwrap()
         );
-        assert_eq!(mock_ebpf_maps.counters().map_insertion_errors, 10);
+        assert_eq!(mock_ebpf_maps.counters().props_insertion_errors, 10);
     }
 
     #[test]
@@ -1097,7 +1098,7 @@ mod test {
                 [BPF_TCP_ESTABLISHED, BPF_TCP_CLOSE],
                 &mut mock_ebpf_maps,
                 mock_ktime_us,
-                Err(SockOpsResultCode::MapInsertionError),
+                Err(SockOpsResultCode::StatsMapInsertionError),
             );
 
             cookie += 3;
@@ -1114,7 +1115,7 @@ mod test {
             mock_ebpf_maps.counters().state_change_events,
             (MAX_ENTRIES_SK_STATS_HI + 10).try_into().unwrap()
         );
-        assert_eq!(mock_ebpf_maps.counters().map_insertion_errors, 10);
+        assert_eq!(mock_ebpf_maps.counters().stats_insertion_errors, 10);
     }
 
     #[test]
