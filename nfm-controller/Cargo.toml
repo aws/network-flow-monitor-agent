@@ -31,6 +31,7 @@ overflow-checks = true
 
 [dependencies]
 aws-config = { version = "1.5", features = ["rustls"] }
+rustls = {version = "0.23.29", default-features = false}
 aws-credential-types = "1.2"
 aws-sign-v4 = "0.3"
 nfm-common = { version = "0.1.0", path = "../nfm-common", features = ["user"] }
