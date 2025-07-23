@@ -16,7 +16,7 @@ VALUES_FILENAME=values.yaml
 PROD_CONTAINER_REGISTRY="602401143452.dkr.ecr.us-west-2.amazonaws.com"
 export CONTAINER_REGISTRY=${CONTAINER_REGISTRY:-$PROD_CONTAINER_REGISTRY}
 
-export LATEST_KNOWN_IMAGE_TAG="v1.0.2-eksbuild.4"
+export LATEST_KNOWN_IMAGE_TAG="v1.0.3-eksbuild.1"
 export IMAGE_TAG=${IMAGE_TAG:-$LATEST_KNOWN_IMAGE_TAG}
 
 # Will install 'Amazon CloudWatch Network Flow Monitor Agent' Manifest Files to an existing K8s Cluster
