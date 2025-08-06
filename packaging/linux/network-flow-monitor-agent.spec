@@ -3,6 +3,7 @@ Summary:    Network Flow Monitor Agent
 Release:    1
 Version:    %AGENT_VERSION
 Requires:   bash
+Requires:   (libcap2-bin or libcap-progs or libcap)
 
 Group:      Amazon/Tools
 License:    Apache License, Version 2.0
