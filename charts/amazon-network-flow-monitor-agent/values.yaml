@@ -1,6 +1,6 @@
 image:
   override: '' # if defined, this value is used as the canonical image name ("{image_repo}{image_name}:{tag}")
-  tag: v1.0.2-eksbuild.4  # this is the default image tag. It might be overwritten at runtime
+  tag: v1.0.3-eksbuild.1  # this is the default image tag. It might be overwritten at runtime
   containerRegistry: '' # this gets overriden at runtime with the correct Docker Image Registry
   name: aws-network-sonar-agent # this determines the ecr folder to look for in the target ecr registry
 

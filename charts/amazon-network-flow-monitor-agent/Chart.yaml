@@ -6,13 +6,13 @@ type: application
 
 # This version needs to increase every time the chart and its templates
 # change. This should follow SemVer.
-version: 1.0.2
+version: 1.0.3
 
 # Keep this in sync with Amazon CloudWatch Network Flow Monitor Agent package version
 # used when building the its Docker image
-appVersion: "0.1"
+appVersion: "0.2"
 
-kubeVersion: ">=1.25.0-0"
+kubeVersion: ">=1.27.0-0"
 keywords:
   - aws
   - network

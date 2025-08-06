@@ -1,7 +1,7 @@
 [package]
 name = "nfm-controller"
 description = "network-flow-monitor-agent collects networking performance statistics from the local machine"
-version = "0.1.4"
+version = "0.2.0"
 edition = "2021"
 build = "build.rs"
 license = "Apache-2.0"
@@ -31,6 +31,7 @@ overflow-checks = true
 
 [dependencies]
 aws-config = { version = "1.5", features = ["rustls"] }
+rustls = {version = "0.23.29", default-features = false}
 aws-credential-types = "1.2"
 aws-sign-v4 = "0.3"
 nfm-common = { version = "0.1.0", path = "../nfm-common", features = ["user"] }
@@ -74,7 +75,7 @@ reqwest = { version = "0.12", features = [
 ], default-features = false }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-shadow-rs = "0.36"
+shadow-rs = "1.1.0"
 signal-hook = "0.3"
 structured-logger = "1.0"
 sys-info = "0.9"
@@ -90,6 +91,6 @@ url = "2.5"
 
 [build-dependencies]
 cargo_metadata = "0.19"
-shadow-rs = "0.36"
+shadow-rs = "1.1.0"
 which = { version = "6.0.0", default-features = false }
 

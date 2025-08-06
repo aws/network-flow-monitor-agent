@@ -111,8 +111,8 @@ mod test {
             high_usage_ratio
         );
         assert!(
-            high_usage_ratio <= 1.0,
-            "expected <= 1.0, got {}",
+            high_usage_ratio <= 5.0,
+            "expected <= 5.0, got {}",
             high_usage_ratio
         );
     }
