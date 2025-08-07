@@ -103,7 +103,7 @@ impl<C: Clock> EventProvider for EventProviderEbpf<C> {
         info!("Aggregating across sockets");
 
         // Apply adaptive sampling if we're receiving events faster than we can process.
-        if self.ebpf_counters().map_insertion_errors > 0 {
+        if self.ebpf_counters().get_insertion_errors_sum() > 0 {
             self.increase_sampling_interval();
         } else {
             self.decrease_sampling_interval();
@@ -888,6 +888,6 @@ mod test {
     fn test_calculate_ebpf_memory_usage_max() {
         // Will deliberately break at sock struct changes and provide a manual review step
         let result = calculate_ebpf_memory_usage(MAX_ENTRIES_SK_PROPS_HI, MAX_ENTRIES_SK_STATS_HI);
-        assert!(result == 8080);
+        assert_eq!(result, 8080);
     }
 }

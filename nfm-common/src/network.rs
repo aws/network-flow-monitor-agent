@@ -44,7 +44,9 @@ pub struct EventCounters {
 
     // Error counters.
     pub sockets_invalid: u32,
-    pub map_insertion_errors: u32,
+    pub props_insertion_errors: u64,
+    pub stats_insertion_errors: u64,
+    pub stats_read_errors: u32,
     pub rtts_invalid: u32,
     pub set_flags_errors: u32,
     pub other_errors: u32,
@@ -241,14 +243,6 @@ impl SockContext {
         }
     }
 
-    pub fn service_port(&self) -> u16 {
-        if self.is_client {
-            self.remote_port
-        } else {
-            self.local_port
-        }
-    }
-
     pub fn ipv6_to_bytes(parts: [u32; 4]) -> Ipv6Bytes {
         let mut bytes: Ipv6Bytes = [0; 16];
         for (i, part) in parts.iter().enumerate() {
@@ -288,9 +282,13 @@ impl EventCounters {
         self.socket_events = self.socket_events.wrapping_add(other.socket_events);
 
         self.sockets_invalid = self.sockets_invalid.wrapping_add(other.sockets_invalid);
-        self.map_insertion_errors = self
-            .map_insertion_errors
-            .wrapping_add(other.map_insertion_errors);
+        self.props_insertion_errors = self
+            .props_insertion_errors
+            .wrapping_add(other.props_insertion_errors);
+        self.stats_insertion_errors = self
+            .stats_insertion_errors
+            .wrapping_add(other.stats_insertion_errors);
+        self.stats_read_errors = self.stats_read_errors.wrapping_add(other.stats_read_errors);
         self.rtts_invalid = self.rtts_invalid.wrapping_add(other.rtts_invalid);
         self.set_flags_errors = self.set_flags_errors.wrapping_add(other.set_flags_errors);
         self.other_errors = self.other_errors.wrapping_add(other.other_errors);
@@ -318,13 +316,23 @@ impl EventCounters {
             socket_events: self.socket_events.wrapping_sub(rhs.socket_events),
 
             sockets_invalid: self.sockets_invalid.wrapping_sub(rhs.sockets_invalid),
-            map_insertion_errors: self
-                .map_insertion_errors
-                .wrapping_sub(rhs.map_insertion_errors),
+            props_insertion_errors: self
+                .props_insertion_errors
+                .wrapping_sub(rhs.props_insertion_errors),
+            stats_insertion_errors: self
+                .stats_insertion_errors
+                .wrapping_sub(rhs.stats_insertion_errors),
+            stats_read_errors: self.stats_read_errors.wrapping_sub(rhs.stats_read_errors),
             rtts_invalid: self.rtts_invalid.wrapping_sub(rhs.rtts_invalid),
             set_flags_errors: self.set_flags_errors.wrapping_sub(rhs.set_flags_errors),
             other_errors: self.other_errors.wrapping_sub(rhs.other_errors),
         }
+    }
+
+    // Returns the sum of insertion errors occurring across sock props and stats maps within ebpf program.
+    pub fn get_insertion_errors_sum(&self) -> u64 {
+        self.props_insertion_errors
+            .wrapping_add(self.stats_insertion_errors)
     }
 }
 
@@ -547,7 +555,9 @@ mod tests {
             socket_events: u32::MAX - 9,
 
             sockets_invalid: u32::MAX - 10,
-            map_insertion_errors: u32::MAX - 18,
+            props_insertion_errors: u64::MAX - 18,
+            stats_insertion_errors: u64::MAX - 19,
+            stats_read_errors: u32::MAX - 20,
             rtts_invalid: u32::MAX - 13,
             set_flags_errors: u32::MAX - 14,
             other_errors: u32::MAX - 15,
@@ -564,7 +574,9 @@ mod tests {
             socket_events: 18,
 
             sockets_invalid: 19,
-            map_insertion_errors: 27,
+            props_insertion_errors: 27,
+            stats_insertion_errors: 28,
+            stats_read_errors: 29,
             rtts_invalid: 22,
             set_flags_errors: 23,
             other_errors: 24,
@@ -732,5 +744,16 @@ mod tests {
         };
         let actual_diff_wrapped = stats_b.subtract(&stats_a);
         assert_eq!(actual_diff_wrapped, expected_diff_wrapped);
+    }
+
+    #[test]
+    fn test_event_counters_insertion_sum() {
+        let counters = EventCounters {
+            props_insertion_errors: 1,
+            stats_insertion_errors: 4,
+            stats_read_errors: 3,
+            ..Default::default()
+        };
+        assert_eq!(counters.get_insertion_errors_sum(), 5);
     }
 }
