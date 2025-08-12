@@ -1,6 +1,6 @@
 Name:       network-flow-monitor-agent
 Summary:    Network Flow Monitor Agent
-Release:    1
+Release:    2
 Version:    %AGENT_VERSION
 Requires:   bash
 Requires:   (libcap2-bin or libcap-progs or libcap)
