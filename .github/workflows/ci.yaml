@@ -51,3 +51,10 @@ jobs:
         run: |
           docker build -t integration-test -f test-data/Dockerfile.test .
           docker run --privileged -t integration-test
+      - name: Upload release binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: network-flow-monitor-agent
+          path:  ./target/release/network-flow-monitor-agent
+          retention-days: 3
+          if-no-files-found: error
