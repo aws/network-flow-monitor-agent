@@ -46,6 +46,9 @@ pub const BPF_SOCK_OPS_STATE_CB: u32 = 6;
 pub const BPF_SOCK_OPS_TCP_CONNECT_CB: u32 = 7;
 pub const BPF_SOCK_OPS_PARSE_HDR_OPT_CB: u32 = 8;
 pub const BPF_SOCK_OPS_HDR_OPT_LEN_CB: u32 = 9;
+pub const BPF_SOCK_OPS_TIMEOUT_INIT: u32 = 10;
+pub const BPF_SOCK_OPS_RWND_INIT: u32 = 11;
+pub const BPF_SOCK_OPS_NEEDS_ECN: u32 = 12;
 
 pub const BPF_TCP_CLOSE: u32 = 1;
 pub const BPF_TCP_CLOSE_WAIT: u32 = 2;
