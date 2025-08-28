@@ -13,14 +13,13 @@ use nfm_common::constants::{
     NFM_SK_PROPS_MAP_NAME, NFM_SK_STATS_MAP_NAME, SK_STATS_TO_PROPS_RATIO,
 };
 use nfm_common::network::{
-    ControlData, CpuSockKey, EventCounters, SingletonKey, SockContext, SockKey, SockStats,
-    SINGLETON_KEY,
+    ControlData, CpuSockKey, EventCounters, SockContext, SockKey, SockStats,
 };
 
 use anyhow::{Context, Result};
 use aya::{
     include_bytes_aligned,
-    maps::{HashMap as SharedHashMap, MapData, MapError, PerCpuHashMap},
+    maps::{Array as SharedArray, HashMap as SharedHashMap, MapData, MapError, PerCpuArray},
     programs::{CgroupAttachMode, SockOps},
     Btf, Ebpf, EbpfLoader, VerifierLogLevel,
 };
@@ -315,9 +314,11 @@ impl<C: Clock> EventProviderEbpf<C> {
     }
 
     fn send_control_data(&mut self) {
-        SharedHashMap::try_from(self.ebpf_handle.map_mut(NFM_CONTROL_MAP_NAME).unwrap())
-            .unwrap_or_else(|_| panic!("Failed to load BPF map {NFM_CONTROL_MAP_NAME}"))
-            .insert(SINGLETON_KEY, self.ebpf_control_data, BPF_ANY.into())
+        let mut data =
+            SharedArray::try_from(self.ebpf_handle.map_mut(NFM_CONTROL_MAP_NAME).unwrap())
+                .unwrap_or_else(|_| panic!("Failed to load BPF map {NFM_CONTROL_MAP_NAME}"));
+
+        data.set(0, self.ebpf_control_data, BPF_ANY.into())
             .unwrap_or_else(|e| panic!("Failed to write control data: {e:?}"))
     }
 
@@ -329,13 +330,14 @@ impl<C: Clock> EventProviderEbpf<C> {
     }
 
     fn ebpf_counters(&mut self) -> EventCounters {
-        let data: PerCpuHashMap<&MapData, SingletonKey, EventCounters> =
-            PerCpuHashMap::try_from(self.ebpf_handle.map(NFM_COUNTERS_MAP_NAME).unwrap())
+        let data: PerCpuArray<&MapData, EventCounters> =
+            PerCpuArray::try_from(self.ebpf_handle.map(NFM_COUNTERS_MAP_NAME).unwrap())
                 .unwrap_or_else(|_| panic!("Failed to load BPF map {NFM_COUNTERS_MAP_NAME}"));
 
         let mut new_counters = EventCounters::default();
         const EMPTY_FLAGS: u64 = 0;
-        if let Ok(counters_per_cpu) = data.get(&SINGLETON_KEY, EMPTY_FLAGS) {
+        const KEY: u32 = 0;
+        if let Ok(counters_per_cpu) = data.get(&KEY, EMPTY_FLAGS) {
             for counters in (*counters_per_cpu).iter() {
                 new_counters.add_from(counters);
             }
