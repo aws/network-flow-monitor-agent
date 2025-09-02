@@ -71,7 +71,10 @@ cp %{_sourcedir}/target/release/network-flow-monitor-agent %{buildroot}%{PKG_ROO
 
 ## Capabilities
 # Giving the agent capabilities so that we can perform e/BPF actions
-setcap cap_sys_admin,cap_bpf=eip %{PKG_ROOT_DIR}/network-flow-monitor-agent
+# Try with cap_bpf name first, fallback to numeric to support older setcap versions
+if ! setcap cap_sys_admin,cap_bpf=eip %{PKG_ROOT_DIR}/network-flow-monitor-agent 2>/dev/null; then
+    setcap cap_sys_admin,39=eip %{PKG_ROOT_DIR}/network-flow-monitor-agent
+fi
 
 # Only create mount points on install or if the mountpoint doesn't exists
 if [ %PACKAGES_LEFT = 1 ] || ! mountpoint -q %{NFM_CGROUP_DIR}; then
