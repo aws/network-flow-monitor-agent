@@ -8,7 +8,6 @@ pub type SockKey = u64;
 pub type SingletonKey = u64;
 pub type Ipv6Bytes = [u8; 16];
 
-pub const SINGLETON_KEY: u64 = 1;
 pub const AF_INET: u32 = 2;
 pub const AF_INET6: u32 = 10;
 

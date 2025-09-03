@@ -56,7 +56,7 @@ impl BpfControlConveyor {
     }
 
     fn should_handle_new_sock(&self) -> bool {
-        let control_option = bpf_map_get!(self, NFM_CONTROL, &SINGLETON_KEY);
+        let control_option = bpf_array_get!(self, NFM_CONTROL, 0);
         if let Some(control_data) = control_option {
             let sampling_interval = control_data.sampling_interval;
             sampling_interval <= 1 || bpf_get_rand_u32!(self) % sampling_interval == 0
@@ -111,19 +111,8 @@ impl<'a> TcpSockOpsHandler<'a> {
 
         // Persist our new counter contributions.
         unsafe {
-            match bpf_map_get_ptr_mut!(self, NFM_COUNTERS, &SINGLETON_KEY) {
-                Some(persisted_counters) => {
-                    (*persisted_counters).add_from(&self.counters);
-                }
-                None => {
-                    let _ = bpf_map_insert!(
-                        self,
-                        NFM_COUNTERS,
-                        &SINGLETON_KEY,
-                        &self.counters,
-                        BPF_ANY
-                    );
-                }
+            if let Some(counters) = bpf_array_get_ptr_mut!(self, NFM_COUNTERS, 0) {
+                (*counters).add_from(&self.counters);
             };
         }
 
@@ -1141,10 +1130,7 @@ mod test {
         };
         let mut mock_ebpf_maps = MockEbpfMaps::new();
         mock_ebpf_maps.mock_rand = 121;
-        mock_ebpf_maps
-            .NFM_CONTROL
-            .insert(&SINGLETON_KEY, &control_data, BPF_ANY)
-            .unwrap();
+        mock_ebpf_maps.NFM_CONTROL.insert(0, control_data);
         let conveyor = BpfControlConveyor { mock_ebpf_maps };
 
         // We discard new socket events.
@@ -1172,10 +1158,7 @@ mod test {
         };
         let mut mock_ebpf_maps = MockEbpfMaps::new();
         mock_ebpf_maps.mock_rand = 122;
-        mock_ebpf_maps
-            .NFM_CONTROL
-            .insert(&SINGLETON_KEY, &control_data, BPF_ANY)
-            .unwrap();
+        mock_ebpf_maps.NFM_CONTROL.insert(0, control_data);
         let conveyor = BpfControlConveyor { mock_ebpf_maps };
 
         // We capture new socket events.
