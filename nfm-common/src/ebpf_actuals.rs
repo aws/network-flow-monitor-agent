@@ -9,7 +9,7 @@
 
 use crate::constants::{MAX_ENTRIES_SK_PROPS_LO, MAX_ENTRIES_SK_STATS_LO};
 use crate::network::{
-    ControlData, CpuSockKey, EventCounters, SingletonKey, SockContext, SockOpsStats, SockStats,
+    ControlData, CpuSockKey, EventCounters, SockContext, SockOpsStats, SockStats,
 };
 
 use aya_ebpf::helpers::{bpf_get_smp_processor_id, bpf_get_socket_cookie, bpf_ktime_get_boot_ns};
@@ -19,10 +19,10 @@ pub use aya_ebpf::{
     // Constants we depend on from `aya-ebpf-bindings`.
     bindings::{BPF_ANY, BPF_EXIST, BPF_F_NO_PREALLOC, BPF_NOEXIST},
     bindings::{
-        BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB, BPF_SOCK_OPS_HDR_OPT_LEN_CB,
+        BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB, BPF_SOCK_OPS_HDR_OPT_LEN_CB, BPF_SOCK_OPS_NEEDS_ECN,
         BPF_SOCK_OPS_PARSE_HDR_OPT_CB, BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB,
-        BPF_SOCK_OPS_RETRANS_CB, BPF_SOCK_OPS_RTO_CB, BPF_SOCK_OPS_RTT_CB, BPF_SOCK_OPS_STATE_CB,
-        BPF_SOCK_OPS_TCP_CONNECT_CB,
+        BPF_SOCK_OPS_RETRANS_CB, BPF_SOCK_OPS_RTO_CB, BPF_SOCK_OPS_RTT_CB, BPF_SOCK_OPS_RWND_INIT,
+        BPF_SOCK_OPS_STATE_CB, BPF_SOCK_OPS_TCP_CONNECT_CB, BPF_SOCK_OPS_TIMEOUT_INIT,
     },
     bindings::{
         BPF_SOCK_OPS_ALL_CB_FLAGS, BPF_SOCK_OPS_PARSE_ALL_HDR_OPT_CB_FLAG,
@@ -39,7 +39,7 @@ pub use aya_ebpf::{
 
     // The BPF_MAP interface we depend on from `aya-ebpf`.
     macros::map,
-    maps::PerCpuHashMap,
+    maps::{Array as SharedArray, HashMap as SharedHashMap, PerCpuArray, PerCpuHashMap},
 
     // The context passed into our eBPF SOCK_OPS program by the kernel.
     programs::SockOpsContext,
@@ -48,21 +48,17 @@ pub use aya_ebpf::{
     EbpfContext,
 };
 
-pub type SharedHashMap<K, V> = aya_ebpf::maps::HashMap<K, V>;
-
 // *** Instances of eBPF maps used by our program, prefixed under the "NETWORK_FLOW_MONITOR" namespace. ***
 
 // NFM_CONTROL communicates control knobs from user-space to BPF – one writer, many readers,
 // never deleted from.
 #[map]
-pub static NFM_CONTROL: SharedHashMap<SingletonKey, ControlData> =
-    SharedHashMap::with_max_entries(1, BPF_F_NO_PREALLOC);
+pub static NFM_CONTROL: SharedArray<ControlData> = SharedArray::with_max_entries(1, 0);
 
 // NFM_COUNTERS communicates events from BPF to user-space. It is per-CPU and contents are never
 // deleted.
 #[map]
-pub static NFM_COUNTERS: PerCpuHashMap<SingletonKey, EventCounters> =
-    PerCpuHashMap::with_max_entries(1, 0);
+pub static NFM_COUNTERS: PerCpuArray<EventCounters> = PerCpuArray::with_max_entries(1, 0);
 
 // SK_PROPS communicates the properties of a newly established socket to user-space. It is used as
 // a signaling channel; entries are deleted by user-space once read.
@@ -95,6 +91,21 @@ macro_rules! bpf_map_get_ptr_mut {
 macro_rules! bpf_map_insert {
     ($self:ident, $map_name:expr, $key:expr, $val:expr, $flags:expr) => {
         $map_name.insert($key, $val, <u32 as Into<u64>>::into($flags))
+    };
+}
+
+// Operations on BPF maps.
+#[macro_export]
+macro_rules! bpf_array_get {
+    ($self:ident, $map_name:expr, $key:expr) => {
+        $map_name.get($key)
+    };
+}
+
+#[macro_export]
+macro_rules! bpf_array_get_ptr_mut {
+    ($self:ident, $map_name:expr, $key:expr) => {
+        $map_name.get_ptr_mut($key)
     };
 }
 

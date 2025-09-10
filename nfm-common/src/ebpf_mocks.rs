@@ -11,8 +11,7 @@
 
 use crate::constants::{MAX_ENTRIES_SK_PROPS_HI, MAX_ENTRIES_SK_STATS_HI};
 use crate::network::{
-    ControlData, CpuSockKey, EventCounters, SingletonKey, SockContext, SockOpsStats, SockStats,
-    SINGLETON_KEY,
+    ControlData, CpuSockKey, EventCounters, SockContext, SockOpsStats, SockStats,
 };
 
 use libc::{EINVAL, ENOMEM};
@@ -46,6 +45,9 @@ pub const BPF_SOCK_OPS_STATE_CB: u32 = 6;
 pub const BPF_SOCK_OPS_TCP_CONNECT_CB: u32 = 7;
 pub const BPF_SOCK_OPS_PARSE_HDR_OPT_CB: u32 = 8;
 pub const BPF_SOCK_OPS_HDR_OPT_LEN_CB: u32 = 9;
+pub const BPF_SOCK_OPS_TIMEOUT_INIT: u32 = 10;
+pub const BPF_SOCK_OPS_RWND_INIT: u32 = 11;
+pub const BPF_SOCK_OPS_NEEDS_ECN: u32 = 12;
 
 pub const BPF_TCP_CLOSE: u32 = 1;
 pub const BPF_TCP_CLOSE_WAIT: u32 = 2;
@@ -105,7 +107,38 @@ where
     }
 }
 
+pub struct SharedArray<T>
+where
+    T: Default + Clone,
+{
+    data: Vec<T>,
+}
+
+impl<T> SharedArray<T>
+where
+    T: Default + Clone,
+{
+    pub fn with_max_entries(capacity: usize) -> SharedArray<T> {
+        SharedArray {
+            data: vec![T::default(); capacity],
+        }
+    }
+
+    pub fn get(&self, index: usize) -> Option<&T> {
+        self.data.get(index)
+    }
+
+    pub fn get_ptr_mut(&mut self, index: usize) -> Option<*mut T> {
+        self.data.get_mut(index).map(|v| v as *mut T)
+    }
+
+    pub fn insert(&mut self, index: usize, value: T) {
+        self.data[index] = value;
+    }
+}
+
 pub type PerCpuHashMap<K, V> = SharedHashMap<K, V>;
+pub type PerCpuArray<T> = SharedArray<T>;
 
 // Instances of eBPF maps used by our program.  These maps are housed within a struct, instead of
 // defined globally, so that the invocation of each unit test function has its own local state.
@@ -113,8 +146,8 @@ pub type PerCpuHashMap<K, V> = SharedHashMap<K, V>;
 // polluted state.
 #[allow(non_snake_case)]
 pub struct MockEbpfMaps {
-    pub NFM_CONTROL: SharedHashMap<SingletonKey, ControlData>,
-    pub NFM_COUNTERS: PerCpuHashMap<SingletonKey, EventCounters>,
+    pub NFM_CONTROL: SharedArray<ControlData>,
+    pub NFM_COUNTERS: PerCpuArray<EventCounters>,
     pub NFM_SK_PROPS: SharedHashMap<CpuSockKey, SockContext>,
     pub NFM_SK_STATS: SharedHashMap<CpuSockKey, SockStats>,
     pub mock_rand: u32,
@@ -123,8 +156,8 @@ pub struct MockEbpfMaps {
 impl MockEbpfMaps {
     pub fn new() -> Self {
         Self {
-            NFM_CONTROL: SharedHashMap::<SingletonKey, ControlData>::with_max_entries(1),
-            NFM_COUNTERS: PerCpuHashMap::<SingletonKey, EventCounters>::with_max_entries(1),
+            NFM_CONTROL: SharedArray::<ControlData>::with_max_entries(1),
+            NFM_COUNTERS: PerCpuArray::<EventCounters>::with_max_entries(1),
             NFM_SK_PROPS: SharedHashMap::<CpuSockKey, SockContext>::with_max_entries(
                 MAX_ENTRIES_SK_PROPS_HI.try_into().unwrap(),
             ),
@@ -136,11 +169,15 @@ impl MockEbpfMaps {
     }
 
     pub fn control_data(&self) -> &ControlData {
-        self.NFM_CONTROL.data.get(&SINGLETON_KEY).unwrap()
+        self.NFM_CONTROL.data.first().unwrap()
     }
 
     pub fn counters(&self) -> &EventCounters {
-        self.NFM_COUNTERS.data.get(&SINGLETON_KEY).unwrap()
+        self.NFM_COUNTERS.data.first().unwrap()
+    }
+
+    pub fn counters_mut_ptr(&mut self) -> *mut EventCounters {
+        self.NFM_COUNTERS.get_ptr_mut(0).unwrap()
     }
 
     pub fn sock_props(&self, key: &CpuSockKey) -> &SockContext {
@@ -262,6 +299,26 @@ macro_rules! bpf_map_insert {
             .unwrap()
             .$map_name
             .insert($key, $val, $flags)
+    };
+}
+
+// Operations on BPF maps.
+#[macro_export]
+macro_rules! bpf_array_get {
+    ($self:ident, $map_name:ident, $key:expr) => {
+        $self.mock_ebpf_maps.$map_name.get($key)
+    };
+}
+
+#[macro_export]
+macro_rules! bpf_array_get_ptr_mut {
+    ($self:ident, $map_name:ident, $key:expr) => {
+        $self
+            .mock_ebpf_maps
+            .as_mut()
+            .unwrap()
+            .$map_name
+            .get_ptr_mut($key)
     };
 }
 

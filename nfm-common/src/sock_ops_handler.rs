@@ -23,6 +23,22 @@ pub struct BpfControlConveyor {
 
 impl BpfControlConveyor {
     pub fn should_handle_event(&self, event_cb_id: u32) -> bool {
+        // early filter events that we can't control with
+        // `bpf_sock_ops_cb_flags_set`, and that we don't use,
+        // to avoid looking up maps, incrementing counters, etc.
+        if matches!(
+            event_cb_id,
+            // TIMEOUT_INIT, RWND_INIT, NEEDS_ECN, are not used
+            BPF_SOCK_OPS_TIMEOUT_INIT
+            | BPF_SOCK_OPS_RWND_INIT
+            | BPF_SOCK_OPS_NEEDS_ECN
+            // for active sockets - we already capture this with
+            // BPF_SOCK_OPS_TCP_CONNECT_CB and BPF_SOCK_OPS_STATE_CB
+            | BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB
+        ) {
+            return false;
+        }
+
         if self.is_new_sock_event(event_cb_id) {
             self.should_handle_new_sock()
         } else {
@@ -40,7 +56,7 @@ impl BpfControlConveyor {
     }
 
     fn should_handle_new_sock(&self) -> bool {
-        let control_option = bpf_map_get!(self, NFM_CONTROL, &SINGLETON_KEY);
+        let control_option = bpf_array_get!(self, NFM_CONTROL, 0);
         if let Some(control_data) = control_option {
             let sampling_interval = control_data.sampling_interval;
             sampling_interval <= 1 || bpf_get_rand_u32!(self) % sampling_interval == 0
@@ -81,7 +97,6 @@ impl<'a> TcpSockOpsHandler<'a> {
         let result = match self.ctx.op() {
             BPF_SOCK_OPS_TCP_CONNECT_CB => self.handle_connect(),
             BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB => self.handle_passive_established(),
-            BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB => Ok(()), // No-op.
             BPF_SOCK_OPS_STATE_CB => self.handle_state_change(),
             BPF_SOCK_OPS_RTT_CB => self.handle_rtt(),
             BPF_SOCK_OPS_RETRANS_CB => self.handle_retransmit(),
@@ -96,19 +111,8 @@ impl<'a> TcpSockOpsHandler<'a> {
 
         // Persist our new counter contributions.
         unsafe {
-            match bpf_map_get_ptr_mut!(self, NFM_COUNTERS, &SINGLETON_KEY) {
-                Some(persisted_counters) => {
-                    (*persisted_counters).add_from(&self.counters);
-                }
-                None => {
-                    let _ = bpf_map_insert!(
-                        self,
-                        NFM_COUNTERS,
-                        &SINGLETON_KEY,
-                        &self.counters,
-                        BPF_ANY
-                    );
-                }
+            if let Some(counters) = bpf_array_get_ptr_mut!(self, NFM_COUNTERS, 0) {
+                (*counters).add_from(&self.counters);
             };
         }
 
@@ -546,7 +550,7 @@ mod test {
         let result = handler.handle_socket_event();
 
         // Validate results.
-        assert_eq!(result, Ok(()));
+        assert_eq!(result, Err(SockOpsResultCode::OperationUnknown));
         assert_eq!(mock_ebpf_maps.counters().active_established_events, 0);
         assert!(mock_ebpf_maps.NFM_SK_PROPS.data.is_empty());
         assert!(mock_ebpf_maps.NFM_SK_STATS.data.is_empty());
@@ -1126,10 +1130,7 @@ mod test {
         };
         let mut mock_ebpf_maps = MockEbpfMaps::new();
         mock_ebpf_maps.mock_rand = 121;
-        mock_ebpf_maps
-            .NFM_CONTROL
-            .insert(&SINGLETON_KEY, &control_data, BPF_ANY)
-            .unwrap();
+        mock_ebpf_maps.NFM_CONTROL.insert(0, control_data);
         let conveyor = BpfControlConveyor { mock_ebpf_maps };
 
         // We discard new socket events.
@@ -1137,10 +1138,15 @@ mod test {
         assert!(!conveyor.should_handle_event(BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB));
 
         // We capture other events.
-        assert!(conveyor.should_handle_event(BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB));
         assert!(conveyor.should_handle_event(BPF_SOCK_OPS_RETRANS_CB));
         assert!(conveyor.should_handle_event(BPF_SOCK_OPS_RTT_CB));
         assert!(conveyor.should_handle_event(BPF_SOCK_OPS_RTO_CB));
+
+        // We ignore unnecessary events
+        assert!(!conveyor.should_handle_event(BPF_SOCK_OPS_TIMEOUT_INIT));
+        assert!(!conveyor.should_handle_event(BPF_SOCK_OPS_RWND_INIT));
+        assert!(!conveyor.should_handle_event(BPF_SOCK_OPS_NEEDS_ECN));
+        assert!(!conveyor.should_handle_event(BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB));
     }
 
     #[test]
@@ -1152,10 +1158,7 @@ mod test {
         };
         let mut mock_ebpf_maps = MockEbpfMaps::new();
         mock_ebpf_maps.mock_rand = 122;
-        mock_ebpf_maps
-            .NFM_CONTROL
-            .insert(&SINGLETON_KEY, &control_data, BPF_ANY)
-            .unwrap();
+        mock_ebpf_maps.NFM_CONTROL.insert(0, control_data);
         let conveyor = BpfControlConveyor { mock_ebpf_maps };
 
         // We capture new socket events.
@@ -1163,9 +1166,14 @@ mod test {
         assert!(conveyor.should_handle_event(BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB));
 
         // We also capture other events.
-        assert!(conveyor.should_handle_event(BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB));
         assert!(conveyor.should_handle_event(BPF_SOCK_OPS_RETRANS_CB));
         assert!(conveyor.should_handle_event(BPF_SOCK_OPS_RTT_CB));
         assert!(conveyor.should_handle_event(BPF_SOCK_OPS_RTO_CB));
+
+        // We ignore unnecessary events
+        assert!(!conveyor.should_handle_event(BPF_SOCK_OPS_TIMEOUT_INIT));
+        assert!(!conveyor.should_handle_event(BPF_SOCK_OPS_RWND_INIT));
+        assert!(!conveyor.should_handle_event(BPF_SOCK_OPS_NEEDS_ECN));
+        assert!(!conveyor.should_handle_event(BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB));
     }
 }
