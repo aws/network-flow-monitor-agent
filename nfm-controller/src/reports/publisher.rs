@@ -207,6 +207,9 @@ mod tests {
             report_compression: ReportCompression::None,
             kubernetes_metadata: OnOff::On,
             resolve_nat: OnOff::On,
+            open_metrics: OnOff::Off,
+            open_metrics_port: 0,
+            open_metrics_address: "127.0.0.1".to_string(),
         }
     }
 }

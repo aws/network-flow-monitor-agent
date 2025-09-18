@@ -4,6 +4,7 @@
 pub mod events;
 pub mod kubernetes;
 pub mod metadata;
+pub mod open_metrics;
 pub mod reports;
 pub mod utils;
 
@@ -33,6 +34,7 @@ use crate::events::{
     nat_resolver::{NatResolver, NatResolverImpl, NatResolverNoOp},
     network_event::AggregateResults,
 };
+use crate::open_metrics::server::{OpenMetricsServer, OpenMetricsServerConfig};
 use crate::reports::publisher::ReportPublisher;
 use crate::reports::report::{NfmReport, ProcessStats, UsageStats};
 use crate::utils::{
@@ -123,6 +125,18 @@ pub struct Options {
     /// Within reports, use IP addresses that are external to locally performed NAT.
     #[clap(short = 'n', long, default_value_t = OnOff::Off)]
     resolve_nat: OnOff,
+
+    /// Enable OpenMetrics server for Prometheus-compatible metrics
+    #[clap(long = "open-metrics", default_value_t = OnOff::Off)]
+    open_metrics: OnOff,
+
+    /// Port for OpenMetrics server
+    #[clap(long = "open-metrics-port", default_value_t = 80)]
+    open_metrics_port: u16,
+
+    /// Address for OpenMetrics server
+    #[clap(long = "open-metrics-address", default_value = "127.0.0.1")]
+    open_metrics_address: String,
 }
 
 pub fn check_kernel_version() -> Result<(), anyhow::Error> {
@@ -198,6 +212,21 @@ pub fn on_load(opt: Options) -> Result<(), anyhow::Error> {
     };
     let host_stats_provider = HostStatsProviderImpl::new();
 
+    // Start OpenMetrics server in a separate thread before entering main loop
+    let mut open_metrics_server = if opt.open_metrics == OnOff::On {
+        let config = OpenMetricsServerConfig::for_addr(
+            opt.open_metrics_address.clone(),
+            opt.open_metrics_port,
+        );
+        let mut server = OpenMetricsServer::with_config(config);
+        if let Err(e) = server.start() {
+            warn!("Failed to start OpenMetrics server: {}", e);
+        }
+        Some(server)
+    } else {
+        None
+    };
+
     do_work(
         event_provider,
         nat_resolver,
@@ -207,6 +236,13 @@ pub fn on_load(opt: Options) -> Result<(), anyhow::Error> {
         host_stats_provider,
         opt,
     );
+
+    // Stop OpenMetrics server if it was started
+    if let Some(ref mut server) = open_metrics_server {
+        if let Err(e) = server.stop() {
+            warn!("Failed to stop OpenMetrics server: {}", e);
+        }
+    }
 
     Ok(())
 }
@@ -481,6 +517,9 @@ mod test {
                     report_compression: ReportCompression::None,
                     kubernetes_metadata: OnOff::On,
                     resolve_nat: OnOff::On,
+                    open_metrics: OnOff::Off,
+                    open_metrics_port: 80,
+                    open_metrics_address: "127.0.0.1".to_string(),
                 },
             );
         });
