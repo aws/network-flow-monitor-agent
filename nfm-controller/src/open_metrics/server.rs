@@ -10,6 +10,7 @@ use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::thread;
+use std::time::Instant;
 
 use hyper::http::StatusCode;
 use hyper::server::conn::http1;
@@ -254,6 +255,8 @@ async fn run_server(bind_addr: SocketAddr, cancel_token: CancellationToken) -> s
             accept_result = listener.accept() => {
                 match accept_result {
                     Ok((stream, _)) => {
+                        let start_time = Instant::now();
+
                         // Handle one request at a time
                         let io = TokioIo::new(stream);
 
@@ -274,6 +277,11 @@ async fn run_server(bind_addr: SocketAddr, cancel_token: CancellationToken) -> s
                                 "Error handling HTTP request on metrics server"
                             );
                         }
+                        info!(
+                            open_metric = "request_timing",
+                            duration_us = start_time.elapsed().as_micros();
+                            "Request processed",
+                        );
                     }
                     Err(e) => {
                         error!(

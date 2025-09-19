@@ -9,9 +9,9 @@
 use prometheus::{CounterVec, GaugeVec, Opts, Registry};
 
 pub trait OpenMetricProvider {
-    /// Registers the metrics provided
+    /// Registers the metrics provided by the object.
     fn register(&self, registry: &mut Registry);
-    /// Updates the metrics registered.
+    /// Updates the registered values with the new values.
     fn update_metrics(&self) -> Result<(), anyhow::Error>;
 }
 
@@ -19,6 +19,7 @@ pub fn get_open_metric_providers() -> Vec<Box<dyn OpenMetricProvider>> {
     vec![Box::new(DummyOpenMetricProvider::new())]
 }
 
+/// Dummy metric provider as an example to integrate with the prometheus client
 pub struct DummyOpenMetricProvider {
     gauge: GaugeVec,
     counter: CounterVec,
