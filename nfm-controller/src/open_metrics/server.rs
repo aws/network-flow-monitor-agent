@@ -21,7 +21,7 @@ use prometheus::{Encoder, Registry, TextEncoder};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
-use crate::open_metrics::provider::{get_open_metric_providers, OpenMetricProvider};
+use crate::open_metrics::provider::get_open_metric_providers;
 
 /// Configuration options for the OpenMetricsServer
 pub struct OpenMetricsServerConfig {
@@ -55,29 +55,14 @@ pub struct OpenMetricsServer {
     cancel_token: CancellationToken,
     /// Server configuration
     config: OpenMetricsServerConfig,
-    /// Prometheus registry
-    registry: Arc<Registry>,
-    /// Metric providers
-    providers: Vec<Box<dyn OpenMetricProvider>>,
 }
 
 impl Default for OpenMetricsServer {
     fn default() -> Self {
-        // Create registry and providers
-        let mut registry = Registry::new();
-        let providers = get_open_metric_providers();
-
-        // Register all providers with the registry
-        for provider in &providers {
-            provider.register(&mut registry);
-        }
-
         Self {
             handle: None,
             cancel_token: CancellationToken::new(),
             config: OpenMetricsServerConfig::default(),
-            registry: Arc::new(registry),
-            providers,
         }
     }
 }
@@ -98,8 +83,6 @@ impl OpenMetricsServer {
             handle: None,
             cancel_token: CancellationToken::new(),
             config,
-            registry: Arc::new(registry),
-            providers,
         }
     }
 
@@ -125,14 +108,6 @@ impl OpenMetricsServer {
         );
 
         let cancel_token = self.cancel_token.clone();
-        let registry = self.registry.clone();
-
-        // Update metrics before starting the server
-        for provider in &self.providers {
-            if let Err(e) = provider.update_metrics() {
-                warn!(error = e.to_string(); "Failed to update metrics");
-            }
-        }
 
         let handle = thread::spawn(move || {
             // Create a simple runtime for the server
@@ -143,7 +118,7 @@ impl OpenMetricsServer {
                 .expect("Failed to create Tokio runtime");
 
             rt.block_on(async {
-                if let Err(e) = run_server(bind_addr, cancel_token, registry).await {
+                if let Err(e) = run_server(bind_addr, cancel_token).await {
                     error!(error = e.to_string(); "Metrics server error");
                 }
             });
@@ -222,7 +197,7 @@ async fn handle_request(
             let metrics = String::from_utf8(buffer).unwrap();
 
             debug!(endpoint = "metrics"; "Serving metrics endpoint");
-            (StatusCode::OK, "text/plain; version=0.0.4", metrics)
+            (StatusCode::OK, "text/plain", metrics)
         }
         "/" => {
             let body = "Network Flow Monitor Agent Metrics Server\n\nAvailable endpoints:\n- /metrics - Prometheus metrics\n";
@@ -245,11 +220,7 @@ async fn handle_request(
 }
 
 /// Run the HTTP server - will terminate when cancellation token is triggered
-async fn run_server(
-    bind_addr: SocketAddr,
-    cancel_token: CancellationToken,
-    registry: Arc<Registry>,
-) -> std::io::Result<()> {
+async fn run_server(bind_addr: SocketAddr, cancel_token: CancellationToken) -> std::io::Result<()> {
     // Bind to the address
     let listener = TcpListener::bind(bind_addr).await?;
 
@@ -258,6 +229,12 @@ async fn run_server(
         bind_addr = bind_addr.to_string();
         "Metrics server listening"
     );
+
+    let mut registry = Arc::new(Registry::new());
+    let providers = get_open_metric_providers();
+    providers
+        .iter()
+        .for_each(|provider| provider.register(&mut Arc::get_mut(&mut registry).unwrap()));
 
     // Accept connections until cancellation token is triggered
     loop {
@@ -268,6 +245,14 @@ async fn run_server(
                     Ok((stream, _)) => {
                         // Handle one request at a time
                         let io = TokioIo::new(stream);
+
+                        // Update metrics
+                        for provider in &providers {
+                            match provider.update_metrics() {
+                                Ok(()) => (),
+                                Err(e) => error!(open_metrics = "update_metric_error", error = e.to_string(); "Error updating metrics"),
+                            }
+                        }
                         let registry_clone = registry.clone();
 
                         // Process the connection

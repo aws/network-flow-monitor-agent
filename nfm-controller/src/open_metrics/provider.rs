@@ -6,8 +6,7 @@
 //! This module provides a basic HTTP server that returns a fixed dummy metric
 //! in Prometheus format on the /metrics endpoint.
 
-use prometheus::{GaugeVec, Opts, Registry};
-use std::cell::RefCell;
+use prometheus::{CounterVec, GaugeVec, Opts, Registry};
 
 pub trait OpenMetricProvider {
     /// Registers the metrics provided
@@ -21,21 +20,12 @@ pub fn get_open_metric_providers() -> Vec<Box<dyn OpenMetricProvider>> {
 }
 
 pub struct DummyOpenMetricProvider {
-    gauge: RefCell<Option<GaugeVec>>,
-    counter: RefCell<Option<GaugeVec>>, // Using GaugeVec for simplicity, could be CounterVec in real usage
+    gauge: GaugeVec,
+    counter: CounterVec,
 }
 
 impl DummyOpenMetricProvider {
     pub fn new() -> Self {
-        DummyOpenMetricProvider {
-            gauge: RefCell::new(None),
-            counter: RefCell::new(None),
-        }
-    }
-}
-
-impl OpenMetricProvider for DummyOpenMetricProvider {
-    fn register(&self, registry: &mut Registry) {
         // Create a gauge with two labels
         let gauge = GaugeVec::new(
             Opts::new(
@@ -47,42 +37,37 @@ impl OpenMetricProvider for DummyOpenMetricProvider {
         .unwrap();
 
         // Create a counter with two different labels
-        let counter = GaugeVec::new(
+        let counter = CounterVec::new(
             Opts::new(
                 "nfm_request_count",
                 "A sample counter metric with labels for NFM agent",
             ),
-            &["endpoint", "status"],
+            &["increment_by"],
         )
         .unwrap();
 
-        // Register the metrics with the registry
-        registry.register(Box::new(gauge.clone())).unwrap();
-        registry.register(Box::new(counter.clone())).unwrap();
+        DummyOpenMetricProvider {
+            gauge: gauge,
+            counter: counter,
+        }
+    }
+}
 
-        // Store the metrics in self
-        *self.gauge.borrow_mut() = Some(gauge);
-        *self.counter.borrow_mut() = Some(counter);
+impl OpenMetricProvider for DummyOpenMetricProvider {
+    fn register(&self, registry: &mut Registry) {
+        // Register the metrics with the registry
+        registry.register(Box::new(self.gauge.clone())).unwrap();
+        registry.register(Box::new(self.counter.clone())).unwrap();
     }
 
     fn update_metrics(&self) -> Result<(), anyhow::Error> {
         // Update gauge metric
-        if let Some(gauge) = &*self.gauge.borrow() {
-            // Set the metric value with two labels
-            gauge
-                .with_label_values(&["nfm-agent", "development"])
-                .set(42.0);
-        }
-
+        self.gauge
+            .with_label_values(&["nfm-agent", "development"])
+            .set(42.0);
         // Update counter metric
-        if let Some(counter) = &*self.counter.borrow() {
-            // Set counter values with different label combinations
-            counter
-                .with_label_values(&["metrics", "success"])
-                .set(100.0);
-            counter.with_label_values(&["health", "success"]).set(50.0);
-            counter.with_label_values(&["metrics", "error"]).set(5.0);
-        }
+        self.counter.with_label_values(&["one"]).inc();
+        self.counter.with_label_values(&["two"]).inc_by(2.0);
 
         Ok(())
     }
