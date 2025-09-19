@@ -188,10 +188,6 @@ async fn handle_request(
             debug!(endpoint = "root"; "Serving root endpoint");
             (StatusCode::OK, "text/plain", body.to_string())
         }
-        "/health" => {
-            debug!(endpoint = "health"; "Serving health endpoint");
-            (StatusCode::OK, "text/plain", "OK".to_string())
-        }
         _ => {
             debug!(endpoint = path; "Not found");
             (StatusCode::NOT_FOUND, "text/plain", "Not Found".to_string())
@@ -213,6 +209,7 @@ async fn run_server(bind_addr: SocketAddr, cancel_token: CancellationToken) -> s
     let listener = TcpListener::bind(bind_addr).await?;
 
     info!(
+        open_metric = "server_starting",
         bind_addr = bind_addr.to_string();
         "Metrics server listening"
     );
