@@ -97,7 +97,7 @@ impl OpenMetricsServer {
         }
 
         info!(
-            open_metric = "starting"
+            open_metric = "starting",
             bind_addr = bind_addr.to_string();
             "Simple Prometheus metrics server starting"
         );
@@ -141,9 +141,15 @@ impl OpenMetricsServer {
         // Signal the server to shut down
         info!(open_metric = "shutdown_initiated"; "Initiating graceful shutdown of metrics server");
         self.shutdown_signal.store(true, Ordering::SeqCst);
-
-        // Server shut down gracefully
-        info!(open_metric = "shutdown_complete"; "Metrics server shut down gracefully");
+        match handle.join() {
+            Ok(_) => {
+                info!(open_metric = "shutdown_complete"; "Metrics server shut down gracefully")
+            }
+            Err(_) => error!(
+                open_metric = "shutdown_failure";
+                "Metrics server shut down with errors due to thread panic"
+            ),
+        }
 
         // Reset the shutdown signal for potential restart
         self.shutdown_signal = Arc::new(AtomicBool::new(false));
@@ -226,45 +232,41 @@ async fn run_server(
 
     // Accept connections until shutdown signal is received
     while !shutdown_signal.load(Ordering::Relaxed) {
-        // Use tokio::select to either accept a connection or check the shutdown signal
-        let accept_fut = listener.accept();
+        // Use tokio::select to either accept a connection or timeout to check shutdown signal
+        tokio::select! {
+            accept_result = listener.accept() => {
+                match accept_result {
+                    Ok((stream, _)) => {
+                        // Handle one request at a time
+                        let io = TokioIo::new(stream);
 
-        // Use timeout to periodically check the shutdown signal
-        match tokio::time::timeout(connection_timeout, accept_fut).await {
-            // Connection accepted within timeout
-            Ok(Ok((stream, _))) => {
-                // Handle one request at a time
-                let io = TokioIo::new(stream);
-
-                // Process the connection
-                if let Err(e) = http1::Builder::new()
-                    .serve_connection(io, service_fn(handle_request))
-                    .await
-                {
-                    warn!(
-                        error = e.to_string(),
-                        addr = bind_addr.to_string();
-                        "Error handling HTTP request on metrics server"
-                    );
+                        // Process the connection
+                        if let Err(e) = http1::Builder::new()
+                            .serve_connection(io, service_fn(handle_request))
+                            .await
+                        {
+                            warn!(
+                                error = e.to_string(),
+                                addr = bind_addr.to_string();
+                                "Error handling HTTP request on metrics server"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        error!(
+                            error = e.to_string(),
+                            addr = bind_addr.to_string();
+                            "Failed to accept connection on metrics server"
+                        );
+                    }
                 }
             }
-            // Error accepting connection
-            Ok(Err(e)) => {
-                error!(
-                    error = e.to_string(),
-                    addr = bind_addr.to_string();
-                    "Failed to accept connection on metrics server"
-                );
-            }
-            // Timeout occurred - no connection accepted
-            Err(_) => {
-                // This is expected, just continue the loop to check shutdown signal
+            _ = tokio::time::sleep(connection_timeout) => {
+                // Timeout occurred - this is expected, just continue the loop to check shutdown signal
                 continue;
             }
         }
     }
-
-    info!(open_metric = "shutdown"; "Metrics server shutting down gracefully");
     Ok(())
 }
 
