@@ -2,9 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Simple Prometheus metrics server for testing integration.
-//!
-//! This module provides a basic HTTP server that returns a fixed dummy metric
-//! in Prometheus format on the /metrics endpoint.
 
 use prometheus::{CounterVec, GaugeVec, Opts, Registry};
 

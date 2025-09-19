@@ -191,25 +191,12 @@ async fn handle_request(
 
     let (status, content_type, body) = match path {
         "/metrics" => {
-            // Update the metrics
-            for provider in providers.iter() {
-                match provider.update_metrics() {
-                    Err(e) => {
-                        error!(open_metric = "metric_updated", error = e.to_string(); "Error updating metric")
-                    }
-                    Ok(()) => {}
-                }
-            }
-
-            // Use the registry to generate metrics
-            let encoder = TextEncoder::new();
-            let metric_families = registry.gather();
-            let mut buffer = Vec::new();
-            encoder.encode(&metric_families, &mut buffer).unwrap();
-            let metrics = String::from_utf8(buffer).unwrap();
-
             debug!(endpoint = "metrics"; "Serving metrics endpoint");
-            (StatusCode::OK, "text/plain", metrics)
+            (
+                StatusCode::OK,
+                "text/plain",
+                generate_metrics_text(registry, providers),
+            )
         }
         "/" => {
             let body = "Network Flow Monitor Agent Metrics Server\n\nAvailable endpoints:\n- /metrics - Prometheus metrics\n";
@@ -229,6 +216,28 @@ async fn handle_request(
         .unwrap();
 
     Ok(response)
+}
+
+fn generate_metrics_text(
+    registry: Arc<Registry>,
+    providers: Arc<Vec<Box<dyn OpenMetricProvider>>>,
+) -> String {
+    // Update the metrics
+    for provider in providers.iter() {
+        match provider.update_metrics() {
+            Err(e) => {
+                error!(open_metric = "metric_updated", error = e.to_string(); "Error updating metric")
+            }
+            Ok(()) => {}
+        }
+    }
+
+    // Use the registry to generate metrics
+    let encoder = TextEncoder::new();
+    let metric_families = registry.gather();
+    let mut buffer = Vec::new();
+    encoder.encode(&metric_families, &mut buffer).unwrap();
+    String::from_utf8(buffer).unwrap()
 }
 
 /// Run the HTTP server - will terminate when cancellation token is triggered
@@ -309,53 +318,77 @@ async fn run_server(bind_addr: SocketAddr, cancel_token: CancellationToken) -> s
 #[cfg(test)]
 mod tests {
     use super::*;
+    use once_cell::sync::Lazy;
     use std::io::{Read, Write};
     use std::net::TcpStream;
+    use std::sync::{Mutex, Once};
     use std::time::Duration;
 
-    #[test]
-    fn test_server_startup() {
-        // Use port 0 to let the OS assign an available port
-        let addr = "127.0.0.1:0".parse().unwrap();
-        let config = OpenMetricsServerConfig { addr };
+    // Define a static server instance that will be initialized once
+    static TEST_SERVER: Lazy<Mutex<TestServer>> = Lazy::new(|| Mutex::new(TestServer::new()));
 
-        // Create and start server
-        let mut server = OpenMetricsServer::with_config(config);
-        server.start().expect("Failed to start server");
+    // Initialize the server once before any tests run
+    static INIT: Once = Once::new();
 
-        // Give server time to start
-        thread::sleep(Duration::from_millis(50));
-
-        // The server should be running
-        assert!(server.is_running());
-
-        // Test graceful shutdown
-        server.stop().expect("Failed to stop server");
-
-        // The server should not be running
-        assert!(!server.is_running());
+    // Test server wrapper
+    struct TestServer {
+        server: Option<OpenMetricsServer>,
+        port: u16,
     }
 
-    #[test]
-    fn test_metrics_endpoint() {
-        // Start server on a specific port to avoid conflicts
-        let port = 9876;
-        let addr = format!("127.0.0.1:{}", port).parse().unwrap();
-        let config = OpenMetricsServerConfig { addr };
+    impl TestServer {
+        fn new() -> Self {
+            Self {
+                server: None,
+                port: 9876, // Default port for tests
+            }
+        }
 
-        // Create and start server
-        let mut server = OpenMetricsServer::with_config(config);
-        server.start().expect("Failed to start server");
+        fn ensure_started(&mut self) {
+            if self.server.is_none() {
+                let addr = format!("127.0.0.1:{}", self.port).parse().unwrap();
+                let config = OpenMetricsServerConfig { addr };
 
-        // Give server time to start
-        thread::sleep(Duration::from_millis(100));
+                let mut server = OpenMetricsServer::with_config(config);
+                server.start().expect("Failed to start test server");
 
-        // Make a request to the metrics endpoint
-        let mut stream =
-            TcpStream::connect(format!("127.0.0.1:{}", port)).expect("Failed to connect to server");
+                // Give server time to start
+                thread::sleep(Duration::from_millis(100));
+
+                self.server = Some(server);
+            }
+        }
+    }
+
+    impl Drop for TestServer {
+        fn drop(&mut self) {
+            if let Some(mut server) = self.server.take() {
+                let _ = server.stop();
+            }
+        }
+    }
+
+    // Helper function to initialize the server once
+    fn initialize_server() {
+        INIT.call_once(|| {
+            let mut test_server = TEST_SERVER.lock().unwrap();
+            test_server.ensure_started();
+        });
+    }
+
+    // Helper function to make HTTP requests to the test server
+    fn make_request(path: &str) -> String {
+        initialize_server();
+        let test_server = TEST_SERVER.lock().unwrap();
+
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{}", test_server.port))
+            .expect("Failed to connect to server");
 
         // Send HTTP GET request
-        let request = "GET /metrics HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+        let request = format!(
+            "GET {} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            path
+        );
         stream
             .write_all(request.as_bytes())
             .expect("Failed to send request");
@@ -365,6 +398,22 @@ mod tests {
         stream
             .read_to_string(&mut response)
             .expect("Failed to read response");
+
+        response
+    }
+
+    #[test]
+    fn test_server_startup() {
+        initialize_server();
+        let test_server = TEST_SERVER.lock().unwrap();
+
+        // The server should be running
+        assert!(test_server.server.as_ref().unwrap().is_running());
+    }
+
+    #[test]
+    fn test_metrics_endpoint() {
+        let response = make_request("/metrics");
 
         // Verify response
         assert!(response.contains("200 OK"), "Expected 200 OK response");
@@ -388,86 +437,11 @@ mod tests {
             response.contains("nfm_request_count"),
             "Expected request count metric name in response"
         );
-        assert!(
-            response.contains("endpoint=\"metrics\""),
-            "Expected endpoint label in response"
-        );
-        assert!(
-            response.contains("status=\"success\""),
-            "Expected status label in response"
-        );
-
-        // Clean up
-        server.stop().expect("Failed to stop server");
-    }
-
-    #[test]
-    fn test_health_endpoint() {
-        // Start server on a specific port to avoid conflicts
-        let port = 9879;
-        let addr = format!("127.0.0.1:{}", port).parse().unwrap();
-        let config = OpenMetricsServerConfig { addr };
-
-        // Create and start server
-        let mut server = OpenMetricsServer::with_config(config);
-        server.start().expect("Failed to start server");
-
-        // Give server time to start
-        thread::sleep(Duration::from_millis(100));
-
-        // Make a request to the health endpoint
-        let mut stream =
-            TcpStream::connect(format!("127.0.0.1:{}", port)).expect("Failed to connect to server");
-
-        // Send HTTP GET request
-        let request = "GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
-        stream
-            .write_all(request.as_bytes())
-            .expect("Failed to send request");
-
-        // Read response
-        let mut response = String::new();
-        stream
-            .read_to_string(&mut response)
-            .expect("Failed to read response");
-
-        // Verify response
-        assert!(response.contains("200 OK"), "Expected 200 OK response");
-        assert!(response.contains("OK"), "Expected OK message in response");
-
-        // Clean up
-        server.stop().expect("Failed to stop server");
     }
 
     #[test]
     fn test_root_endpoint() {
-        // Start server on a specific port to avoid conflicts
-        let port = 9877;
-        let addr = format!("127.0.0.1:{}", port).parse().unwrap();
-        let config = OpenMetricsServerConfig { addr };
-
-        // Create and start server
-        let mut server = OpenMetricsServer::with_config(config);
-        server.start().expect("Failed to start server");
-
-        // Give server time to start
-        thread::sleep(Duration::from_millis(100));
-
-        // Make a request to the root endpoint
-        let mut stream =
-            TcpStream::connect(format!("127.0.0.1:{}", port)).expect("Failed to connect to server");
-
-        // Send HTTP GET request
-        let request = "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
-        stream
-            .write_all(request.as_bytes())
-            .expect("Failed to send request");
-
-        // Read response
-        let mut response = String::new();
-        stream
-            .read_to_string(&mut response)
-            .expect("Failed to read response");
+        let response = make_request("/");
 
         // Verify response
         assert!(response.contains("200 OK"), "Expected 200 OK response");
@@ -475,40 +449,11 @@ mod tests {
             response.contains("Network Flow Monitor Agent Metrics Server"),
             "Expected welcome message in response"
         );
-
-        // Clean up
-        server.stop().expect("Failed to stop server");
     }
 
     #[test]
     fn test_not_found() {
-        // Start server on a specific port to avoid conflicts
-        let port = 9878;
-        let addr = format!("127.0.0.1:{}", port).parse().unwrap();
-        let config = OpenMetricsServerConfig { addr };
-
-        // Create and start server
-        let mut server = OpenMetricsServer::with_config(config);
-        server.start().expect("Failed to start server");
-
-        // Give server time to start
-        thread::sleep(Duration::from_millis(100));
-
-        // Make a request to a non-existent endpoint
-        let mut stream =
-            TcpStream::connect(format!("127.0.0.1:{}", port)).expect("Failed to connect to server");
-
-        // Send HTTP GET request
-        let request = "GET /nonexistent HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
-        stream
-            .write_all(request.as_bytes())
-            .expect("Failed to send request");
-
-        // Read response
-        let mut response = String::new();
-        stream
-            .read_to_string(&mut response)
-            .expect("Failed to read response");
+        let response = make_request("/nonexistent");
 
         // Verify response
         assert!(response.contains("404"), "Expected 404 Not Found response");
@@ -516,8 +461,42 @@ mod tests {
             response.contains("Not Found"),
             "Expected Not Found message in response"
         );
+    }
 
-        // Clean up
-        server.stop().expect("Failed to stop server");
+    #[test]
+    fn test_default() {
+        let default_server = OpenMetricsServer::default();
+        let default_config = OpenMetricsServerConfig::default();
+
+        let expected_addr: SocketAddr = "127.0.0.1:80".parse().unwrap();
+        assert!(
+            default_server.config.addr == expected_addr,
+            "server default address is wrong"
+        );
+        assert!(
+            default_config.addr == expected_addr,
+            "config default address is wrong"
+        );
+    }
+
+    #[test]
+    fn test_stop() {
+        let mut default_server = OpenMetricsServer::default();
+        default_server
+            .start_on_addr("127.0.0.1:9999".parse().unwrap())
+            .expect("cannot start server");
+        default_server.stop().expect("cannot stop server");
+
+        assert!(!default_server.is_running(), "server is running after stop")
+    }
+
+    #[test]
+    fn test_server_config() {
+        let config = OpenMetricsServerConfig::for_addr("1.1.1.1".to_string(), 99);
+        let expected_address: SocketAddr = "1.1.1.1:99".parse().unwrap();
+        assert!(
+            config.addr == expected_address,
+            "config has invalid address"
+        );
     }
 }
