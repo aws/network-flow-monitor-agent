@@ -21,7 +21,7 @@ use prometheus::{Encoder, Registry, TextEncoder};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
-use crate::open_metrics::provider::get_open_metric_providers;
+use crate::open_metrics::provider::{get_open_metric_providers, OpenMetricProvider};
 
 /// Configuration options for the OpenMetricsServer
 pub struct OpenMetricsServerConfig {
@@ -183,12 +183,23 @@ impl Drop for OpenMetricsServer {
 async fn handle_request(
     req: Request<hyper::body::Incoming>,
     registry: Arc<Registry>,
+    providers: Arc<Vec<Box<dyn OpenMetricProvider>>>,
 ) -> Result<Response<String>, Infallible> {
     let path = req.uri().path();
     debug!(open_metric = "incoming_request", path = path; "Received request");
 
     let (status, content_type, body) = match path {
         "/metrics" => {
+            // Update the metrics
+            for provider in providers.iter() {
+                match provider.update_metrics() {
+                    Err(e) => {
+                        error!(open_metric = "metric_updated", error = e.to_string(); "Error updating metric")
+                    }
+                    Ok(()) => {}
+                }
+            }
+
             // Use the registry to generate metrics
             let encoder = TextEncoder::new();
             let metric_families = registry.gather();
@@ -231,7 +242,7 @@ async fn run_server(bind_addr: SocketAddr, cancel_token: CancellationToken) -> s
     );
 
     let mut registry = Arc::new(Registry::new());
-    let providers = get_open_metric_providers();
+    let providers = Arc::new(get_open_metric_providers());
     providers
         .iter()
         .for_each(|provider| provider.register(&mut Arc::get_mut(&mut registry).unwrap()));
@@ -246,20 +257,14 @@ async fn run_server(bind_addr: SocketAddr, cancel_token: CancellationToken) -> s
                         // Handle one request at a time
                         let io = TokioIo::new(stream);
 
-                        // Update metrics
-                        for provider in &providers {
-                            match provider.update_metrics() {
-                                Ok(()) => (),
-                                Err(e) => error!(open_metrics = "update_metric_error", error = e.to_string(); "Error updating metrics"),
-                            }
-                        }
+                        // Clone the Arc to use in the closure
                         let registry_clone = registry.clone();
+                        let providers_clone = providers.clone();
 
-                        // Process the connection
-                        // Use a closure to capture the registry
+                        // Process the connection. Single connection at a time.
                         if let Err(e) = http1::Builder::new()
                             .serve_connection(io, service_fn(move |req| {
-                                handle_request(req, registry_clone.clone())
+                                handle_request(req, registry_clone.clone(), providers_clone.clone())
                             }))
                             .await
                         {
