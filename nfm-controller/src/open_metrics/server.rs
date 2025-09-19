@@ -8,10 +8,7 @@
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
 
 use hyper::http::StatusCode;
 use hyper::server::conn::http1;
@@ -20,23 +17,18 @@ use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
 use log::{debug, error, info, warn};
 use tokio::net::TcpListener;
+use tokio_util::sync::CancellationToken;
 
 /// Configuration options for the OpenMetricsServer
 pub struct OpenMetricsServerConfig {
     /// Address to bind the server to
     pub addr: SocketAddr,
-    /// Timeout for connection operations
-    pub connection_timeout: Duration,
-    /// Grace period for shutdown
-    pub shutdown_grace_period: Duration,
 }
 
 impl Default for OpenMetricsServerConfig {
     fn default() -> Self {
         Self {
             addr: "127.0.0.1:80".parse().unwrap(),
-            connection_timeout: Duration::from_millis(100),
-            shutdown_grace_period: Duration::from_secs(5),
         }
     }
 }
@@ -55,8 +47,8 @@ impl OpenMetricsServerConfig {
 pub struct OpenMetricsServer {
     /// Thread handle for the server
     handle: Option<std::thread::JoinHandle<()>>,
-    /// Shutdown signal to gracefully terminate the server
-    shutdown_signal: Arc<AtomicBool>,
+    /// Cancellation token to gracefully terminate the server
+    cancel_token: CancellationToken,
     /// Server configuration
     config: OpenMetricsServerConfig,
 }
@@ -65,7 +57,7 @@ impl Default for OpenMetricsServer {
     fn default() -> Self {
         Self {
             handle: None,
-            shutdown_signal: Arc::new(AtomicBool::new(false)),
+            cancel_token: CancellationToken::new(),
             config: OpenMetricsServerConfig::default(),
         }
     }
@@ -76,7 +68,7 @@ impl OpenMetricsServer {
     pub fn with_config(config: OpenMetricsServerConfig) -> Self {
         Self {
             handle: None,
-            shutdown_signal: Arc::new(AtomicBool::new(false)),
+            cancel_token: CancellationToken::new(),
             config,
         }
     }
@@ -102,8 +94,8 @@ impl OpenMetricsServer {
             "Simple Prometheus metrics server starting"
         );
 
-        let shutdown_signal_clone = Arc::clone(&self.shutdown_signal);
-        let connection_timeout = self.config.connection_timeout;
+        let cancel_token = self.cancel_token.clone();
+
         let handle = thread::spawn(move || {
             // Create a simple runtime for the server
             let rt = tokio::runtime::Builder::new_current_thread()
@@ -113,9 +105,7 @@ impl OpenMetricsServer {
                 .expect("Failed to create Tokio runtime");
 
             rt.block_on(async {
-                if let Err(e) =
-                    run_server(bind_addr, shutdown_signal_clone, connection_timeout).await
-                {
+                if let Err(e) = run_server(bind_addr, cancel_token).await {
                     error!(error = e.to_string(); "Metrics server error");
                 }
             });
@@ -140,7 +130,8 @@ impl OpenMetricsServer {
 
         // Signal the server to shut down
         info!(open_metric = "shutdown_initiated"; "Initiating graceful shutdown of metrics server");
-        self.shutdown_signal.store(true, Ordering::SeqCst);
+
+        self.cancel_token.cancel();
         match handle.join() {
             Ok(_) => {
                 info!(open_metric = "shutdown_complete"; "Metrics server shut down gracefully")
@@ -151,8 +142,8 @@ impl OpenMetricsServer {
             ),
         }
 
-        // Reset the shutdown signal for potential restart
-        self.shutdown_signal = Arc::new(AtomicBool::new(false));
+        // Reset the cancellation token for potential restart
+        self.cancel_token = CancellationToken::new();
 
         Ok(())
     }
@@ -216,12 +207,8 @@ async fn handle_request(
     Ok(response)
 }
 
-/// Run the HTTP server - will terminate when shutdown signal is set
-async fn run_server(
-    bind_addr: SocketAddr,
-    shutdown_signal: Arc<AtomicBool>,
-    connection_timeout: Duration,
-) -> std::io::Result<()> {
+/// Run the HTTP server - will terminate when cancellation token is triggered
+async fn run_server(bind_addr: SocketAddr, cancel_token: CancellationToken) -> std::io::Result<()> {
     // Bind to the address
     let listener = TcpListener::bind(bind_addr).await?;
 
@@ -230,9 +217,9 @@ async fn run_server(
         "Metrics server listening"
     );
 
-    // Accept connections until shutdown signal is received
-    while !shutdown_signal.load(Ordering::Relaxed) {
-        // Use tokio::select to either accept a connection or timeout to check shutdown signal
+    // Accept connections until cancellation token is triggered
+    loop {
+        // Use tokio::select to either accept a connection or check cancellation token
         tokio::select! {
             accept_result = listener.accept() => {
                 match accept_result {
@@ -261,12 +248,17 @@ async fn run_server(
                     }
                 }
             }
-            _ = tokio::time::sleep(connection_timeout) => {
-                // Timeout occurred - this is expected, just continue the loop to check shutdown signal
-                continue;
+            _ = cancel_token.cancelled() => {
+                // Cancellation token triggered, exit the loop
+                info!(
+                    bind_addr = bind_addr.to_string();
+                    "Metrics server shutting down due to cancellation"
+                );
+                break;
             }
         }
     }
+
     Ok(())
 }
 
@@ -275,16 +267,13 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::net::TcpStream;
+    use std::time::Duration;
 
     #[test]
     fn test_server_startup() {
         // Use port 0 to let the OS assign an available port
         let addr = "127.0.0.1:0".parse().unwrap();
-        let config = OpenMetricsServerConfig {
-            addr,
-            connection_timeout: Duration::from_millis(50),
-            shutdown_grace_period: Duration::from_secs(1),
-        };
+        let config = OpenMetricsServerConfig { addr };
 
         // Create and start server
         let mut server = OpenMetricsServer::with_config(config);
@@ -303,70 +292,12 @@ mod tests {
         assert!(!server.is_running());
     }
 
-    /// Legacy API for backward compatibility
-    #[allow(dead_code)]
-    pub fn start_metrics_server(
-        bind_addr: SocketAddr,
-    ) -> (thread::JoinHandle<()>, Arc<AtomicBool>) {
-        let shutdown_signal = Arc::new(AtomicBool::new(false));
-        let connection_timeout = Duration::from_millis(100);
-
-        let shutdown_signal_clone = Arc::clone(&shutdown_signal);
-        let handle = thread::spawn(move || {
-            // Create a simple runtime for the server
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_io()
-                .enable_time()
-                .build()
-                .expect("Failed to create Tokio runtime");
-
-            rt.block_on(async {
-                if let Err(e) =
-                    run_server(bind_addr, shutdown_signal_clone, connection_timeout).await
-                {
-                    error!(error = e.to_string(); "Metrics server error");
-                }
-            });
-        });
-
-        (handle, shutdown_signal)
-    }
-
-    #[test]
-    fn test_legacy_api() {
-        // Use port 0 to let the OS assign an available port
-        let addr = "127.0.0.1:0".parse().unwrap();
-
-        // Start server and get handle and shutdown signal
-        let (handle, shutdown_signal) = start_metrics_server(addr);
-
-        // Give server time to start
-        thread::sleep(Duration::from_millis(50));
-
-        // The thread should be running
-        assert!(!handle.is_finished());
-
-        // Test graceful shutdown
-        info!(open_metric = "shutdown_initiated"; "Initiating graceful shutdown of metrics server");
-        shutdown_signal.store(true, Ordering::SeqCst);
-
-        // Give server time to shut down
-        thread::sleep(Duration::from_millis(200));
-
-        // The thread should have terminated
-        assert!(handle.is_finished());
-    }
-
     #[test]
     fn test_metrics_endpoint() {
         // Start server on a specific port to avoid conflicts
         let port = 9876;
         let addr = format!("127.0.0.1:{}", port).parse().unwrap();
-        let config = OpenMetricsServerConfig {
-            addr,
-            connection_timeout: Duration::from_millis(50),
-            shutdown_grace_period: Duration::from_secs(1),
-        };
+        let config = OpenMetricsServerConfig { addr };
 
         // Create and start server
         let mut server = OpenMetricsServer::with_config(config);
@@ -407,11 +338,7 @@ mod tests {
         // Start server on a specific port to avoid conflicts
         let port = 9879;
         let addr = format!("127.0.0.1:{}", port).parse().unwrap();
-        let config = OpenMetricsServerConfig {
-            addr,
-            connection_timeout: Duration::from_millis(50),
-            shutdown_grace_period: Duration::from_secs(1),
-        };
+        let config = OpenMetricsServerConfig { addr };
 
         // Create and start server
         let mut server = OpenMetricsServer::with_config(config);
@@ -449,11 +376,7 @@ mod tests {
         // Start server on a specific port to avoid conflicts
         let port = 9877;
         let addr = format!("127.0.0.1:{}", port).parse().unwrap();
-        let config = OpenMetricsServerConfig {
-            addr,
-            connection_timeout: Duration::from_millis(50),
-            shutdown_grace_period: Duration::from_secs(1),
-        };
+        let config = OpenMetricsServerConfig { addr };
 
         // Create and start server
         let mut server = OpenMetricsServer::with_config(config);
@@ -494,11 +417,7 @@ mod tests {
         // Start server on a specific port to avoid conflicts
         let port = 9878;
         let addr = format!("127.0.0.1:{}", port).parse().unwrap();
-        let config = OpenMetricsServerConfig {
-            addr,
-            connection_timeout: Duration::from_millis(50),
-            shutdown_grace_period: Duration::from_secs(1),
-        };
+        let config = OpenMetricsServerConfig { addr };
 
         // Create and start server
         let mut server = OpenMetricsServer::with_config(config);
