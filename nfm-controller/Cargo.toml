@@ -93,6 +93,7 @@ hyper = { version = "1.0", features = ["full"] }
 hyper-util = { version = "0.1", features = ["full"] }
 http-body-util = "0.1"
 futures-util = "0.3"
+prometheus = "0.13"
 
 [build-dependencies]
 cargo_metadata = "0.19"

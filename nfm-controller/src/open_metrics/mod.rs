@@ -3,4 +3,5 @@
 
 //! OpenMetrics/Prometheus metrics server module for the Network Flow Monitor agent.
 
+pub mod provider;
 pub mod server;

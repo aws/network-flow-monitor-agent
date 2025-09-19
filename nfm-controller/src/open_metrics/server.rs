@@ -8,6 +8,7 @@
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::thread;
 
 use hyper::http::StatusCode;
@@ -16,8 +17,11 @@ use hyper::service::service_fn;
 use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
 use log::{debug, error, info, warn};
+use prometheus::{Encoder, Registry, TextEncoder};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
+
+use crate::open_metrics::provider::{get_open_metric_providers, OpenMetricProvider};
 
 /// Configuration options for the OpenMetricsServer
 pub struct OpenMetricsServerConfig {
@@ -51,14 +55,29 @@ pub struct OpenMetricsServer {
     cancel_token: CancellationToken,
     /// Server configuration
     config: OpenMetricsServerConfig,
+    /// Prometheus registry
+    registry: Arc<Registry>,
+    /// Metric providers
+    providers: Vec<Box<dyn OpenMetricProvider>>,
 }
 
 impl Default for OpenMetricsServer {
     fn default() -> Self {
+        // Create registry and providers
+        let mut registry = Registry::new();
+        let providers = get_open_metric_providers();
+
+        // Register all providers with the registry
+        for provider in &providers {
+            provider.register(&mut registry);
+        }
+
         Self {
             handle: None,
             cancel_token: CancellationToken::new(),
             config: OpenMetricsServerConfig::default(),
+            registry: Arc::new(registry),
+            providers,
         }
     }
 }
@@ -66,10 +85,21 @@ impl Default for OpenMetricsServer {
 impl OpenMetricsServer {
     /// Create a new OpenMetricsServer with custom configuration
     pub fn with_config(config: OpenMetricsServerConfig) -> Self {
+        // Create registry and providers
+        let mut registry = Registry::new();
+        let providers = get_open_metric_providers();
+
+        // Register all providers with the registry
+        for provider in &providers {
+            provider.register(&mut registry);
+        }
+
         Self {
             handle: None,
             cancel_token: CancellationToken::new(),
             config,
+            registry: Arc::new(registry),
+            providers,
         }
     }
 
@@ -95,6 +125,14 @@ impl OpenMetricsServer {
         );
 
         let cancel_token = self.cancel_token.clone();
+        let registry = self.registry.clone();
+
+        // Update metrics before starting the server
+        for provider in &self.providers {
+            if let Err(e) = provider.update_metrics() {
+                warn!(error = e.to_string(); "Failed to update metrics");
+            }
+        }
 
         let handle = thread::spawn(move || {
             // Create a simple runtime for the server
@@ -105,7 +143,7 @@ impl OpenMetricsServer {
                 .expect("Failed to create Tokio runtime");
 
             rt.block_on(async {
-                if let Err(e) = run_server(bind_addr, cancel_token).await {
+                if let Err(e) = run_server(bind_addr, cancel_token, registry).await {
                     error!(error = e.to_string(); "Metrics server error");
                 }
             });
@@ -169,19 +207,22 @@ impl Drop for OpenMetricsServer {
 /// Handle HTTP request and return appropriate response
 async fn handle_request(
     req: Request<hyper::body::Incoming>,
+    registry: Arc<Registry>,
 ) -> Result<Response<String>, Infallible> {
     let path = req.uri().path();
     debug!(open_metric = "incoming_request", path = path; "Received request");
 
     let (status, content_type, body) = match path {
         "/metrics" => {
-            let metrics = "# HELP nfm_test_metric A simple test metric for NFM agent\n# TYPE nfm_test_metric gauge\nnfm_test_metric 42\n";
+            // Use the registry to generate metrics
+            let encoder = TextEncoder::new();
+            let metric_families = registry.gather();
+            let mut buffer = Vec::new();
+            encoder.encode(&metric_families, &mut buffer).unwrap();
+            let metrics = String::from_utf8(buffer).unwrap();
+
             debug!(endpoint = "metrics"; "Serving metrics endpoint");
-            (
-                StatusCode::OK,
-                "text/plain; version=0.0.4",
-                metrics.to_string(),
-            )
+            (StatusCode::OK, "text/plain; version=0.0.4", metrics)
         }
         "/" => {
             let body = "Network Flow Monitor Agent Metrics Server\n\nAvailable endpoints:\n- /metrics - Prometheus metrics\n";
@@ -204,7 +245,11 @@ async fn handle_request(
 }
 
 /// Run the HTTP server - will terminate when cancellation token is triggered
-async fn run_server(bind_addr: SocketAddr, cancel_token: CancellationToken) -> std::io::Result<()> {
+async fn run_server(
+    bind_addr: SocketAddr,
+    cancel_token: CancellationToken,
+    registry: Arc<Registry>,
+) -> std::io::Result<()> {
     // Bind to the address
     let listener = TcpListener::bind(bind_addr).await?;
 
@@ -223,10 +268,14 @@ async fn run_server(bind_addr: SocketAddr, cancel_token: CancellationToken) -> s
                     Ok((stream, _)) => {
                         // Handle one request at a time
                         let io = TokioIo::new(stream);
+                        let registry_clone = registry.clone();
 
                         // Process the connection
+                        // Use a closure to capture the registry
                         if let Err(e) = http1::Builder::new()
-                            .serve_connection(io, service_fn(handle_request))
+                            .serve_connection(io, service_fn(move |req| {
+                                handle_request(req, registry_clone.clone())
+                            }))
                             .await
                         {
                             warn!(
@@ -321,9 +370,33 @@ mod tests {
 
         // Verify response
         assert!(response.contains("200 OK"), "Expected 200 OK response");
+
+        // Check for first metric (gauge)
         assert!(
-            response.contains("nfm_test_metric 42"),
-            "Expected test metric in response"
+            response.contains("nfm_sample_metric"),
+            "Expected sample metric name in response"
+        );
+        assert!(
+            response.contains("service=\"nfm-agent\""),
+            "Expected service label in response"
+        );
+        assert!(
+            response.contains("environment=\"development\""),
+            "Expected environment label in response"
+        );
+
+        // Check for second metric (counter)
+        assert!(
+            response.contains("nfm_request_count"),
+            "Expected request count metric name in response"
+        );
+        assert!(
+            response.contains("endpoint=\"metrics\""),
+            "Expected endpoint label in response"
+        );
+        assert!(
+            response.contains("status=\"success\""),
+            "Expected status label in response"
         );
 
         // Clean up
