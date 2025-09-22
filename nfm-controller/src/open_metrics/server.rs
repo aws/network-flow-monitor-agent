@@ -318,147 +318,132 @@ async fn run_server(bind_addr: SocketAddr, cancel_token: CancellationToken) -> s
 #[cfg(test)]
 mod tests {
     use super::*;
-    use once_cell::sync::Lazy;
-    use std::io::{Read, Write};
-    use std::net::TcpStream;
-    use std::sync::{Mutex, Once};
+    use std::net::{Ipv4Addr, SocketAddrV4};
+    use std::sync::atomic::{AtomicU16, Ordering};
     use std::time::Duration;
 
-    // Define a static server instance that will be initialized once
-    static TEST_SERVER: Lazy<Mutex<TestServer>> = Lazy::new(|| Mutex::new(TestServer::new()));
-
-    // Initialize the server once before any tests run
-    static INIT: Once = Once::new();
+    // Use atomic counter to generate unique ports for each test
+    static NEXT_PORT: AtomicU16 = AtomicU16::new(9876);
 
     // Test server wrapper
     struct TestServer {
-        server: Option<OpenMetricsServer>,
+        server: OpenMetricsServer,
         port: u16,
     }
 
     impl TestServer {
         fn new() -> Self {
-            Self {
-                server: None,
-                port: 9876, // Default port for tests
-            }
+            // Get a unique port for this test instance
+            let port = NEXT_PORT.fetch_add(1, Ordering::SeqCst);
+            let addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), port).into();
+            let config = OpenMetricsServerConfig { addr };
+
+            let mut server = OpenMetricsServer::with_config(config);
+            server.start().expect("Failed to start test server");
+
+            Self { server, port }
         }
 
-        fn ensure_started(&mut self) {
-            if self.server.is_none() {
-                let addr = format!("127.0.0.1:{}", self.port).parse().unwrap();
-                let config = OpenMetricsServerConfig { addr };
+        fn make_request(&self, path: &str) -> (u16, String) {
+            let url = format!("http://127.0.0.1:{}{}", self.port, path);
+            let mut attempts = 0;
+            let max_attempts = 3;
 
-                let mut server = OpenMetricsServer::with_config(config);
-                server.start().expect("Failed to start test server");
-
-                // Give server time to start
-                thread::sleep(Duration::from_millis(100));
-
-                self.server = Some(server);
+            while attempts < max_attempts {
+                match reqwest::blocking::get(&url) {
+                    Ok(response) => {
+                        if response.status().is_success() || response.status().is_client_error() {
+                            let status = response.status().as_u16();
+                            let body = response.text().expect("Failed to read response body");
+                            return (status, body);
+                        }
+                        // If we get a server error, we might retry
+                        attempts += 1;
+                        thread::sleep(Duration::from_millis(100));
+                    }
+                    Err(e) => {
+                        if attempts == max_attempts - 1 {
+                            panic!(
+                                "Failed to connect to server after {} attempts: {}",
+                                max_attempts, e
+                            );
+                        }
+                        attempts += 1;
+                        thread::sleep(Duration::from_millis(100));
+                    }
+                }
             }
+
+            panic!(
+                "Failed to get a valid response after {} attempts",
+                max_attempts
+            );
         }
     }
 
     impl Drop for TestServer {
         fn drop(&mut self) {
-            if let Some(mut server) = self.server.take() {
-                let _ = server.stop();
-            }
+            let _ = self.server.stop();
         }
-    }
-
-    // Helper function to initialize the server once
-    fn initialize_server() {
-        INIT.call_once(|| {
-            let mut test_server = TEST_SERVER.lock().unwrap();
-            test_server.ensure_started();
-        });
-    }
-
-    // Helper function to make HTTP requests to the test server
-    fn make_request(path: &str) -> String {
-        initialize_server();
-        let test_server = TEST_SERVER.lock().unwrap();
-
-        let mut stream = TcpStream::connect(format!("127.0.0.1:{}", test_server.port))
-            .expect("Failed to connect to server");
-
-        // Send HTTP GET request
-        let request = format!(
-            "GET {} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
-            path
-        );
-        stream
-            .write_all(request.as_bytes())
-            .expect("Failed to send request");
-
-        // Read response
-        let mut response = String::new();
-        stream
-            .read_to_string(&mut response)
-            .expect("Failed to read response");
-
-        response
     }
 
     #[test]
     fn test_server_startup() {
-        initialize_server();
-        let test_server = TEST_SERVER.lock().unwrap();
-
-        // The server should be running
-        assert!(test_server.server.as_ref().unwrap().is_running());
+        let test_server = TestServer::new();
+        assert!(test_server.server.is_running());
     }
 
     #[test]
     fn test_metrics_endpoint() {
-        let response = make_request("/metrics");
+        let test_server = TestServer::new();
+        let (status, body) = test_server.make_request("/metrics");
 
         // Verify response
-        assert!(response.contains("200 OK"), "Expected 200 OK response");
+        assert_eq!(status, 200, "Expected 200 OK response");
 
         // Check for first metric (gauge)
         assert!(
-            response.contains("nfm_sample_metric"),
+            body.contains("nfm_sample_metric"),
             "Expected sample metric name in response"
         );
         assert!(
-            response.contains("service=\"nfm-agent\""),
+            body.contains("service=\"nfm-agent\""),
             "Expected service label in response"
         );
         assert!(
-            response.contains("environment=\"development\""),
+            body.contains("environment=\"development\""),
             "Expected environment label in response"
         );
 
         // Check for second metric (counter)
         assert!(
-            response.contains("nfm_request_count"),
+            body.contains("nfm_request_count"),
             "Expected request count metric name in response"
         );
     }
 
     #[test]
     fn test_root_endpoint() {
-        let response = make_request("/");
+        let test_server = TestServer::new();
+        let (status, body) = test_server.make_request("/");
 
         // Verify response
-        assert!(response.contains("200 OK"), "Expected 200 OK response");
+        assert_eq!(status, 200, "Expected 200 OK response");
         assert!(
-            response.contains("Network Flow Monitor Agent Metrics Server"),
+            body.contains("Network Flow Monitor Agent Metrics Server"),
             "Expected welcome message in response"
         );
     }
 
     #[test]
     fn test_not_found() {
-        let response = make_request("/nonexistent");
+        let test_server = TestServer::new();
+        let (status, body) = test_server.make_request("/nonexistent");
 
         // Verify response
-        assert!(response.contains("404"), "Expected 404 Not Found response");
+        assert_eq!(status, 404, "Expected 404 Not Found response");
         assert!(
-            response.contains("Not Found"),
+            body.contains("Not Found"),
             "Expected Not Found message in response"
         );
     }

@@ -17,6 +17,7 @@ pub fn get_open_metric_providers() -> Vec<Box<dyn OpenMetricProvider>> {
 }
 
 /// Dummy metric provider as an example to integrate with the prometheus client
+/// No tests since will be removed later.
 pub struct DummyOpenMetricProvider {
     gauge: GaugeVec,
     counter: CounterVec,
