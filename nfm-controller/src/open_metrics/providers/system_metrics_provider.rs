@@ -9,6 +9,36 @@ use anyhow;
 use log::info;
 use prometheus::{IntGaugeVec, Opts, Registry};
 
+/// System level metrics.
+struct SystemMetric {
+    key: SystemMetricKey,
+    value: SystemMetricValues,
+}
+
+/// Metric key. Pod and node will be availble only on EKS environments.
+struct SystemMetricKey {
+    instance: String,
+    eni: String,
+    pod: String,
+    node: String,
+}
+
+/// Values provided by the metrics.
+struct SystemMetricValues {
+    ingress_flow_count: u32,
+    ingress_pkt_count: u32,
+    ingress_bytes_count: u32,
+
+    egress_flow_count: u32,
+    egress_pkt_count: u32,
+    egress_bytes_count: u32,
+
+    bw_in_allowance_exceeded: u32,
+    bw_out_allowance_exceeded: u32,
+    pps_allowance_exceeded: u32,
+    conntrack_allowance_exceeded: u32,
+}
+
 pub struct SystemMetricsProvider {
     compute_platform: ComputePlatform,
 
@@ -104,19 +134,6 @@ impl SystemMetricsProvider {
             },
         }]
     }
-
-    fn update_ec2_metrics(&self) -> Result<(), anyhow::Error> {
-        panic!("update_ec2_metrics not implemented")
-    }
-
-    fn update_eks_metrics(&self) -> Result<(), anyhow::Error> {
-        panic!("update_eks_metrics not implemented")
-    }
-}
-
-struct SystemMetric {
-    key: SystemMetricKey,
-    value: SystemMetricValues,
 }
 
 impl SystemMetric {
@@ -141,33 +158,10 @@ impl SystemMetric {
     }
 }
 
-/// Metric key. Pod and node will be availble only on EKS environments.
-struct SystemMetricKey {
-    instance: String,
-    eni: String,
-    pod: String,
-    node: String,
-}
-
-struct SystemMetricValues {
-    ingress_flow_count: u32,
-    ingress_pkt_count: u32,
-    ingress_bytes_count: u32,
-
-    egress_flow_count: u32,
-    egress_pkt_count: u32,
-    egress_bytes_count: u32,
-
-    bw_in_allowance_exceeded: u32,
-    bw_out_allowance_exceeded: u32,
-    pps_allowance_exceeded: u32,
-    conntrack_allowance_exceeded: u32,
-}
-
 /// Open metric implementation. It will provide host level metrics annotated with
 /// environment metadata.
 impl OpenMetricProvider for SystemMetricsProvider {
-    fn register(&self, registry: &mut Registry) {
+    fn register_to(&self, registry: &mut Registry) {
         info!(platform = self.compute_platform.to_string(); "Registering System Metrics");
 
         registry
@@ -209,9 +203,40 @@ impl OpenMetricProvider for SystemMetricsProvider {
         let metrics = self.get_metrics();
 
         for metric in &metrics {
+            let label_values = metric.label_values(&self.compute_platform);
+
             self.ingress_flow_count
-                .with_label_values(&metric.label_values(&self.compute_platform))
+                .with_label_values(&label_values)
                 .set(metric.value.ingress_flow_count as i64);
+            self.ingress_bytes_count
+                .with_label_values(&label_values)
+                .set(metric.value.ingress_bytes_count as i64);
+            self.ingress_pkt_count
+                .with_label_values(&label_values)
+                .set(metric.value.ingress_pkt_count as i64);
+
+            self.egress_flow_count
+                .with_label_values(&label_values)
+                .set(metric.value.egress_flow_count as i64);
+            self.egress_bytes_count
+                .with_label_values(&label_values)
+                .set(metric.value.egress_bytes_count as i64);
+            self.egress_pkt_count
+                .with_label_values(&label_values)
+                .set(metric.value.egress_pkt_count as i64);
+
+            self.bw_in_allowance_exceeded
+                .with_label_values(&label_values)
+                .set(metric.value.bw_in_allowance_exceeded as i64);
+            self.bw_out_allowance_exceeded
+                .with_label_values(&label_values)
+                .set(metric.value.bw_out_allowance_exceeded as i64);
+            self.pps_allowance_exceeded
+                .with_label_values(&label_values)
+                .set(metric.value.pps_allowance_exceeded as i64);
+            self.conntrack_allowance_exceeded
+                .with_label_values(&label_values)
+                .set(metric.value.conntrack_allowance_exceeded as i64);
         }
 
         Ok(())
