@@ -4,9 +4,11 @@
 pub mod events;
 pub mod kubernetes;
 pub mod metadata;
-pub mod open_metrics;
 pub mod reports;
 pub mod utils;
+
+#[cfg(feature = "open-metrics")]
+pub mod open_metrics;
 
 use aya::util::KernelVersion;
 use caps::{CapSet, Capability};
@@ -34,13 +36,15 @@ use crate::events::{
     nat_resolver::{NatResolver, NatResolverImpl, NatResolverNoOp},
     network_event::AggregateResults,
 };
-use crate::open_metrics::server::{OpenMetricsServer, OpenMetricsServerConfig};
 use crate::reports::publisher::ReportPublisher;
 use crate::reports::report::{NfmReport, ProcessStats, UsageStats};
 use crate::utils::{
     event_timer, CpuUsageMonitor, EventTimer, MemoryInspector, ProcessMemoryInspector,
     SystemBootClock,
 };
+
+#[cfg(feature = "open-metrics")]
+use crate::open_metrics::server::{OpenMetricsServer, OpenMetricsServerConfig};
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, ValueEnum)]
 #[serde(rename_all = "lowercase")]
@@ -127,14 +131,17 @@ pub struct Options {
     resolve_nat: OnOff,
 
     /// Enable OpenMetrics server for Prometheus-compatible metrics
+    #[cfg(feature = "open-metrics")]
     #[clap(long = "open-metrics", default_value_t = OnOff::Off)]
     open_metrics: OnOff,
 
     /// Port for OpenMetrics server
+    #[cfg(feature = "open-metrics")]
     #[clap(long = "open-metrics-port", default_value_t = 80)]
     open_metrics_port: u16,
 
     /// Address for OpenMetrics server
+    #[cfg(feature = "open-metrics")]
     #[clap(long = "open-metrics-address", default_value = "127.0.0.1")]
     open_metrics_address: String,
 }
@@ -212,20 +219,8 @@ pub fn on_load(opt: Options) -> Result<(), anyhow::Error> {
     };
     let host_stats_provider = HostStatsProviderImpl::new();
 
-    // Start OpenMetrics server in a separate thread before entering main loop
-    let mut open_metrics_server = if opt.open_metrics == OnOff::On {
-        let config = OpenMetricsServerConfig::for_addr(
-            opt.open_metrics_address.clone(),
-            opt.open_metrics_port,
-        );
-        let mut server = OpenMetricsServer::with_config(config);
-        if let Err(e) = server.start() {
-            warn!("Failed to start OpenMetrics server: {}", e);
-        }
-        Some(server)
-    } else {
-        None
-    };
+    #[cfg(feature = "open-metrics")]
+    start_open_metrics_server(&opt);
 
     do_work(
         event_provider,
@@ -236,13 +231,6 @@ pub fn on_load(opt: Options) -> Result<(), anyhow::Error> {
         host_stats_provider,
         opt,
     );
-
-    // Stop OpenMetrics server if it was started
-    if let Some(ref mut server) = open_metrics_server {
-        if let Err(e) = server.stop() {
-            warn!("Failed to stop OpenMetrics server: {}", e);
-        }
-    }
 
     Ok(())
 }
@@ -347,6 +335,21 @@ fn do_work(
             usage_stats.mem_used_ratio = usage_stats.mem_used_ratio.max(mem_used_ratio);
             usage_stats.sockets_tracked = usage_stats.sockets_tracked.max(provider.socket_count());
             usage_stats.ebpf_allocated_mem_kb = provider.ebpf_allocated_mem_kb();
+        }
+    }
+}
+
+#[cfg(feature = "open-metrics")]
+fn start_open_metrics_server(opt: &Options) {
+    // Start OpenMetrics server in a separate thread before entering main loop
+    if opt.open_metrics == OnOff::On {
+        let config = OpenMetricsServerConfig::for_addr(
+            opt.open_metrics_address.clone(),
+            opt.open_metrics_port,
+        );
+        let mut server = OpenMetricsServer::with_config(config);
+        if let Err(e) = server.start() {
+            panic!("Failed to start OpenMetrics server: {}", e);
         }
     }
 }
@@ -476,6 +479,51 @@ mod test {
         }
     }
 
+    #[cfg(feature = "open-metrics")]
+    fn create_options() -> Options {
+        Options {
+            log_reports: OnOff::Off,
+            publish_reports: OnOff::Off,
+            endpoint: "a".to_string(),
+            endpoint_region: "b".to_string(),
+            cgroup: "c".to_string(),
+            proxy: "d".to_string(),
+            top_k: 100,
+            notrack_secs: 0,
+            usage_data: OnOff::On,
+            aggregate_msecs: 0,
+            publish_secs: 0,
+            jitter_secs: 0,
+            report_compression: ReportCompression::None,
+            kubernetes_metadata: OnOff::On,
+            resolve_nat: OnOff::On,
+            open_metrics: OnOff::Off,
+            open_metrics_port: 80,
+            open_metrics_address: "127.0.0.1".to_string(),
+        }
+    }
+
+    #[cfg(not(feature = "open-metrics"))]
+    fn create_options() -> Options {
+        Options {
+            log_reports: OnOff::Off,
+            publish_reports: OnOff::Off,
+            endpoint: "a".to_string(),
+            endpoint_region: "b".to_string(),
+            cgroup: "c".to_string(),
+            proxy: "d".to_string(),
+            top_k: 100,
+            notrack_secs: 0,
+            usage_data: OnOff::On,
+            aggregate_msecs: 0,
+            publish_secs: 0,
+            jitter_secs: 0,
+            report_compression: ReportCompression::None,
+            kubernetes_metadata: OnOff::On,
+            resolve_nat: OnOff::On,
+        }
+    }
+
     #[test]
     fn test_do_work() {
         let event_provider = EventProviderNoOp::default();
@@ -501,26 +549,7 @@ mod test {
                 publisher_clone,
                 metadata_provider_clone,
                 host_stats_provider_clone,
-                Options {
-                    log_reports: OnOff::Off,
-                    publish_reports: OnOff::Off,
-                    endpoint: "a".to_string(),
-                    endpoint_region: "b".to_string(),
-                    cgroup: "c".to_string(),
-                    proxy: "d".to_string(),
-                    top_k: 100,
-                    notrack_secs: 0,
-                    usage_data: OnOff::On,
-                    aggregate_msecs: 0,
-                    publish_secs: 0,
-                    jitter_secs: 0,
-                    report_compression: ReportCompression::None,
-                    kubernetes_metadata: OnOff::On,
-                    resolve_nat: OnOff::On,
-                    open_metrics: OnOff::Off,
-                    open_metrics_port: 80,
-                    open_metrics_address: "127.0.0.1".to_string(),
-                },
+                create_options(),
             );
         });
 

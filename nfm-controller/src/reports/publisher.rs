@@ -190,6 +190,7 @@ mod tests {
         assert_eq!(publisher.publishers.len(), 2);
     }
 
+    #[cfg(feature = "open-metrics")]
     fn create_options(with_log: OnOff, with_endpoint: OnOff) -> Options {
         Options {
             log_reports: with_log,
@@ -210,6 +211,27 @@ mod tests {
             open_metrics: OnOff::Off,
             open_metrics_port: 0,
             open_metrics_address: "127.0.0.1".to_string(),
+        }
+    }
+
+    #[cfg(not(feature = "open-metrics"))]
+    fn create_options(with_log: OnOff, with_endpoint: OnOff) -> Options {
+        Options {
+            log_reports: with_log,
+            publish_reports: with_endpoint,
+            endpoint: "a".to_string(),
+            endpoint_region: "b".to_string(),
+            cgroup: "c".to_string(),
+            proxy: "d".to_string(),
+            top_k: 100,
+            notrack_secs: 0,
+            usage_data: OnOff::Off,
+            aggregate_msecs: 100,
+            publish_secs: 30,
+            jitter_secs: 0,
+            report_compression: ReportCompression::None,
+            kubernetes_metadata: OnOff::On,
+            resolve_nat: OnOff::On,
         }
     }
 }
