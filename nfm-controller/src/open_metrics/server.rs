@@ -22,6 +22,7 @@ use prometheus::{Encoder, Registry, TextEncoder};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
+use crate::metadata::runtime_environment_metadata::ComputePlatform;
 use crate::open_metrics::provider::{get_open_metric_providers, OpenMetricProvider};
 
 /// Configuration options for the OpenMetricsServer
@@ -245,7 +246,7 @@ async fn run_server(bind_addr: SocketAddr, cancel_token: CancellationToken) -> s
     );
 
     let mut registry = Arc::new(Registry::new());
-    let providers = Arc::new(get_open_metric_providers());
+    let providers = Arc::new(get_open_metric_providers(ComputePlatform::Ec2K8sEks));
     providers
         .iter()
         .for_each(|provider| provider.register_to(&mut Arc::get_mut(&mut registry).unwrap()));

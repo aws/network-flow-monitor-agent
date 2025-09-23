@@ -5,15 +5,25 @@
 
 use prometheus::{CounterVec, GaugeVec, Opts, Registry};
 
+use crate::{
+    metadata::runtime_environment_metadata::ComputePlatform,
+    open_metrics::providers::system_metrics_provider::SystemMetricsProvider,
+};
+
+pub fn get_open_metric_providers(
+    compute_platform: ComputePlatform,
+) -> Vec<Box<dyn OpenMetricProvider>> {
+    vec![
+        Box::new(DummyOpenMetricProvider::new()),
+        Box::new(SystemMetricsProvider::new(&compute_platform)),
+    ]
+}
+
 pub trait OpenMetricProvider {
     /// Registers the metrics provided by the object.
     fn register_to(&self, registry: &mut Registry);
     /// Updates the registered values with the new values.
     fn update_metrics(&self) -> Result<(), anyhow::Error>;
-}
-
-pub fn get_open_metric_providers() -> Vec<Box<dyn OpenMetricProvider>> {
-    vec![Box::new(DummyOpenMetricProvider::new())]
 }
 
 /// Dummy metric provider as an example to integrate with the prometheus client
