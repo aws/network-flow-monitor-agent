@@ -7,7 +7,7 @@ use prometheus::{CounterVec, GaugeVec, Opts, Registry};
 
 pub trait OpenMetricProvider {
     /// Registers the metrics provided by the object.
-    fn register(&self, registry: &mut Registry);
+    fn register_to(&self, registry: &mut Registry);
     /// Updates the registered values with the new values.
     fn update_metrics(&self) -> Result<(), anyhow::Error>;
 }
@@ -53,7 +53,7 @@ impl DummyOpenMetricProvider {
 }
 
 impl OpenMetricProvider for DummyOpenMetricProvider {
-    fn register(&self, registry: &mut Registry) {
+    fn register_to(&self, registry: &mut Registry) {
         // Register the metrics with the registry
         registry.register(Box::new(self.gauge.clone())).unwrap();
         registry.register(Box::new(self.counter.clone())).unwrap();

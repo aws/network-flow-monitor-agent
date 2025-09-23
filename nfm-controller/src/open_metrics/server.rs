@@ -40,7 +40,9 @@ impl Default for OpenMetricsServerConfig {
 
 impl OpenMetricsServerConfig {
     pub fn for_addr(addr: String, port: u16) -> Self {
-        let socket_addr = format!("{}:{}", addr, port).parse().unwrap();
+        let socket_addr = format!("{}:{}", addr, port)
+            .parse()
+            .expect("Invalid server address");
         Self {
             addr: socket_addr,
             ..OpenMetricsServerConfig::default()
@@ -71,15 +73,6 @@ impl Default for OpenMetricsServer {
 impl OpenMetricsServer {
     /// Create a new OpenMetricsServer with custom configuration
     pub fn with_config(config: OpenMetricsServerConfig) -> Self {
-        // Create registry and providers
-        let mut registry = Registry::new();
-        let providers = get_open_metric_providers();
-
-        // Register all providers with the registry
-        for provider in &providers {
-            provider.register(&mut registry);
-        }
-
         Self {
             handle: None,
             cancel_token: CancellationToken::new(),
@@ -255,7 +248,7 @@ async fn run_server(bind_addr: SocketAddr, cancel_token: CancellationToken) -> s
     let providers = Arc::new(get_open_metric_providers());
     providers
         .iter()
-        .for_each(|provider| provider.register(&mut Arc::get_mut(&mut registry).unwrap()));
+        .for_each(|provider| provider.register_to(&mut Arc::get_mut(&mut registry).unwrap()));
 
     // Accept connections until cancellation token is triggered
     loop {

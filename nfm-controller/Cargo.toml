@@ -87,10 +87,10 @@ tokio = { version = "1.45.1", features = [
     "net",
     "signal",
 ] }
-tokio-util = "*"
+tokio-util = "0.7"
 url = "2.5"
-hyper = { version = "1.0", features = ["full"] }
-hyper-util = { version = "0.1", features = ["full"] }
+hyper = { version = "1.0", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
 futures-util = "0.3"
 prometheus = "0.13"
