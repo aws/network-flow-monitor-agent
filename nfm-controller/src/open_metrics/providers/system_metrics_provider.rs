@@ -2,8 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::{
-    metadata::runtime_environment_metadata::ComputePlatform,
+    metadata::{
+        eni::EniMetadataProvider, k8s_metadata::K8sMetadata,
+        runtime_environment_metadata::ComputePlatform,
+    },
     open_metrics::provider::OpenMetricProvider,
+    reports::report::ReportValue,
 };
 use anyhow;
 use log::info;
@@ -19,20 +23,11 @@ struct SystemMetric {
 struct SystemMetricKey {
     instance: String,
     eni: String,
-    pod: String,
     node: String,
 }
 
 /// Values provided by the metrics.
 struct SystemMetricValues {
-    ingress_flow_count: u32,
-    ingress_pkt_count: u32,
-    ingress_bytes_count: u32,
-
-    egress_flow_count: u32,
-    egress_pkt_count: u32,
-    egress_bytes_count: u32,
-
     bw_in_allowance_exceeded: u32,
     bw_out_allowance_exceeded: u32,
     pps_allowance_exceeded: u32,
@@ -41,14 +36,8 @@ struct SystemMetricValues {
 
 pub struct SystemMetricsProvider {
     compute_platform: ComputePlatform,
-
-    ingress_flow_count: IntGaugeVec,
-    ingress_pkt_count: IntGaugeVec,
-    ingress_bytes_count: IntGaugeVec,
-
-    egress_flow_count: IntGaugeVec,
-    egress_pkt_count: IntGaugeVec,
-    egress_bytes_count: IntGaugeVec,
+    eni_metadata_provider: EniMetadataProvider,
+    node_name: String,
 
     bw_in_allowance_exceeded: IntGaugeVec,
     bw_out_allowance_exceeded: IntGaugeVec,
@@ -58,40 +47,15 @@ pub struct SystemMetricsProvider {
 
 impl SystemMetricsProvider {
     pub fn new(compute_platform: &ComputePlatform) -> Self {
+        let node_name = match K8sMetadata::default().node_name {
+            Some(ReportValue::String(node_name)) => node_name,
+            _ => "unknown".to_string(),
+        };
+
         SystemMetricsProvider {
             compute_platform: compute_platform.clone(),
-
-            ingress_flow_count: build_gauge_metric(
-                compute_platform,
-                "ingress_flow_count",
-                "Ingress flow count",
-            ),
-            ingress_pkt_count: build_gauge_metric(
-                compute_platform,
-                "ingress_pkt_count",
-                "Ingress packet count",
-            ),
-            ingress_bytes_count: build_gauge_metric(
-                compute_platform,
-                "ingress_bytes_count",
-                "Ingress bytes count",
-            ),
-
-            egress_flow_count: build_gauge_metric(
-                compute_platform,
-                "egress_flow_count",
-                "Egress flow count",
-            ),
-            egress_pkt_count: build_gauge_metric(
-                compute_platform,
-                "egress_pkt_count",
-                "Egress packet count",
-            ),
-            egress_bytes_count: build_gauge_metric(
-                compute_platform,
-                "egress_bytes_count",
-                "Egress bytes count",
-            ),
+            eni_metadata_provider: EniMetadataProvider::new(),
+            node_name: node_name,
 
             bw_in_allowance_exceeded: build_gauge_metric(
                 compute_platform,
@@ -113,26 +77,24 @@ impl SystemMetricsProvider {
     }
 
     fn get_metrics(&self) -> Vec<SystemMetric> {
-        vec![SystemMetric {
-            key: SystemMetricKey {
-                instance: "dummy-instance-id".into(),
-                eni: "dummy-eni".into(),
-                pod: "dummy-pod".into(),
-                node: "dummy-node".into(),
-            },
-            value: SystemMetricValues {
-                ingress_flow_count: 99,
-                ingress_pkt_count: 0,
-                ingress_bytes_count: 0,
-                egress_flow_count: 0,
-                egress_pkt_count: 0,
-                egress_bytes_count: 0,
-                bw_in_allowance_exceeded: 0,
-                bw_out_allowance_exceeded: 0,
-                pps_allowance_exceeded: 0,
-                conntrack_allowance_exceeded: 0,
-            },
-        }]
+        let network_interfaces = self.eni_metadata_provider.get_network_devices();
+        let mut metrics = vec![];
+        for interface in network_interfaces {
+            metrics.push(SystemMetric {
+                key: SystemMetricKey {
+                    instance: self.eni_metadata_provider.instance_id.clone(),
+                    eni: interface.interface_id,
+                    node: self.node_name.clone(),
+                },
+                value: SystemMetricValues {
+                    bw_in_allowance_exceeded: 0,
+                    bw_out_allowance_exceeded: 0,
+                    pps_allowance_exceeded: 0,
+                    conntrack_allowance_exceeded: 0,
+                },
+            })
+        }
+        metrics
     }
 }
 
@@ -140,19 +102,16 @@ impl SystemMetric {
     fn get_labels(compute_platform: &ComputePlatform) -> &[&str] {
         match compute_platform {
             ComputePlatform::Ec2Plain => &["instance_id", "eni"],
-            ComputePlatform::Ec2K8sEks | ComputePlatform::Ec2K8sVanilla => &["eni", "pod", "node"],
+            ComputePlatform::Ec2K8sEks | ComputePlatform::Ec2K8sVanilla => &["eni", "node"],
         }
     }
 
     fn label_values(&self, compute_platform: &ComputePlatform) -> Vec<&str> {
+        // The order of the elements must match the labels in SystemMetric::get_labels
         match compute_platform {
             ComputePlatform::Ec2Plain => vec![&self.key.instance.as_str(), &self.key.eni.as_str()],
             ComputePlatform::Ec2K8sEks | ComputePlatform::Ec2K8sVanilla => {
-                vec![
-                    &self.key.eni.as_str(),
-                    &self.key.pod.as_str(),
-                    &self.key.node.as_str(),
-                ]
+                vec![&self.key.eni.as_str(), &self.key.node.as_str()]
             }
         }
     }
@@ -163,26 +122,6 @@ impl SystemMetric {
 impl OpenMetricProvider for SystemMetricsProvider {
     fn register_to(&self, registry: &mut Registry) {
         info!(platform = self.compute_platform.to_string(); "Registering System Metrics");
-
-        registry
-            .register(Box::new(self.ingress_flow_count.clone()))
-            .unwrap();
-        registry
-            .register(Box::new(self.ingress_pkt_count.clone()))
-            .unwrap();
-        registry
-            .register(Box::new(self.ingress_bytes_count.clone()))
-            .unwrap();
-
-        registry
-            .register(Box::new(self.egress_flow_count.clone()))
-            .unwrap();
-        registry
-            .register(Box::new(self.egress_pkt_count.clone()))
-            .unwrap();
-        registry
-            .register(Box::new(self.egress_bytes_count.clone()))
-            .unwrap();
 
         registry
             .register(Box::new(self.bw_in_allowance_exceeded.clone()))
@@ -204,26 +143,6 @@ impl OpenMetricProvider for SystemMetricsProvider {
 
         for metric in &metrics {
             let label_values = metric.label_values(&self.compute_platform);
-
-            self.ingress_flow_count
-                .with_label_values(&label_values)
-                .set(metric.value.ingress_flow_count as i64);
-            self.ingress_bytes_count
-                .with_label_values(&label_values)
-                .set(metric.value.ingress_bytes_count as i64);
-            self.ingress_pkt_count
-                .with_label_values(&label_values)
-                .set(metric.value.ingress_pkt_count as i64);
-
-            self.egress_flow_count
-                .with_label_values(&label_values)
-                .set(metric.value.egress_flow_count as i64);
-            self.egress_bytes_count
-                .with_label_values(&label_values)
-                .set(metric.value.egress_bytes_count as i64);
-            self.egress_pkt_count
-                .with_label_values(&label_values)
-                .set(metric.value.egress_pkt_count as i64);
 
             self.bw_in_allowance_exceeded
                 .with_label_values(&label_values)

@@ -331,10 +331,12 @@ mod test {
         let device1 = NetworkDevice {
             interface_id: "id1".to_string(),
             device_name: "eth1".to_string(),
+            pod_name: None,
         };
         let device2 = NetworkDevice {
             interface_id: "id2".to_string(),
             device_name: "eth2".to_string(),
+            pod_name: None,
         };
         let expected_stats1 = NetworkInterfaceStats {
             bw_in_allowance_exceeded: 5,

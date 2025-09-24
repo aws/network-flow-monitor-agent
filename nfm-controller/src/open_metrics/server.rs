@@ -22,7 +22,10 @@ use prometheus::{Encoder, Registry, TextEncoder};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
-use crate::metadata::runtime_environment_metadata::ComputePlatform;
+use crate::metadata::env_metadata_provider::EnvMetadataProvider;
+use crate::metadata::runtime_environment_metadata::{
+    ComputePlatform, RuntimeEnvironmentMetadataProvider,
+};
 use crate::open_metrics::provider::{get_open_metric_providers, OpenMetricProvider};
 
 /// Configuration options for the OpenMetricsServer
@@ -105,8 +108,10 @@ impl OpenMetricsServer {
         let cancel_token = self.cancel_token.clone();
 
         let handle = thread::spawn(move || {
-            // Create a simple runtime for the server
-            let rt = tokio::runtime::Builder::new_current_thread()
+            // Runtime with 2 threads to allow usage of metadata providers, since it needs to
+            // block to access IMDS.
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
                 .enable_io()
                 .enable_time()
                 .build()
@@ -246,7 +251,9 @@ async fn run_server(bind_addr: SocketAddr, cancel_token: CancellationToken) -> s
     );
 
     let mut registry = Arc::new(Registry::new());
-    let providers = Arc::new(get_open_metric_providers(ComputePlatform::Ec2K8sEks));
+    //let compute_platform = RuntimeEnvironmentMetadataProvider::get_compute_platform();
+    let compute_platform = ComputePlatform::Ec2K8sEks;
+    let providers = Arc::new(get_open_metric_providers(compute_platform));
     providers
         .iter()
         .for_each(|provider| provider.register_to(&mut Arc::get_mut(&mut registry).unwrap()));
