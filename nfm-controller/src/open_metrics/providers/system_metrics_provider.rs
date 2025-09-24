@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::{
+    events::host_stats_provider::{HostStatsProvider, HostStatsProviderImpl},
     metadata::{
         eni::EniMetadataProvider, k8s_metadata::K8sMetadata,
         runtime_environment_metadata::ComputePlatform,
@@ -28,15 +29,16 @@ struct SystemMetricKey {
 
 /// Values provided by the metrics.
 struct SystemMetricValues {
-    bw_in_allowance_exceeded: u32,
-    bw_out_allowance_exceeded: u32,
-    pps_allowance_exceeded: u32,
-    conntrack_allowance_exceeded: u32,
+    bw_in_allowance_exceeded: u64,
+    bw_out_allowance_exceeded: u64,
+    pps_allowance_exceeded: u64,
+    conntrack_allowance_exceeded: u64,
 }
 
 pub struct SystemMetricsProvider {
     compute_platform: ComputePlatform,
     eni_metadata_provider: EniMetadataProvider,
+    host_stats_provider: HostStatsProviderImpl,
     node_name: String,
 
     bw_in_allowance_exceeded: IntGaugeVec,
@@ -55,6 +57,7 @@ impl SystemMetricsProvider {
         SystemMetricsProvider {
             compute_platform: compute_platform.clone(),
             eni_metadata_provider: EniMetadataProvider::new(),
+            host_stats_provider: HostStatsProviderImpl::new(),
             node_name: node_name,
 
             bw_in_allowance_exceeded: build_gauge_metric(
@@ -76,21 +79,22 @@ impl SystemMetricsProvider {
         }
     }
 
-    fn get_metrics(&self) -> Vec<SystemMetric> {
-        let network_interfaces = self.eni_metadata_provider.get_network_devices();
+    fn get_metrics(&mut self) -> Vec<SystemMetric> {
+        self.host_stats_provider
+            .set_network_devices(&self.eni_metadata_provider.get_network_devices());
         let mut metrics = vec![];
-        for interface in network_interfaces {
+        for host_stat in self.host_stats_provider.get_stats().interface_stats {
             metrics.push(SystemMetric {
                 key: SystemMetricKey {
                     instance: self.eni_metadata_provider.instance_id.clone(),
-                    eni: interface.interface_id,
+                    eni: host_stat.interface_id,
                     node: self.node_name.clone(),
                 },
                 value: SystemMetricValues {
-                    bw_in_allowance_exceeded: 0,
-                    bw_out_allowance_exceeded: 0,
-                    pps_allowance_exceeded: 0,
-                    conntrack_allowance_exceeded: 0,
+                    bw_in_allowance_exceeded: host_stat.stats.bw_in_allowance_exceeded,
+                    bw_out_allowance_exceeded: host_stat.stats.bw_out_allowance_exceeded,
+                    pps_allowance_exceeded: host_stat.stats.pps_allowance_exceeded,
+                    conntrack_allowance_exceeded: host_stat.stats.conntrack_allowance_exceeded,
                 },
             })
         }
@@ -137,7 +141,7 @@ impl OpenMetricProvider for SystemMetricsProvider {
             .unwrap();
     }
 
-    fn update_metrics(&self) -> Result<(), anyhow::Error> {
+    fn update_metrics(&mut self) -> Result<(), anyhow::Error> {
         info!(platform = self.compute_platform.to_string(); "Updating System Metrics");
         let metrics = self.get_metrics();
 

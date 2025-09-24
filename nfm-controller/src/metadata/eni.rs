@@ -334,12 +334,10 @@ mod test {
             NetworkDevice {
                 interface_id: "ifc-id1".to_string(),
                 device_name: "eth1".to_string(),
-                pod_name: None,
             },
             NetworkDevice {
                 interface_id: "ifc-id2".to_string(),
                 device_name: "eth2".to_string(),
-                pod_name: None,
             },
         ];
 
