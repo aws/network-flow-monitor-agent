@@ -59,7 +59,7 @@ impl BpfControlConveyor {
         let control_option = bpf_array_get!(self, NFM_CONTROL, 0);
         if let Some(control_data) = control_option {
             let sampling_interval = control_data.sampling_interval;
-            sampling_interval <= 1 || bpf_get_rand_u32!(self) % sampling_interval == 0
+            sampling_interval <= 1 || bpf_get_rand_u32!(self).is_multiple_of(sampling_interval)
         } else {
             true
         }
