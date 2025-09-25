@@ -8,7 +8,6 @@ use nfm_agent::{on_load, Options};
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
 
-
 fn main() -> Result<(), anyhow::Error> {
     #[cfg(feature = "dhat")]
     let _profiler = dhat::Profiler::new_heap();
