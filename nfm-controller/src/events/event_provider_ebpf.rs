@@ -21,7 +21,7 @@ use aya::{
     include_bytes_aligned,
     maps::{Array as SharedArray, HashMap as SharedHashMap, MapData, MapError, PerCpuArray},
     programs::{CgroupAttachMode, SockOps},
-    Btf, Ebpf, EbpfLoader, VerifierLogLevel,
+    Ebpf, EbpfLoader, VerifierLogLevel,
 };
 use aya_obj::generated::BPF_ANY;
 use hashbrown::{hash_map::Entry, HashMap, HashSet};
@@ -60,7 +60,6 @@ fn instantiate_ebpf_object(
     info!(sock_props_max_entries, sock_stats_max_entries; "Loading eBPF program");
     EbpfLoader::new()
         .verifier_log_level(VerifierLogLevel::VERBOSE | VerifierLogLevel::STATS)
-        .btf(Btf::from_sys_fs().ok().as_ref())
         .set_max_entries(
             NFM_SK_PROPS_MAP_NAME,
             sock_props_max_entries.try_into().unwrap(),
