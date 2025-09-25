@@ -21,6 +21,13 @@ crate-type = ["lib"]
 default = []
 privileged = [] # To identify test that need privileges to run.
 dhat = ["dep:dhat"] # enable dhat only when requested
+open-metrics = [
+    "default",
+    "dep:hyper",
+    "dep:hyper-util",
+    "dep:prometheus",
+    "dep:tokio-util",
+]
 
 [profile.dev]
 panic = "abort"
@@ -92,6 +99,11 @@ tokio = { version = "1.45.1", features = [
     "signal",
 ] }
 url = "2.5"
+hyper = { version = "1.0", features = ["server", "http1"], optional = true }
+hyper-util = { version = "0.1", features = ["tokio"], optional = true }
+prometheus = { version = "0.13", optional = true }
+once_cell = { version = "1.19", optional = true }
+tokio-util = { version = "0.7", optional = true }
 
 [build-dependencies]
 cargo_metadata = "0.19"
