@@ -8,7 +8,7 @@
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
 
@@ -22,6 +22,7 @@ use prometheus::{Encoder, Registry, TextEncoder};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
+use crate::metadata::runtime_environment_metadata::RuntimeEnvironmentMetadataProvider;
 use crate::open_metrics::provider::{get_open_metric_providers, OpenMetricProvider};
 
 /// Configuration options for the OpenMetricsServer
@@ -104,8 +105,10 @@ impl OpenMetricsServer {
         let cancel_token = self.cancel_token.clone();
 
         let handle = thread::spawn(move || {
-            // Create a simple runtime for the server
-            let rt = tokio::runtime::Builder::new_current_thread()
+            // Runtime with 2 threads to allow usage of metadata providers, since it needs to
+            // block to access IMDS.
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
                 .enable_io()
                 .enable_time()
                 .build()
@@ -177,7 +180,7 @@ impl Drop for OpenMetricsServer {
 async fn handle_request(
     req: Request<hyper::body::Incoming>,
     registry: Arc<Registry>,
-    providers: Arc<Vec<Box<dyn OpenMetricProvider>>>,
+    providers: Arc<Mutex<Vec<Box<dyn OpenMetricProvider>>>>,
 ) -> Result<Response<String>, Infallible> {
     let path = req.uri().path();
     debug!(open_metric = "incoming_request", path = path; "Received request");
@@ -213,16 +216,20 @@ async fn handle_request(
 
 fn generate_metrics_text(
     registry: Arc<Registry>,
-    providers: Arc<Vec<Box<dyn OpenMetricProvider>>>,
+    providers: Arc<Mutex<Vec<Box<dyn OpenMetricProvider>>>>,
 ) -> String {
     // Update the metrics
-    for provider in providers.iter() {
-        match provider.update_metrics() {
-            Err(e) => {
-                error!(open_metric = "metric_updated", error = e.to_string(); "Error updating metric")
+    if let Ok(mut providers_guard) = providers.lock() {
+        for provider in providers_guard.iter_mut() {
+            match provider.update_metrics() {
+                Err(e) => {
+                    error!(open_metric = "metric_updated", error = e.to_string(); "Error updating metric")
+                }
+                Ok(()) => {}
             }
-            Ok(()) => {}
         }
+    } else {
+        error!(open_metric = "mutex_lock_failed"; "Failed to acquire lock on providers");
     }
 
     // Use the registry to generate metrics
@@ -245,10 +252,13 @@ async fn run_server(bind_addr: SocketAddr, cancel_token: CancellationToken) -> s
     );
 
     let mut registry = Arc::new(Registry::new());
-    let providers = Arc::new(get_open_metric_providers());
+    let compute_platform = RuntimeEnvironmentMetadataProvider::get_compute_platform();
+    let providers = get_open_metric_providers(compute_platform);
     providers
         .iter()
         .for_each(|provider| provider.register_to(&mut Arc::get_mut(&mut registry).unwrap()));
+
+    let providers_arc = Arc::new(Mutex::new(providers));
 
     // Accept connections until cancellation token is triggered
     loop {
@@ -264,7 +274,7 @@ async fn run_server(bind_addr: SocketAddr, cancel_token: CancellationToken) -> s
 
                         // Clone the Arc to use in the closure
                         let registry_clone = registry.clone();
-                        let providers_clone = providers.clone();
+                        let providers_clone = providers_arc.clone();
 
                         // Process the connection. Single connection at a time.
                         if let Err(e) = http1::Builder::new()
@@ -394,24 +404,19 @@ mod tests {
         // Verify response
         assert_eq!(status, 200, "Expected 200 OK response");
 
-        // Check for first metric (gauge)
+        // Check for system metrics provided by SystemMetricsProvider
         assert!(
-            body.contains("nfm_sample_metric"),
-            "Expected sample metric name in response"
-        );
-        assert!(
-            body.contains("service=\"nfm-agent\""),
-            "Expected service label in response"
-        );
-        assert!(
-            body.contains("environment=\"development\""),
-            "Expected environment label in response"
+            body.contains("bw_in_allowance_exceeded")
+                || body.contains("bw_out_allowance_exceeded")
+                || body.contains("pps_allowance_exceeded")
+                || body.contains("conntrack_allowance_exceeded"),
+            "Expected at least one system metric in response"
         );
 
-        // Check for second metric (counter)
+        // Verify the response is in Prometheus format
         assert!(
-            body.contains("nfm_request_count"),
-            "Expected request count metric name in response"
+            body.contains("# HELP") || body.contains("# TYPE"),
+            "Expected Prometheus format metadata in response"
         );
     }
 

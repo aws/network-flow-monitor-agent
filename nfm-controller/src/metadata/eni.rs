@@ -44,7 +44,7 @@ impl EniMetadataProvider {
     }
 
     // Gets the network devices associated with the current host.
-    pub fn get_network_devices(&mut self) -> Vec<NetworkDevice> {
+    pub fn get_network_devices(&self) -> Vec<NetworkDevice> {
         let mut mac_to_device: HashMap<String, String> = HashMap::new();
 
         let output = self.command_runner.run("ip", &["-br", "link"]);
@@ -109,19 +109,37 @@ impl EnvMetadataProvider for EniMetadataProvider {
 }
 
 fn retrieve_imds_metadata(client: &aws_config::imds::Client, path: String) -> String {
-    let rt = match tokio::runtime::Runtime::new() {
-        Ok(rt) => rt,
-        Err(err) => {
-            error!(error = err.to_string(); "Error creating tokio runtime");
-            return "".into();
-        }
-    };
+    // Check if we're already in a Tokio runtime context
+    if tokio::runtime::Handle::try_current().is_ok() {
+        // We're already in a runtime, use the current context
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current()
+                .block_on(async {
+                    match client.get(&path).await {
+                        Ok(instance_id) => instance_id.into(),
+                        Err(err) => {
+                            error!(error = err.to_string(), path = path; "Error retrieving imds metadata");
+                            "".into()
+                        }
+                    }
+                })
+        })
+    } else {
+        // Not in a runtime, create a new one
+        let rt = match tokio::runtime::Runtime::new() {
+            Ok(rt) => rt,
+            Err(err) => {
+                error!(error = err.to_string(); "Error creating tokio runtime");
+                return "".into();
+            }
+        };
 
-    match rt.block_on(client.get(&path)) {
-        Ok(instance_id) => instance_id.into(),
-        Err(err) => {
-            error!(error = err.to_string(), path = path; "Error retrieving imds metadata");
-            "".into()
+        match rt.block_on(client.get(&path)) {
+            Ok(instance_id) => instance_id.into(),
+            Err(err) => {
+                error!(error = err.to_string(), path = path; "Error retrieving imds metadata");
+                "".into()
+            }
         }
     }
 }
@@ -135,39 +153,53 @@ fn retrieve_instance_type(client: &aws_config::imds::Client) -> String {
 }
 
 fn retrieve_network_information(client: &aws_config::imds::Client) -> Vec<NetworkInterfaceInfo> {
-    let rt = match tokio::runtime::Runtime::new() {
-        Ok(rt) => rt,
-        Err(err) => {
-            error!(error = err.to_string(); "Error creating tokio runtime");
-            return vec![];
-        }
-    };
-
-    rt.block_on(async {
-        match client
-            .get("/latest/meta-data/network/interfaces/macs/")
-            .await
-        {
-            Ok(macs) => {
-                let mut network_information = vec![];
-                let macs = String::from(macs);
-                for mac in macs.split('\n') {
-                    // There is trailing backslash in each line.
-                    let mut mac = mac.to_string();
-                    if !mac.is_empty() && mac.ends_with('/') {
-                        mac.pop();
-                    }
-
-                    network_information.extend(retrieve_mac_information(client, mac).await)
-                }
-                network_information
-            }
+    // Check if we're already in a Tokio runtime context
+    if tokio::runtime::Handle::try_current().is_ok() {
+        // We're already in a runtime, use the current context
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current()
+                .block_on(async { retrieve_network_information_async(client).await })
+        })
+    } else {
+        // Not in a runtime, create a new one
+        let rt = match tokio::runtime::Runtime::new() {
+            Ok(rt) => rt,
             Err(err) => {
-                error!(error = err.to_string(); "Error retrieving network information");
-                vec![]
+                error!(error = err.to_string(); "Error creating tokio runtime");
+                return vec![];
             }
+        };
+
+        rt.block_on(async { retrieve_network_information_async(client).await })
+    }
+}
+
+async fn retrieve_network_information_async(
+    client: &aws_config::imds::Client,
+) -> Vec<NetworkInterfaceInfo> {
+    match client
+        .get("/latest/meta-data/network/interfaces/macs/")
+        .await
+    {
+        Ok(macs) => {
+            let mut network_information = vec![];
+            let macs = String::from(macs);
+            for mac in macs.split('\n') {
+                // There is trailing backslash in each line.
+                let mut mac = mac.to_string();
+                if !mac.is_empty() && mac.ends_with('/') {
+                    mac.pop();
+                }
+
+                network_information.extend(retrieve_mac_information(client, mac).await)
+            }
+            network_information
         }
-    })
+        Err(err) => {
+            error!(error = err.to_string(); "Error retrieving network information");
+            vec![]
+        }
+    }
 }
 
 async fn retrieve_mac_information(
@@ -290,7 +322,7 @@ mod test {
             },
         ];
 
-        let mut eni_provider = EniMetadataProvider {
+        let eni_provider = EniMetadataProvider {
             client: Client::builder().build(),
             instance_id: "inst-id1".to_string(),
             instance_type: "the-instance-type".into(),
