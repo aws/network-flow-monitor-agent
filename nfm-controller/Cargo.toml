@@ -20,6 +20,7 @@ crate-type = ["lib"]
 [features]
 default = []
 privileged = [] # To identify test that need privileges to run.
+dhat = ["dep:dhat"] # enable dhat only when requested
 
 [profile.dev]
 panic = "abort"
@@ -35,6 +36,9 @@ rustls = { version = "0.23.29", default-features = false }
 aws-credential-types = "1.2"
 aws-sign-v4 = "0.3"
 nfm-common = { version = "0.1.0", path = "../nfm-common", features = ["user"] }
+
+# Memory profiling
+dhat = { version = "0.3", optional = true}
 
 anyhow = "1"
 assert_approx_eq = "1"
