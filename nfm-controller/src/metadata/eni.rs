@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::env_metadata_provider::{EnvMetadata, EnvMetadataProvider, NetworkDevice};
+use crate::metadata::imds_utils::{retrieve_instance_id, retrieve_instance_type};
 use crate::reports::report::ReportValue;
 use crate::utils::{CommandRunner, RealCommandRunner};
 use aws_config::imds::Client;

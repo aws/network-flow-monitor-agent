@@ -4,6 +4,7 @@
 pub mod eni;
 pub mod env_metadata_provider;
 pub mod host;
+pub mod imds_utils;
 pub mod k8s_metadata;
 pub mod runtime_environment_metadata;
 pub mod service_metadata;

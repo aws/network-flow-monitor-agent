@@ -1,10 +1,11 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+use std::collections::HashMap;
+
 use crate::{
-    events::host_stats_provider::{HostStatsProvider, HostStatsProviderImpl},
     metadata::{
-        eni::EniMetadataProvider, k8s_metadata::K8sMetadata,
+        imds_utils::retrieve_instance_id, k8s_metadata::K8sMetadata,
         runtime_environment_metadata::ComputePlatform,
     },
     open_metrics::{
@@ -14,8 +15,10 @@ use crate::{
     reports::report::ReportValue,
 };
 use anyhow;
-use log::info;
-use prometheus::{IntGaugeVec, Opts, Registry};
+use aws_config::imds::Client;
+use log::{info, warn};
+use procfs::net::{dev_status, DeviceStatus};
+use prometheus::{IntGaugeVec, Registry};
 
 /// Interface level metrics.
 struct InterfaceMetric {
@@ -38,61 +41,6 @@ struct InterfaceMetricValues {
     ingress_bytes_count: u64,
     egress_pkt_count: u64,
     egress_bytes_count: u64,
-}
-
-pub struct InterfaceMetricsProvider {
-    compute_platform: ComputePlatform,
-    node_name: String,
-
-    ingress_pkt_count: IntGaugeVec,
-    ingress_bytes_count: IntGaugeVec,
-    egress_pkt_count: IntGaugeVec,
-    egress_bytes_count: IntGaugeVec,
-}
-
-impl InterfaceMetricsProvider {
-    pub fn new(compute_platform: &ComputePlatform) -> Self {
-        let node_name = match K8sMetadata::default().node_name {
-            Some(ReportValue::String(node_name)) => node_name,
-            _ => "unknown".to_string(),
-        };
-
-        InterfaceMetricsProvider {
-            compute_platform: compute_platform.clone(),
-            node_name,
-
-            ingress_pkt_count: build_gauge_metric::<InterfaceMetric>(
-                &compute_platform,
-                "ingress_pkt_count",
-                "Ingress packet count",
-            ),
-            ingress_bytes_count: build_gauge_metric::<InterfaceMetric>(
-                &compute_platform,
-                "ingress_bytes_count",
-                "Ingress bytes count",
-            ),
-            egress_pkt_count: build_gauge_metric::<InterfaceMetric>(
-                &compute_platform,
-                "egress_pkt_count",
-                "Egress packet count",
-            ),
-            egress_bytes_count: build_gauge_metric::<InterfaceMetric>(
-                &compute_platform,
-                "egress_bytes_count",
-                "Egress bytes count",
-            ),
-        }
-    }
-
-    fn get_metrics(&mut self) -> Vec<InterfaceMetric> {
-        // 1 - Get interfaces
-        // 2 - Get pod information from curl -s http://localhost:61679/v1/enis
-        // 3 - Find each PID per interface using lsns -t
-        // 4 - Get the metrics per interface using nsenter -t <PID> -n ip a
-
-        //
-        vec![]
-    }
 }
 
 impl InterfaceMetric {
@@ -123,6 +71,99 @@ impl MetricLabel for InterfaceMetric {
             }
         }
     }
+}
+
+pub struct InterfaceMetricsProvider {
+    compute_platform: ComputePlatform,
+    instance_id: String,
+    node_name: String,
+
+    ingress_pkt_count: IntGaugeVec,
+    ingress_bytes_count: IntGaugeVec,
+    egress_pkt_count: IntGaugeVec,
+    egress_bytes_count: IntGaugeVec,
+}
+
+impl InterfaceMetricsProvider {
+    pub fn new(compute_platform: &ComputePlatform) -> Self {
+        let node_name = match K8sMetadata::default().node_name {
+            Some(ReportValue::String(node_name)) => node_name,
+            _ => "unknown".to_string(),
+        };
+
+        InterfaceMetricsProvider {
+            compute_platform: compute_platform.clone(),
+            instance_id: retrieve_instance_id(&Client::builder().build()),
+            node_name,
+
+            ingress_pkt_count: build_gauge_metric::<InterfaceMetric>(
+                &compute_platform,
+                "ingress_pkt_count",
+                "Ingress packet count",
+            ),
+            ingress_bytes_count: build_gauge_metric::<InterfaceMetric>(
+                &compute_platform,
+                "ingress_bytes_count",
+                "Ingress bytes count",
+            ),
+            egress_pkt_count: build_gauge_metric::<InterfaceMetric>(
+                &compute_platform,
+                "egress_pkt_count",
+                "Egress packet count",
+            ),
+            egress_bytes_count: build_gauge_metric::<InterfaceMetric>(
+                &compute_platform,
+                "egress_bytes_count",
+                "Egress bytes count",
+            ),
+        }
+    }
+
+    fn get_metrics(&mut self) -> Vec<InterfaceMetric> {
+        get_device_status()
+            .iter()
+            .map(|(interface_name, interface_stats)| InterfaceMetric {
+                key: self.build_metric_key(interface_name),
+                value: InterfaceMetricValues {
+                    ingress_pkt_count: interface_stats.recv_packets,
+                    ingress_bytes_count: interface_stats.recv_bytes,
+                    egress_pkt_count: interface_stats.sent_packets,
+                    egress_bytes_count: interface_stats.sent_bytes,
+                },
+            })
+            .collect()
+    }
+
+    fn build_metric_key(&self, iface_name: &String) -> InterfaceMetricKey {
+        let (pod, pod_namespace) = get_pod_info_from_iface(iface_name);
+        InterfaceMetricKey {
+            instance: self.instance_id.clone(),
+            iface: iface_name.to_string(),
+            pod,
+            pod_namespace,
+            node: self.node_name.clone(),
+        }
+    }
+}
+
+fn get_device_status() -> HashMap<String, DeviceStatus> {
+    match dev_status() {
+        Ok(interfaces) => interfaces,
+        Err(e) => {
+            warn!(
+                "Failed to read network interface statistics from procfs: {}",
+                e
+            );
+            HashMap::new()
+        }
+    }
+    .into_iter()
+    .filter(|(iface_name, device_status)| iface_name != "lo")
+    .collect()
+}
+
+fn get_pod_info_from_iface(iface_name: &String) -> (String, String) {
+    ("pod_name".to_string(), "pod_namespace".to_string())
 }
 
 /// Open metric implementation. It will provide interface level metrics annotated with
@@ -171,4 +212,87 @@ impl OpenMetricProvider for InterfaceMetricsProvider {
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+    use crate::metadata::runtime_environment_metadata::ComputePlatform;
+
+    #[test]
+    fn test_interface_metrics_provider_new() {
+        let provider = InterfaceMetricsProvider::new(&ComputePlatform::Ec2Plain);
+        assert_eq!(provider.compute_platform, ComputePlatform::Ec2Plain);
+        assert_eq!(provider.node_name, "unknown"); // Default when K8s metadata is not available
+    }
+
+    #[test]
+    fn test_interface_metrics_provider_new_eks() {
+        let provider = InterfaceMetricsProvider::new(&ComputePlatform::Ec2K8sEks);
+        assert_eq!(provider.compute_platform, ComputePlatform::Ec2K8sEks);
+    }
+
+    #[test]
+    fn test_interface_metric_get_labels_ec2_plain() {
+        let labels = InterfaceMetric::get_labels(&ComputePlatform::Ec2Plain);
+        assert_eq!(labels, &["instance_id", "iface"]);
+    }
+
+    #[test]
+    fn test_interface_metric_get_labels_eks() {
+        let labels = InterfaceMetric::get_labels(&ComputePlatform::Ec2K8sEks);
+        assert_eq!(labels, &["iface", "pod", "namespace", "node"]);
+    }
+
+    #[test]
+    fn test_interface_metric_label_values_ec2_plain() {
+        let metric = InterfaceMetric {
+            key: InterfaceMetricKey {
+                instance: "i-1234567890abcdef0".to_string(),
+                iface: "eth0".to_string(),
+                pod: "".to_string(),
+                pod_namespace: "".to_string(),
+                node: "test-node".to_string(),
+            },
+            value: InterfaceMetricValues {
+                ingress_pkt_count: 100,
+                ingress_bytes_count: 1000,
+                egress_pkt_count: 200,
+                egress_bytes_count: 2000,
+            },
+        };
+
+        let label_values = metric.label_values(&ComputePlatform::Ec2Plain);
+        assert_eq!(label_values, vec!["i-1234567890abcdef0", "eth0"]);
+    }
+
+    #[test]
+    fn test_interface_metric_label_values_eks() {
+        let metric = InterfaceMetric {
+            key: InterfaceMetricKey {
+                instance: "i-1234567890abcdef0".to_string(),
+                iface: "eth0".to_string(),
+                pod: "test-pod".to_string(),
+                pod_namespace: "default".to_string(),
+                node: "test-node".to_string(),
+            },
+            value: InterfaceMetricValues {
+                ingress_pkt_count: 100,
+                ingress_bytes_count: 1000,
+                egress_pkt_count: 200,
+                egress_bytes_count: 2000,
+            },
+        };
+
+        let label_values = metric.label_values(&ComputePlatform::Ec2K8sEks);
+        assert_eq!(
+            label_values,
+            vec!["eth0", "test-pod", "default", "test-node"]
+        );
+    }
+
+    #[test]
+    fn test_get_metrics_returns_vector() {
+        let mut provider = InterfaceMetricsProvider::new(&ComputePlatform::Ec2Plain);
+        let metrics = provider.get_metrics();
+        // Should return a vector (may be empty if no interfaces are available in test environment)
+        panic!("Implement test")
+    }
+}
