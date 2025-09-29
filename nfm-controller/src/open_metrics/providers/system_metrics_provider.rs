@@ -7,7 +7,10 @@ use crate::{
         eni::EniMetadataProvider, k8s_metadata::K8sMetadata,
         runtime_environment_metadata::ComputePlatform,
     },
-    open_metrics::provider::OpenMetricProvider,
+    open_metrics::{
+        provider::OpenMetricProvider,
+        providers::{build_gauge_metric, MetricLabel},
+    },
     reports::report::ReportValue,
 };
 use anyhow;
@@ -62,18 +65,18 @@ impl SystemMetricsProvider {
             host_stats_provider: HostStatsProviderImpl::new(),
             node_name,
 
-            bw_in_allowance_exceeded: build_gauge_metric(
+            bw_in_allowance_exceeded: build_gauge_metric::<SystemMetric>(
                 &compute_platform,
                 "bw_in_allowance_exceeded",
                 "The number of packets queued or dropped because the inbound aggregate bandwidth exceeded the maximum for the instance.",
             ),
-            bw_out_allowance_exceeded: build_gauge_metric(
+            bw_out_allowance_exceeded: build_gauge_metric::<SystemMetric>(
                 &compute_platform,
                 "bw_out_allowance_exceeded",
                 "The number of packets queued or dropped because the outbound aggregate bandwidth exceeded the maximum for the instance."
             ),
-            pps_allowance_exceeded: build_gauge_metric(&compute_platform, "pps_allowance_exceeded", "The number of packets queued or dropped because the bidirectional PPS exceeded the maximum for the instance."),
-            conntrack_allowance_exceeded: build_gauge_metric(
+            pps_allowance_exceeded: build_gauge_metric::<SystemMetric>(&compute_platform, "pps_allowance_exceeded", "The number of packets queued or dropped because the bidirectional PPS exceeded the maximum for the instance."),
+            conntrack_allowance_exceeded: build_gauge_metric::<SystemMetric>(
                 &compute_platform,
                 "conntrack_allowance_exceeded",
                 "The number of packets dropped because connection tracking exceeded the maximum for the instance and new connections could not be established. This can result in packet loss for traffic to or from the instance."
@@ -121,7 +124,7 @@ impl SystemMetric {
     }
 
     fn label_values(&self, compute_platform: &ComputePlatform) -> Vec<&str> {
-        // The order of the elements must match the labels in SystemMetric::get_labels
+        // The order of the elements must match the labels for the trait MetricLabel
         match compute_platform {
             ComputePlatform::Ec2Plain => vec![&self.key.instance.as_str(), &self.key.eni.as_str()],
             ComputePlatform::Ec2K8sEks | ComputePlatform::Ec2K8sVanilla => {
@@ -131,6 +134,15 @@ impl SystemMetric {
                     &self.key.node.as_str(),
                 ]
             }
+        }
+    }
+}
+
+impl MetricLabel for SystemMetric {
+    fn get_labels(compute_platform: &ComputePlatform) -> &[&str] {
+        match compute_platform {
+            ComputePlatform::Ec2Plain => &["instance_id", "eni"],
+            ComputePlatform::Ec2K8sEks | ComputePlatform::Ec2K8sVanilla => &["eni", "node"],
         }
     }
 }
@@ -184,18 +196,6 @@ impl OpenMetricProvider for SystemMetricsProvider {
 
         Ok(())
     }
-}
-
-fn build_gauge_metric(
-    compute_platform: &ComputePlatform,
-    metric_name: &str,
-    description: &str,
-) -> IntGaugeVec {
-    IntGaugeVec::new(
-        Opts::new(metric_name, description),
-        SystemMetric::get_labels(compute_platform),
-    )
-    .unwrap()
 }
 
 #[cfg(test)]
@@ -568,22 +568,22 @@ mod tests {
                 command_runner: host_command_runner,
             },
             node_name: "node-name".to_string(),
-            bw_in_allowance_exceeded: build_gauge_metric(
+            bw_in_allowance_exceeded: build_gauge_metric::<SystemMetric>(
                 &compute_platform,
                 "bw_in_allowance_exceeded",
                 "description",
             ),
-            bw_out_allowance_exceeded: build_gauge_metric(
+            bw_out_allowance_exceeded: build_gauge_metric::<SystemMetric>(
                 &compute_platform,
                 "bw_out_allowance_exceeded",
                 "description",
             ),
-            pps_allowance_exceeded: build_gauge_metric(
+            pps_allowance_exceeded: build_gauge_metric::<SystemMetric>(
                 &compute_platform,
                 "pps_allowance_exceeded",
                 "description",
             ),
-            conntrack_allowance_exceeded: build_gauge_metric(
+            conntrack_allowance_exceeded: build_gauge_metric::<SystemMetric>(
                 &compute_platform,
                 "conntrack_allowance_exceeded",
                 "description",
