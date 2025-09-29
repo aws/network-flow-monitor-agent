@@ -20,7 +20,7 @@ struct SystemMetric {
     value: SystemMetricValues,
 }
 
-/// Metric key. Pod and node will be availble only on EKS environments.
+/// Metric key.
 struct SystemMetricKey {
     instance: String,
     eni: String,
@@ -58,7 +58,7 @@ impl SystemMetricsProvider {
             compute_platform: compute_platform.clone(),
             eni_metadata_provider: EniMetadataProvider::new(),
             host_stats_provider: HostStatsProviderImpl::new(),
-            node_name: node_name,
+            node_name,
 
             bw_in_allowance_exceeded: build_gauge_metric(
                 &compute_platform,
