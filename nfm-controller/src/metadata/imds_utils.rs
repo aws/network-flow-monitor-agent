@@ -1,4 +1,3 @@
-use aws_config::imds::Client;
 use log::error;
 
 pub(crate) fn retrieve_imds_metadata(client: &aws_config::imds::Client, path: String) -> String {

@@ -16,6 +16,7 @@ use crate::{
 };
 use anyhow;
 use aws_config::imds::Client;
+use getifaddrs::{getifaddrs, InterfaceFlags};
 use log::{info, warn};
 use procfs::net::{dev_status, DeviceStatus};
 use prometheus::{IntGaugeVec, Registry};
@@ -147,7 +148,8 @@ impl InterfaceMetricsProvider {
 }
 
 fn get_device_status() -> HashMap<String, DeviceStatus> {
-    match dev_status() {
+    // Get interface statistics from procfs
+    let interfaces = match dev_status() {
         Ok(interfaces) => interfaces,
         Err(e) => {
             warn!(
@@ -156,13 +158,51 @@ fn get_device_status() -> HashMap<String, DeviceStatus> {
             );
             HashMap::new()
         }
-    }
-    .into_iter()
-    .filter(|(iface_name, device_status)| iface_name != "lo")
-    .collect()
+    };
+
+    let interface_flags = match get_interface_flags() {
+        Ok(flags) => flags,
+        Err(e) => {
+            warn!("Failed to get interface flags using getifaddrs: {}", e);
+            HashMap::new()
+        }
+    };
+
+    interfaces
+        .into_iter()
+        .filter(|(iface_name, _device_status)| {
+            if let Some(flags) = interface_flags.get(iface_name) {
+                if flags.contains(InterfaceFlags::LOOPBACK) {
+                    info!("Skipping loopback");
+                    return false;
+                }
+
+                if !flags.contains(InterfaceFlags::UP) {
+                    info!("Skipping non UP iface");
+                    return false;
+                }
+            } else {
+                info!("Interface not found {}", iface_name)
+            }
+
+            true
+        })
+        .collect()
 }
 
-fn get_pod_info_from_iface(iface_name: &String) -> (String, String) {
+/// Get interface flags using getifaddrs
+fn get_interface_flags() -> Result<HashMap<String, InterfaceFlags>, Box<dyn std::error::Error>> {
+    let mut interface_flags = HashMap::new();
+
+    let ifaddrs = getifaddrs()?;
+    for interface in ifaddrs {
+        interface_flags.insert(interface.name, interface.flags);
+    }
+
+    Ok(interface_flags)
+}
+
+fn get_pod_info_from_iface(_iface_name: &String) -> (String, String) {
     ("pod_name".to_string(), "pod_namespace".to_string())
 }
 

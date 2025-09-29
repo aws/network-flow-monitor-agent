@@ -15,7 +15,7 @@ use crate::{
 };
 use anyhow;
 use log::info;
-use prometheus::{IntGaugeVec, Opts, Registry};
+use prometheus::{IntGaugeVec, Registry};
 
 /// System level metrics.
 struct SystemMetric {
