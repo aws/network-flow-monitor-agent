@@ -715,9 +715,10 @@ mod tests {
         );
 
         let provider = create_test_provider_with_runner(fake_runner);
-        let result = provider.get_pid_from_ns(Some(0));
+        let ns_to_pid = provider.get_ns_to_pid();
+        let result = ns_to_pid.get(&0);
 
-        assert_eq!(result, Some(1628));
+        assert_eq!(result, Some(&1628));
     }
 
     #[test]
@@ -737,16 +738,8 @@ mod tests {
         );
 
         let provider = create_test_provider_with_runner(fake_runner);
-        let result = provider.get_pid_from_ns(Some(999));
-
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn test_get_pid_from_ns_none_input() {
-        let fake_runner = FakeCommandRunner::new();
-        let provider = create_test_provider_with_runner(fake_runner);
-        let result = provider.get_pid_from_ns(None);
+        let ns_to_pid = provider.get_ns_to_pid();
+        let result = ns_to_pid.get(&999);
 
         assert_eq!(result, None);
     }
