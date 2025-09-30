@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::collections::HashMap;
+use std::net::IpAddr;
 
 use crate::{
     metadata::{
@@ -10,7 +11,7 @@ use crate::{
     },
     open_metrics::{
         provider::OpenMetricProvider,
-        providers::{build_gauge_metric, MetricLabel},
+        providers::{build_gauge_metric, eks_utils::IPPodMapping, MetricLabel},
     },
     reports::report::ReportValue,
     utils::{CommandRunner, RealCommandRunner},
@@ -22,6 +23,13 @@ use log::{info, warn};
 use procfs::net::{dev_status, DeviceStatus};
 use prometheus::{IntGaugeVec, Registry};
 use regex::Regex;
+
+/// Struct to hold PID and IP addresses for a namespace
+#[derive(Debug, Clone, PartialEq)]
+pub struct NamespaceInfo {
+    pub pid: u32,
+    pub ip_addresses: Vec<IpAddr>,
+}
 
 /// Interface level metrics.
 struct InterfaceMetric {
@@ -125,16 +133,17 @@ impl InterfaceMetricsProvider {
     }
 
     fn get_metrics(&mut self) -> Vec<InterfaceMetric> {
-        let ns_to_pid = match self.compute_platform {
-            ComputePlatform::Ec2Plain => None,
+        let (ns_to_pid, pod_info) = match self.compute_platform {
+            ComputePlatform::Ec2Plain => (None, None),
             ComputePlatform::Ec2K8sEks | ComputePlatform::Ec2K8sVanilla => {
-                Some(self.get_ns_to_pid())
+                (Some(self.get_ns_info()), Some(IPPodMapping::new()))
             }
         };
+
         get_device_status()
             .iter()
             .map(|(interface_name, interface_stats)| InterfaceMetric {
-                key: self.build_metric_key(interface_name, &ns_to_pid),
+                key: self.build_metric_key(interface_name, ns_to_pid.clone(), pod_info.clone()),
                 value: InterfaceMetricValues {
                     ingress_pkt_count: interface_stats.recv_packets,
                     ingress_bytes_count: interface_stats.recv_bytes,
@@ -148,12 +157,13 @@ impl InterfaceMetricsProvider {
     fn build_metric_key(
         &self,
         iface_name: &String,
-        ns_to_pid: &Option<HashMap<u32, u32>>,
+        ns_to_pid: Option<HashMap<u32, NamespaceInfo>>,
+        pod_info: Option<IPPodMapping>,
     ) -> InterfaceMetricKey {
         let (pod, pod_namespace) = match self.compute_platform {
             ComputePlatform::Ec2Plain => ("".to_string(), "".to_string()),
             ComputePlatform::Ec2K8sEks | ComputePlatform::Ec2K8sVanilla => {
-                self.get_pod_info_from_iface(iface_name, ns_to_pid)
+                self.get_pod_info_from_iface(iface_name, ns_to_pid.unwrap(), pod_info.unwrap())
             }
         };
         InterfaceMetricKey {
@@ -168,17 +178,24 @@ impl InterfaceMetricsProvider {
     fn get_pod_info_from_iface(
         &self,
         iface_name: &String,
-        ns_to_pid: &Option<HashMap<u32, u32>>,
+        ns_to_pid: HashMap<u32, NamespaceInfo>,
+        pod_info_mapping: IPPodMapping,
     ) -> (String, String) {
-        let net_ns = self.get_ns_from(iface_name);
-        let pid: u32 = match ns_to_pid {
-            Some(map) => *map.get(&net_ns.unwrap_or_default()).unwrap_or(&0),
-            None => 0,
-        };
-        (
-            format!("pod-{}", pid),
-            format!("namespace-{}", net_ns.unwrap_or(0)),
-        )
+        let net_ns = self.get_ns_from(iface_name).unwrap_or_default();
+        match ns_to_pid.get(&net_ns) {
+            Some(ns_info) => {
+                for ip_addr in ns_info.ip_addresses.iter() {
+                    match pod_info_mapping.get(*ip_addr) {
+                        Some(pod_info) => {
+                            return (pod_info.pod.clone(), pod_info.namespace.clone())
+                        }
+                        None => continue,
+                    }
+                }
+                ("".into(), "".into())
+            }
+            _ => ("".into(), "".into()),
+        }
     }
 
     /// Get the namespace ID for a given interface using "ip link" command.
@@ -228,8 +245,8 @@ impl InterfaceMetricsProvider {
         }
     }
 
-    /// Creates a map between network namespaces and PIDs
-    fn get_ns_to_pid(&self) -> HashMap<u32, u32> {
+    /// Creates a map between network namespaces and namespace info (PID + IP addresses)
+    fn get_ns_info(&self) -> HashMap<u32, NamespaceInfo> {
         let output = self
             .command_runner
             .run("lsns", &["-t", "net", "--noheadings"]);
@@ -245,7 +262,7 @@ impl InterfaceMetricsProvider {
                 }
 
                 let stdout = String::from_utf8_lossy(&output.stdout);
-                let mut ns_pid_map = HashMap::new();
+                let mut ns_info_map = HashMap::new();
 
                 // Format: NS TYPE NPROCS PID USER NETNSID NSFS COMMAND
                 for line in stdout.lines() {
@@ -255,7 +272,12 @@ impl InterfaceMetricsProvider {
                         if let (Ok(pid), Ok(netns_id)) =
                             (fields[3].parse::<u32>(), fields[5].parse::<u32>())
                         {
-                            ns_pid_map.insert(netns_id, pid);
+                            // Get IP addresses for this namespace using nsenter
+                            let ip_addresses = self.get_ip_addresses_for_pid(pid);
+
+                            let namespace_info = NamespaceInfo { pid, ip_addresses };
+
+                            ns_info_map.insert(netns_id, namespace_info);
                         } else {
                             warn!(
                                 "Failed to parse PID '{}' for NETNSID '{}'",
@@ -265,13 +287,86 @@ impl InterfaceMetricsProvider {
                     }
                 }
 
-                ns_pid_map
+                ns_info_map
             }
             Err(e) => {
                 warn!("Failed to execute 'lsns' command: {}", e.to_string());
                 HashMap::new()
             }
         }
+    }
+
+    /// Get IP addresses for a namespace using nsenter
+    fn get_ip_addresses_for_pid(&self, pid: u32) -> Vec<IpAddr> {
+        let output = self
+            .command_runner
+            .run("nsenter", &["-t", &pid.to_string(), "-n", "ip", "a"]);
+
+        match output {
+            Ok(output) => {
+                if !output.status.success() {
+                    warn!(
+                        "Failed to get IP addresses for PID {}: {}",
+                        pid,
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                    return Vec::new();
+                }
+
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                self.parse_ip_addresses(&stdout)
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to execute 'nsenter' command for PID {}: {}",
+                    pid,
+                    e.to_string()
+                );
+                Vec::new()
+            }
+        }
+    }
+
+    /// Parse IP addresses from 'ip a' output
+    fn parse_ip_addresses(&self, ip_output: &str) -> Vec<IpAddr> {
+        let mut ip_addresses = Vec::new();
+
+        // Simplified regex patterns for IPv4 and IPv6 addresses
+        // IPv4: "inet 192.168.1.1/24" -> capture the IP part
+        let ipv4_regex = Regex::new(r"inet\s+(\S+)/").unwrap();
+        // IPv6: "inet6 2001:db8::1/64" -> capture the IP part
+        let ipv6_regex = Regex::new(r"inet6\s+(\S+)/").unwrap();
+
+        for line in ip_output.lines() {
+            // Extract IPv4 addresses
+            if let Some(captures) = ipv4_regex.captures(line) {
+                if let Some(ip_match) = captures.get(1) {
+                    let ip_str = ip_match.as_str();
+                    if ip_str == "127.0.0.1" {
+                        continue;
+                    }
+                    if let Ok(ip_addr) = ip_str.parse::<IpAddr>() {
+                        ip_addresses.push(ip_addr);
+                    }
+                }
+            }
+
+            // Extract IPv6 addresses (excluding link-local)
+            if let Some(captures) = ipv6_regex.captures(line) {
+                if let Some(ip_match) = captures.get(1) {
+                    let ip_str = ip_match.as_str();
+                    // Skip link-local IPv6 addresses (fe80::) and local address
+                    if !ip_str.starts_with("fe80:") && !(ip_str == "::1") {
+                        println!("STR ip: {}", ip_str);
+                        if let Ok(ip_addr) = ip_str.parse::<IpAddr>() {
+                            ip_addresses.push(ip_addr);
+                        }
+                    }
+                }
+            }
+        }
+
+        ip_addresses
     }
 }
 
@@ -588,13 +683,40 @@ mod tests {
                 stderr: vec![],
             }),
         );
+        // Add expectations for nsenter commands
+        fake_runner.add_expectation(
+            "nsenter",
+            &["-t", "1628", "-n", "ip", "a"],
+            Ok(Output {
+                status: ExitStatus::from_raw(0),
+                stdout: "1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN group default qlen 1000\n    inet 127.0.0.1/8 scope host lo\n2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc pfifo_fast state UP group default qlen 1000\n    inet 192.168.1.10/24 brd 192.168.1.255 scope global eth0".as_bytes().to_vec(),
+                stderr: vec![],
+            }),
+        );
+        fake_runner.add_expectation(
+            "nsenter",
+            &["-t", "2345", "-n", "ip", "a"],
+            Ok(Output {
+                status: ExitStatus::from_raw(0),
+                stdout: "1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN group default qlen 1000\n    inet 127.0.0.1/8 scope host lo\n2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc pfifo_fast state UP group default qlen 1000\n    inet 10.0.0.5/24 brd 10.0.0.255 scope global eth0".as_bytes().to_vec(),
+                stderr: vec![],
+            }),
+        );
 
         let provider = create_test_provider_with_runner(fake_runner);
-        let result = provider.get_ns_to_pid();
+        let result = provider.get_ns_info();
 
         assert_eq!(result.len(), 2);
-        assert_eq!(result.get(&0), Some(&1628));
-        assert_eq!(result.get(&1), Some(&2345));
+        assert_eq!(result.get(&0).unwrap().pid, 1628);
+        assert_eq!(
+            result.get(&0).unwrap().ip_addresses,
+            vec!["192.168.1.10".parse::<IpAddr>().unwrap()]
+        );
+        assert_eq!(result.get(&1).unwrap().pid, 2345);
+        assert_eq!(
+            result.get(&1).unwrap().ip_addresses,
+            vec!["10.0.0.5".parse::<IpAddr>().unwrap()]
+        );
     }
 
     #[test]
@@ -611,7 +733,7 @@ mod tests {
         );
 
         let provider = create_test_provider_with_runner(fake_runner);
-        let result = provider.get_ns_to_pid();
+        let result = provider.get_ns_info();
 
         assert!(result.is_empty());
     }
@@ -630,7 +752,7 @@ mod tests {
         );
 
         let provider = create_test_provider_with_runner(fake_runner);
-        let result = provider.get_ns_to_pid();
+        let result = provider.get_ns_info();
 
         assert!(result.is_empty());
     }
@@ -648,7 +770,7 @@ mod tests {
         );
 
         let provider = create_test_provider_with_runner(fake_runner);
-        let result = provider.get_ns_to_pid();
+        let result = provider.get_ns_info();
 
         assert!(result.is_empty());
     }
@@ -665,13 +787,27 @@ mod tests {
                 stderr: vec![],
             }),
         );
+        // Add expectation for nsenter command for valid PID
+        fake_runner.add_expectation(
+            "nsenter",
+            &["-t", "2345", "-n", "ip", "a"],
+            Ok(Output {
+                status: ExitStatus::from_raw(0),
+                stdout: "2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc pfifo_fast state UP group default qlen 1000\n    inet 172.16.0.1/24 brd 172.16.0.255 scope global eth0".as_bytes().to_vec(),
+                stderr: vec![],
+            }),
+        );
 
         let provider = create_test_provider_with_runner(fake_runner);
-        let result = provider.get_ns_to_pid();
+        let result = provider.get_ns_info();
 
         // Should only contain the valid entry
         assert_eq!(result.len(), 1);
-        assert_eq!(result.get(&1), Some(&2345));
+        assert_eq!(result.get(&1).unwrap().pid, 2345);
+        assert_eq!(
+            result.get(&1).unwrap().ip_addresses,
+            vec!["172.16.0.1".parse::<IpAddr>().unwrap()]
+        );
         assert_eq!(result.get(&0), None);
     }
 
@@ -689,13 +825,27 @@ mod tests {
                 stderr: vec![],
             }),
         );
+        // Add expectation for nsenter command for valid PID
+        fake_runner.add_expectation(
+            "nsenter",
+            &["-t", "2345", "-n", "ip", "a"],
+            Ok(Output {
+                status: ExitStatus::from_raw(0),
+                stdout: "2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc pfifo_fast state UP group default qlen 1000\n    inet 203.0.113.1/24 brd 203.0.113.255 scope global eth0".as_bytes().to_vec(),
+                stderr: vec![],
+            }),
+        );
 
         let provider = create_test_provider_with_runner(fake_runner);
-        let result = provider.get_ns_to_pid();
+        let result = provider.get_ns_info();
 
         // Should only contain the valid entry
         assert_eq!(result.len(), 1);
-        assert_eq!(result.get(&1), Some(&2345));
+        assert_eq!(result.get(&1).unwrap().pid, 2345);
+        assert_eq!(
+            result.get(&1).unwrap().ip_addresses,
+            vec!["203.0.113.1".parse::<IpAddr>().unwrap()]
+        );
     }
 
     #[test]
@@ -713,12 +863,26 @@ mod tests {
                 stderr: vec![],
             }),
         );
+        // Add expectation for nsenter command
+        fake_runner.add_expectation(
+            "nsenter",
+            &["-t", "1628", "-n", "ip", "a"],
+            Ok(Output {
+                status: ExitStatus::from_raw(0),
+                stdout: "2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc pfifo_fast state UP group default qlen 1000\n    inet 192.168.1.10/24 brd 192.168.1.255 scope global eth0".as_bytes().to_vec(),
+                stderr: vec![],
+            }),
+        );
 
         let provider = create_test_provider_with_runner(fake_runner);
-        let ns_to_pid = provider.get_ns_to_pid();
+        let ns_to_pid = provider.get_ns_info();
         let result = ns_to_pid.get(&0);
 
-        assert_eq!(result, Some(&1628));
+        assert_eq!(result.unwrap().pid, 1628);
+        assert_eq!(
+            result.unwrap().ip_addresses,
+            vec!["192.168.1.10".parse::<IpAddr>().unwrap()]
+        );
     }
 
     #[test]
@@ -736,9 +900,19 @@ mod tests {
                 stderr: vec![],
             }),
         );
+        // Add expectation for nsenter command
+        fake_runner.add_expectation(
+            "nsenter",
+            &["-t", "1628", "-n", "ip", "a"],
+            Ok(Output {
+                status: ExitStatus::from_raw(0),
+                stdout: "2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc pfifo_fast state UP group default qlen 1000\n    inet 192.168.1.10/24 brd 192.168.1.255 scope global eth0".as_bytes().to_vec(),
+                stderr: vec![],
+            }),
+        );
 
         let provider = create_test_provider_with_runner(fake_runner);
-        let ns_to_pid = provider.get_ns_to_pid();
+        let ns_to_pid = provider.get_ns_info();
         let result = ns_to_pid.get(&999);
 
         assert_eq!(result, None);
@@ -756,13 +930,97 @@ mod tests {
                 stderr: vec![],
             }),
         );
+        // Add expectation for nsenter command
+        fake_runner.add_expectation(
+            "nsenter",
+            &["-t", "4050", "-n", "ip", "a"],
+            Ok(Output {
+                status: ExitStatus::from_raw(0),
+                stdout: "2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc pfifo_fast state UP group default qlen 1000\n    inet 10.0.0.1/24 brd 10.0.0.255 scope global eth0".as_bytes().to_vec(),
+                stderr: vec![],
+            }),
+        );
 
         let provider = create_test_provider_with_runner(fake_runner);
-        let result = provider.get_ns_to_pid();
+        let result = provider.get_ns_info();
 
         // Should only contain the non-unassigned entry
         assert_eq!(result.len(), 1);
-        assert_eq!(result.get(&0), Some(&4050));
+        assert_eq!(result.get(&0).unwrap().pid, 4050);
+        assert_eq!(
+            result.get(&0).unwrap().ip_addresses,
+            vec!["10.0.0.1".parse::<IpAddr>().unwrap()]
+        );
+    }
+
+    #[test]
+    fn test_parse_ip_addresses() {
+        let provider = InterfaceMetricsProvider::new(&ComputePlatform::Ec2Plain);
+        let ip_output = "1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN group default qlen 1000
+    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+    inet 127.0.0.1/8 scope host lo
+       valid_lft forever preferred_lft forever
+    inet6 ::1/128 scope host
+       valid_lft forever preferred_lft forever
+2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc pfifo_fast state UP group default qlen 1000
+    link/ether 02:42:ac:11:00:02 brd ff:ff:ff:ff:ff:ff
+    inet 192.168.1.10/24 brd 192.168.1.255 scope global eth0
+       valid_lft forever preferred_lft forever
+    inet6 2001:db8::1/64 scope global
+       valid_lft forever preferred_lft forever
+    inet6 fe80::42:acff:fe11:2/64 scope link
+       valid_lft forever preferred_lft forever";
+
+        let result = provider.parse_ip_addresses(ip_output);
+
+        // Should extract IPv4 and IPv6 addresses, excluding loopback and link-local
+        assert_eq!(
+            result,
+            vec![
+                "192.168.1.10".parse::<IpAddr>().unwrap(),
+                "2001:db8::1".parse::<IpAddr>().unwrap()
+            ]
+        );
+    }
+
+    #[test]
+    fn test_get_ip_addresses_for_pid_success() {
+        let mut fake_runner = FakeCommandRunner::new();
+        fake_runner.add_expectation(
+            "nsenter",
+            &["-t", "1234", "-n", "ip", "a"],
+            Ok(Output {
+                status: ExitStatus::from_raw(0),
+                stdout: "2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc pfifo_fast state UP group default qlen 1000\n    inet 192.168.1.10/24 brd 192.168.1.255 scope global eth0".as_bytes().to_vec(),
+                stderr: vec![],
+            }),
+        );
+
+        let provider = create_test_provider_with_runner(fake_runner);
+        let result = provider.get_ip_addresses_for_pid(1234);
+
+        assert_eq!(result, vec!["192.168.1.10".parse::<IpAddr>().unwrap()]);
+    }
+
+    #[test]
+    fn test_get_ip_addresses_for_pid_failure() {
+        let mut fake_runner = FakeCommandRunner::new();
+        fake_runner.add_expectation(
+            "nsenter",
+            &["-t", "1234", "-n", "ip", "a"],
+            Ok(Output {
+                status: ExitStatus::from_raw(1),
+                stdout: vec![],
+                stderr: "nsenter: cannot open /proc/1234/ns/net: No such file or directory"
+                    .as_bytes()
+                    .to_vec(),
+            }),
+        );
+
+        let provider = create_test_provider_with_runner(fake_runner);
+        let result = provider.get_ip_addresses_for_pid(1234);
+
+        assert!(result.is_empty());
     }
 
     // Helper function to create a test provider with a custom command runner

@@ -145,7 +145,7 @@ impl<C: Clock> EventProvider for EventProviderEbpf<C> {
         let sock_nat_result = nat_resolver.store_beyond_nat_entries(&mut self.sock_cache);
 
         // Aggregate our delta stats into flows.
-        let num_flows_before = self.flow_cache.len();
+        let _num_flows_before = self.flow_cache.len();
         let flow_aggregation_result = SocketQueries::aggregate_into_flows(
             &self.sock_stream,
             &self.sock_cache,
@@ -155,7 +155,7 @@ impl<C: Clock> EventProvider for EventProviderEbpf<C> {
 
         // Collect some stats before evicting entries.
         self.agg_socks_handled = self.sock_cache.len().try_into().unwrap();
-        let (num_cpus_min, num_cpus_max, num_cpus_avg) = self.sock_cache.num_cpus();
+        let (_num_cpus_min, _num_cpus_max, _num_cpus_avg) = self.sock_cache.num_cpus();
 
         // Evict sockets.
         let (socks_to_evict, num_stale) = self.sock_cache.perform_eviction();

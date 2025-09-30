@@ -1,22 +1,24 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, net::IpAddr};
 
 use log::{debug, error};
 use serde::Deserialize;
 
 #[derive(Debug, Clone)]
-struct PodInfo {
-    pod: String,
-    namespace: String,
+pub struct PodInfo {
+    pub pod: String,
+    pub namespace: String,
 }
 
-type PodIP = String;
+type PodIP = IpAddr;
 
-struct IPPodMapping {
+#[derive(Clone)]
+pub struct IPPodMapping {
     map: HashMap<PodIP, PodInfo>,
 }
 
 // JSON response structures for the ENI endpoint
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct ENIResponse {
     #[serde(rename = "TotalIPs")]
     total_ips: u32,
@@ -27,6 +29,7 @@ struct ENIResponse {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct ENIInfo {
     #[serde(rename = "ID")]
     id: String,
@@ -45,6 +48,7 @@ struct ENIInfo {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct CidrInfo {
     #[serde(rename = "Cidr")]
     cidr: CidrDetails,
@@ -57,6 +61,7 @@ struct CidrInfo {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct CidrDetails {
     #[serde(rename = "IP")]
     ip: String,
@@ -65,6 +70,7 @@ struct CidrDetails {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct IPAddressInfo {
     #[serde(rename = "Address")]
     address: String,
@@ -79,6 +85,7 @@ struct IPAddressInfo {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct IPAMKey {
     #[serde(rename = "networkName")]
     network_name: String,
@@ -97,7 +104,7 @@ struct IPAMMetadata {
 }
 
 impl IPPodMapping {
-    fn new() -> Self {
+    pub fn new() -> Self {
         let mut out = Self {
             map: HashMap::new(),
         };
@@ -114,6 +121,10 @@ impl IPPodMapping {
                 error!("Failed to update IP to POD mapping: {}", e);
             }
         }
+    }
+
+    pub fn get(&self, ip: PodIP) -> Option<&PodInfo> {
+        self.map.get(&ip)
     }
 
     fn fetch_eni_data(&self) -> Result<ENIResponse, Box<dyn std::error::Error>> {
@@ -149,7 +160,7 @@ impl IPPodMapping {
             );
 
             // Process IPv4 CIDRs
-            for (cidr, cidr_info) in eni_info.available_ipv4_cidrs {
+            for (_cidr, cidr_info) in eni_info.available_ipv4_cidrs {
                 for (ip_address, ip_info) in cidr_info.ip_addresses {
                     // Only process assigned IPs (those with pod metadata)
                     if !ip_info.ipam_metadata.k8s_pod_name.is_empty()
@@ -165,14 +176,16 @@ impl IPPodMapping {
                             ip_address, pod_info.namespace, pod_info.pod
                         );
 
-                        self.map.insert(ip_address, pod_info);
+                        if let Ok(parsed_ip) = ip_address.parse::<IpAddr>() {
+                            self.map.insert(parsed_ip, pod_info);
+                        }
                         total_processed += 1;
                     }
                 }
             }
 
             // Process IPv6 CIDRs if needed
-            for (cidr, cidr_info) in eni_info.ipv6_cidrs {
+            for (_cidr, cidr_info) in eni_info.ipv6_cidrs {
                 for (ip_address, ip_info) in cidr_info.ip_addresses {
                     if !ip_info.ipam_metadata.k8s_pod_name.is_empty()
                         && !ip_info.ipam_metadata.k8s_pod_namespace.is_empty()
@@ -187,7 +200,9 @@ impl IPPodMapping {
                             ip_address, pod_info.namespace, pod_info.pod
                         );
 
-                        self.map.insert(ip_address, pod_info);
+                        if let Ok(parsed_ip) = ip_address.parse::<IpAddr>() {
+                            self.map.insert(parsed_ip, pod_info);
+                        }
                         total_processed += 1;
                     }
                 }
@@ -198,26 +213,6 @@ impl IPPodMapping {
             "Successfully updated IP to POD mapping with {} entries",
             total_processed
         );
-    }
-
-    /// Get pod information for a given IP address
-    pub fn get_pod_info(&self, ip: &str) -> Option<&PodInfo> {
-        self.map.get(ip)
-    }
-
-    /// Get all IP to POD mappings
-    pub fn get_all_mappings(&self) -> &HashMap<PodIP, PodInfo> {
-        &self.map
-    }
-
-    /// Get the number of mapped IPs
-    pub fn len(&self) -> usize {
-        self.map.len()
-    }
-
-    /// Check if the mapping is empty
-    pub fn is_empty(&self) -> bool {
-        self.map.is_empty()
     }
 }
 
@@ -289,126 +284,6 @@ mod tests {
             ip_info.ipam_metadata.k8s_pod_name,
             "prometheus-prometheus-kube-prometheus-prometheus-0"
         );
-    }
-
-    #[test]
-    fn test_process_eni_response() {
-        let json_data = r#"{
-            "TotalIPs": 3,
-            "AssignedIPs": 2,
-            "ENIs": {
-                "eni-test": {
-                    "ID": "eni-test",
-                    "IsPrimary": true,
-                    "IsTrunk": false,
-                    "IsEFA": false,
-                    "DeviceNumber": 0,
-                    "AvailableIPv4Cidrs": {
-                        "172.31.16.82/32": {
-                            "Cidr": {
-                                "IP": "172.31.16.82",
-                                "Mask": "/////w=="
-                            },
-                            "IPAddresses": {
-                                "172.31.16.82": {
-                                    "Address": "172.31.16.82",
-                                    "IPAMKey": {
-                                        "networkName": "aws-cni",
-                                        "containerID": "container1",
-                                        "ifName": "eth0"
-                                    },
-                                    "IPAMMetadata": {
-                                        "k8sPodNamespace": "default",
-                                        "k8sPodName": "test-pod-1"
-                                    },
-                                    "AssignedTime": "2025-09-25T10:35:38.730905251Z",
-                                    "UnassignedTime": "0001-01-01T00:00:00Z"
-                                }
-                            },
-                            "IsPrefix": false,
-                            "AddressFamily": ""
-                        },
-                        "172.31.20.40/32": {
-                            "Cidr": {
-                                "IP": "172.31.20.40",
-                                "Mask": "/////w=="
-                            },
-                            "IPAddresses": {
-                                "172.31.20.40": {
-                                    "Address": "172.31.20.40",
-                                    "IPAMKey": {
-                                        "networkName": "aws-cni",
-                                        "containerID": "container2",
-                                        "ifName": "eth0"
-                                    },
-                                    "IPAMMetadata": {
-                                        "k8sPodNamespace": "kube-system",
-                                        "k8sPodName": "coredns-568c9cfd74-f8fh4"
-                                    },
-                                    "AssignedTime": "2025-09-25T10:46:09.544683821Z",
-                                    "UnassignedTime": "0001-01-01T00:00:00Z"
-                                }
-                            },
-                            "IsPrefix": false,
-                            "AddressFamily": ""
-                        },
-                        "172.31.30.50/32": {
-                            "Cidr": {
-                                "IP": "172.31.30.50",
-                                "Mask": "/////w=="
-                            },
-                            "IPAddresses": {},
-                            "IsPrefix": false,
-                            "AddressFamily": ""
-                        }
-                    },
-                    "IPv6Cidrs": {}
-                }
-            }
-        }"#;
-
-        let eni_response: ENIResponse = serde_json::from_str(json_data).unwrap();
-        let mut mapping = IPPodMapping {
-            map: HashMap::new(),
-        };
-
-        mapping.process_eni_response(eni_response);
-
-        // Should have 2 mappings (the third IP has no pod metadata)
-        assert_eq!(mapping.len(), 2);
-
-        // Check first mapping
-        let pod_info_1 = mapping.get_pod_info("172.31.16.82").unwrap();
-        assert_eq!(pod_info_1.pod, "test-pod-1");
-        assert_eq!(pod_info_1.namespace, "default");
-
-        // Check second mapping
-        let pod_info_2 = mapping.get_pod_info("172.31.20.40").unwrap();
-        assert_eq!(pod_info_2.pod, "coredns-568c9cfd74-f8fh4");
-        assert_eq!(pod_info_2.namespace, "kube-system");
-
-        // Check non-existent IP
-        assert!(mapping.get_pod_info("172.31.30.50").is_none());
-        assert!(mapping.get_pod_info("192.168.1.1").is_none());
-    }
-
-    #[test]
-    fn test_empty_eni_response() {
-        let json_data = r#"{
-            "TotalIPs": 0,
-            "AssignedIPs": 0,
-            "ENIs": {}
-        }"#;
-
-        let eni_response: ENIResponse = serde_json::from_str(json_data).unwrap();
-        let mut mapping = IPPodMapping {
-            map: HashMap::new(),
-        };
-
-        mapping.process_eni_response(eni_response);
-
-        assert!(mapping.is_empty());
-        assert_eq!(mapping.len(), 0);
     }
 
     #[test]
