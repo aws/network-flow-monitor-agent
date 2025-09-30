@@ -108,38 +108,54 @@ impl EnvMetadataProvider for EniMetadataProvider {
     }
 }
 
-fn retrieve_imds_metadata(client: &aws_config::imds::Client, path: String) -> String {
-    // Check if we're already in a Tokio runtime context
-    if tokio::runtime::Handle::try_current().is_ok() {
-        // We're already in a runtime, use the current context
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current()
-                .block_on(async {
-                    match client.get(&path).await {
-                        Ok(instance_id) => instance_id.into(),
-                        Err(err) => {
-                            error!(error = err.to_string(), path = path; "Error retrieving imds metadata");
-                            "".into()
-                        }
-                    }
-                })
-        })
+/// Runtime executor that handles both existing and new runtime contexts
+enum RuntimeExecutor {
+    Existing(tokio::runtime::Handle),
+    New(tokio::runtime::Runtime),
+}
+
+impl RuntimeExecutor {
+    fn block_on<F>(&self, future: F) -> F::Output
+    where
+        F: std::future::Future,
+    {
+        match self {
+            RuntimeExecutor::Existing(handle) => {
+                tokio::task::block_in_place(|| handle.block_on(future))
+            }
+            RuntimeExecutor::New(runtime) => runtime.block_on(future),
+        }
+    }
+}
+
+/// Gets or creates a runtime executor for async operations
+fn get_runtime_executor() -> Option<RuntimeExecutor> {
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        Some(RuntimeExecutor::Existing(handle))
     } else {
-        // Not in a runtime, create a new one
-        let rt = match tokio::runtime::Runtime::new() {
-            Ok(rt) => rt,
+        // Not in a runtime, creating one.
+        match tokio::runtime::Runtime::new() {
+            Ok(rt) => Some(RuntimeExecutor::New(rt)),
             Err(err) => {
                 error!(error = err.to_string(); "Error creating tokio runtime");
-                return "".into();
+                None
             }
-        };
+        }
+    }
+}
 
-        match rt.block_on(client.get(&path)) {
+fn retrieve_imds_metadata(client: &aws_config::imds::Client, path: String) -> String {
+    match get_runtime_executor() {
+        Some(executor) => match executor.block_on(client.get(&path)) {
             Ok(instance_id) => instance_id.into(),
             Err(err) => {
                 error!(error = err.to_string(), path = path; "Error retrieving imds metadata");
                 "".into()
             }
+        },
+        None => {
+            error!(path = path; "Failed to get runtime executor for IMDS metadata");
+            "".into()
         }
     }
 }
@@ -153,24 +169,12 @@ fn retrieve_instance_type(client: &aws_config::imds::Client) -> String {
 }
 
 fn retrieve_network_information(client: &aws_config::imds::Client) -> Vec<NetworkInterfaceInfo> {
-    // Check if we're already in a Tokio runtime context
-    if tokio::runtime::Handle::try_current().is_ok() {
-        // We're already in a runtime, use the current context
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current()
-                .block_on(async { retrieve_network_information_async(client).await })
-        })
-    } else {
-        // Not in a runtime, create a new one
-        let rt = match tokio::runtime::Runtime::new() {
-            Ok(rt) => rt,
-            Err(err) => {
-                error!(error = err.to_string(); "Error creating tokio runtime");
-                return vec![];
-            }
-        };
-
-        rt.block_on(async { retrieve_network_information_async(client).await })
+    match get_runtime_executor() {
+        Some(executor) => executor.block_on(retrieve_network_information_async(client)),
+        None => {
+            error!("Failed to get runtime executor for network information");
+            vec![]
+        }
     }
 }
 

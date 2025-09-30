@@ -33,6 +33,7 @@ struct SystemMetricValues {
     bw_out_allowance_exceeded: u64,
     pps_allowance_exceeded: u64,
     conntrack_allowance_exceeded: u64,
+    linklocal_allowance_exceeded: u64,
 }
 
 pub struct SystemMetricsProvider {
@@ -45,6 +46,7 @@ pub struct SystemMetricsProvider {
     bw_out_allowance_exceeded: IntGaugeVec,
     pps_allowance_exceeded: IntGaugeVec,
     conntrack_allowance_exceeded: IntGaugeVec,
+    linklocal_allowance_exceeded: IntGaugeVec,
 }
 
 impl SystemMetricsProvider {
@@ -76,6 +78,11 @@ impl SystemMetricsProvider {
                 "conntrack_allowance_exceeded",
                 "The number of packets dropped because connection tracking exceeded the maximum for the instance and new connections could not be established. This can result in packet loss for traffic to or from the instance."
             ),
+            linklocal_allowance_exceeded: build_gauge_metric(
+                &compute_platform,
+                "linklocal_allowance_exceeded",
+                "The number of packets dropped because the PPS of the traffic to local proxy services exceeded the maximum for the network interface."
+            ),
         }
     }
 
@@ -95,6 +102,7 @@ impl SystemMetricsProvider {
                     bw_out_allowance_exceeded: host_stat.stats.bw_out_allowance_exceeded,
                     pps_allowance_exceeded: host_stat.stats.pps_allowance_exceeded,
                     conntrack_allowance_exceeded: host_stat.stats.conntrack_allowance_exceeded,
+                    linklocal_allowance_exceeded: host_stat.stats.linklocal_allowance_exceeded,
                 },
             })
         }
@@ -106,7 +114,9 @@ impl SystemMetric {
     fn get_labels(compute_platform: &ComputePlatform) -> &[&str] {
         match compute_platform {
             ComputePlatform::Ec2Plain => &["instance_id", "eni"],
-            ComputePlatform::Ec2K8sEks | ComputePlatform::Ec2K8sVanilla => &["eni", "node"],
+            ComputePlatform::Ec2K8sEks | ComputePlatform::Ec2K8sVanilla => {
+                &["instance_id", "eni", "node"]
+            }
         }
     }
 
@@ -115,7 +125,11 @@ impl SystemMetric {
         match compute_platform {
             ComputePlatform::Ec2Plain => vec![&self.key.instance.as_str(), &self.key.eni.as_str()],
             ComputePlatform::Ec2K8sEks | ComputePlatform::Ec2K8sVanilla => {
-                vec![&self.key.eni.as_str(), &self.key.node.as_str()]
+                vec![
+                    &self.key.instance.as_str(),
+                    &self.key.eni.as_str(),
+                    &self.key.node.as_str(),
+                ]
             }
         }
     }
@@ -139,6 +153,9 @@ impl OpenMetricProvider for SystemMetricsProvider {
         registry
             .register(Box::new(self.conntrack_allowance_exceeded.clone()))
             .unwrap();
+        registry
+            .register(Box::new(self.linklocal_allowance_exceeded.clone()))
+            .unwrap();
     }
 
     fn update_metrics(&mut self) -> Result<(), anyhow::Error> {
@@ -160,6 +177,9 @@ impl OpenMetricProvider for SystemMetricsProvider {
             self.conntrack_allowance_exceeded
                 .with_label_values(&label_values)
                 .set(metric.value.conntrack_allowance_exceeded as i64);
+            self.linklocal_allowance_exceeded
+                .with_label_values(&label_values)
+                .set(metric.value.linklocal_allowance_exceeded as i64);
         }
 
         Ok(())
@@ -235,13 +255,13 @@ mod tests {
     #[test]
     fn test_system_metric_get_labels_eks() {
         let labels = SystemMetric::get_labels(&ComputePlatform::Ec2K8sEks);
-        assert_eq!(labels, &["eni", "node"]);
+        assert_eq!(labels, &["instance_id", "eni", "node"]);
     }
 
     #[test]
     fn test_system_metric_get_labels_vanilla_k8s() {
         let labels = SystemMetric::get_labels(&ComputePlatform::Ec2K8sVanilla);
-        assert_eq!(labels, &["eni", "node"]);
+        assert_eq!(labels, &["instance_id", "eni", "node"]);
     }
 
     #[test]
@@ -257,6 +277,7 @@ mod tests {
                 bw_out_allowance_exceeded: 200,
                 pps_allowance_exceeded: 300,
                 conntrack_allowance_exceeded: 400,
+                linklocal_allowance_exceeded: 500,
             },
         };
 
@@ -277,11 +298,15 @@ mod tests {
                 bw_out_allowance_exceeded: 200,
                 pps_allowance_exceeded: 300,
                 conntrack_allowance_exceeded: 400,
+                linklocal_allowance_exceeded: 500,
             },
         };
 
         let label_values = metric.label_values(&ComputePlatform::Ec2K8sEks);
-        assert_eq!(label_values, vec!["eni-12345", "test-node"]);
+        assert_eq!(
+            label_values,
+            vec!["i-1234567890abcdef0", "eni-12345", "test-node"]
+        );
     }
 
     #[test]
@@ -297,11 +322,15 @@ mod tests {
                 bw_out_allowance_exceeded: 200,
                 pps_allowance_exceeded: 300,
                 conntrack_allowance_exceeded: 400,
+                linklocal_allowance_exceeded: 500,
             },
         };
 
         let label_values = metric.label_values(&ComputePlatform::Ec2K8sVanilla);
-        assert_eq!(label_values, vec!["eni-12345", "test-node"]);
+        assert_eq!(
+            label_values,
+            vec!["i-1234567890abcdef0", "eni-12345", "test-node"]
+        );
     }
 
     #[test]
@@ -313,7 +342,7 @@ mod tests {
         let _ = provider.update_metrics();
         let metric_families = registry.gather();
 
-        assert_eq!(metric_families.len(), 4);
+        assert_eq!(metric_families.len(), 5);
 
         let metric_names: Vec<String> = metric_families
             .iter()
@@ -324,6 +353,7 @@ mod tests {
         assert!(metric_names.contains(&"bw_out_allowance_exceeded".to_string()));
         assert!(metric_names.contains(&"pps_allowance_exceeded".to_string()));
         assert!(metric_names.contains(&"conntrack_allowance_exceeded".to_string()));
+        assert!(metric_names.contains(&"linklocal_allowance_exceeded".to_string()));
     }
 
     #[test]
@@ -347,6 +377,7 @@ mod tests {
             bw_out_allowance_exceeded: 200,
             pps_allowance_exceeded: 300,
             conntrack_allowance_exceeded: 400,
+            linklocal_allowance_exceeded: 500,
         };
 
         let metric = SystemMetric { key, value };
@@ -358,6 +389,7 @@ mod tests {
         assert_eq!(metric.value.bw_out_allowance_exceeded, 200);
         assert_eq!(metric.value.pps_allowance_exceeded, 300);
         assert_eq!(metric.value.conntrack_allowance_exceeded, 400);
+        assert_eq!(metric.value.linklocal_allowance_exceeded, 500);
     }
 
     #[test]
@@ -381,7 +413,7 @@ mod tests {
             // Verify we have the expected number of metric families
             assert_eq!(
                 metric_families.len(),
-                4,
+                5,
                 "Failed for platform: {:?}",
                 platform
             );
@@ -396,6 +428,7 @@ mod tests {
             assert!(metric_names.contains(&"bw_out_allowance_exceeded".to_string()));
             assert!(metric_names.contains(&"pps_allowance_exceeded".to_string()));
             assert!(metric_names.contains(&"conntrack_allowance_exceeded".to_string()));
+            assert!(metric_names.contains(&"linklocal_allowance_exceeded".to_string()));
         }
     }
 
@@ -416,7 +449,7 @@ mod tests {
                 HashSet::from_iter(SystemMetric::get_labels(platform).iter().copied());
 
             // Verify we have the expected number of metric families
-            assert_eq!(metric_families.len(), 4);
+            assert_eq!(metric_families.len(), 5);
 
             for metric_family in metric_families {
                 // Each metric family should have at least one metric
@@ -553,6 +586,11 @@ mod tests {
             conntrack_allowance_exceeded: build_gauge_metric(
                 &compute_platform,
                 "conntrack_allowance_exceeded",
+                "description",
+            ),
+            linklocal_allowance_exceeded: build_gauge_metric(
+                &compute_platform,
+                "linklocal_allowance_exceeded",
                 "description",
             ),
         }
