@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::env_metadata_provider::{EnvMetadata, EnvMetadataProvider, NetworkDevice};
-use crate::metadata::imds_utils::{retrieve_instance_id, retrieve_instance_type};
+use crate::metadata::imds_utils::{
+    get_runtime_executor, retrieve_instance_id, retrieve_instance_type,
+};
 use crate::reports::report::ReportValue;
 use crate::utils::{CommandRunner, RealCommandRunner};
 use aws_config::imds::Client;
@@ -107,66 +109,6 @@ impl EnvMetadataProvider for EniMetadataProvider {
 
         metadata
     }
-}
-
-/// Runtime executor that handles both existing and new runtime contexts
-enum RuntimeExecutor {
-    Existing(tokio::runtime::Handle),
-    New(tokio::runtime::Runtime),
-}
-
-impl RuntimeExecutor {
-    fn block_on<F>(&self, future: F) -> F::Output
-    where
-        F: std::future::Future,
-    {
-        match self {
-            RuntimeExecutor::Existing(handle) => {
-                tokio::task::block_in_place(|| handle.block_on(future))
-            }
-            RuntimeExecutor::New(runtime) => runtime.block_on(future),
-        }
-    }
-}
-
-/// Gets or creates a runtime executor for async operations
-fn get_runtime_executor() -> Option<RuntimeExecutor> {
-    if let Ok(handle) = tokio::runtime::Handle::try_current() {
-        Some(RuntimeExecutor::Existing(handle))
-    } else {
-        // Not in a runtime, creating one.
-        match tokio::runtime::Runtime::new() {
-            Ok(rt) => Some(RuntimeExecutor::New(rt)),
-            Err(err) => {
-                error!(error = err.to_string(); "Error creating tokio runtime");
-                None
-            }
-        }
-    }
-}
-
-fn retrieve_imds_metadata(client: &aws_config::imds::Client, path: String) -> String {
-    match get_runtime_executor() {
-        Some(executor) => match executor.block_on(client.get(&path)) {
-            Ok(instance_id) => instance_id.into(),
-            Err(err) => {
-                error!(error = err.to_string(), path = path; "Error retrieving imds metadata");
-                "".into()
-            }
-        },
-        None => {
-            error!(path = path; "Failed to get runtime executor for IMDS metadata");
-            "".into()
-        }
-    }
-}
-
-fn retrieve_instance_id(client: &aws_config::imds::Client) -> String {
-    retrieve_imds_metadata(client, "/latest/meta-data/instance-id".to_string())
-}
-
-fn retrieve_instance_type(client: &aws_config::imds::Client) -> String {
-    retrieve_imds_metadata(client, "/latest/meta-data/instance-type".to_string())
 }
 
 fn retrieve_network_information(client: &aws_config::imds::Client) -> Vec<NetworkInterfaceInfo> {

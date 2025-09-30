@@ -81,7 +81,7 @@ impl SystemMetricsProvider {
                 "conntrack_allowance_exceeded",
                 "The number of packets dropped because connection tracking exceeded the maximum for the instance and new connections could not be established. This can result in packet loss for traffic to or from the instance."
             ),
-            linklocal_allowance_exceeded: build_gauge_metric(
+            linklocal_allowance_exceeded: build_gauge_metric::<SystemMetric>(
                 &compute_platform,
                 "linklocal_allowance_exceeded",
                 "The number of packets dropped because the PPS of the traffic to local proxy services exceeded the maximum for the network interface."
@@ -114,15 +114,6 @@ impl SystemMetricsProvider {
 }
 
 impl SystemMetric {
-    fn get_labels(compute_platform: &ComputePlatform) -> &[&str] {
-        match compute_platform {
-            ComputePlatform::Ec2Plain => &["instance_id", "eni"],
-            ComputePlatform::Ec2K8sEks | ComputePlatform::Ec2K8sVanilla => {
-                &["instance_id", "eni", "node"]
-            }
-        }
-    }
-
     fn label_values(&self, compute_platform: &ComputePlatform) -> Vec<&str> {
         // The order of the elements must match the labels for the trait MetricLabel
         match compute_platform {
@@ -142,7 +133,9 @@ impl MetricLabel for SystemMetric {
     fn get_labels(compute_platform: &ComputePlatform) -> &[&str] {
         match compute_platform {
             ComputePlatform::Ec2Plain => &["instance_id", "eni"],
-            ComputePlatform::Ec2K8sEks | ComputePlatform::Ec2K8sVanilla => &["eni", "node"],
+            ComputePlatform::Ec2K8sEks | ComputePlatform::Ec2K8sVanilla => {
+                &["instance_id", "eni", "node"]
+            }
         }
     }
 }
@@ -588,7 +581,7 @@ mod tests {
                 "conntrack_allowance_exceeded",
                 "description",
             ),
-            linklocal_allowance_exceeded: build_gauge_metric(
+            linklocal_allowance_exceeded: build_gauge_metric::<SystemMetric>(
                 &compute_platform,
                 "linklocal_allowance_exceeded",
                 "description",
