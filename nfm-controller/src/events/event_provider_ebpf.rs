@@ -99,6 +99,8 @@ fn calculate_ebpf_memory_usage(sock_props_max_entries: u64, sock_stats_max_entri
 impl<C: Clock> EventProvider for EventProviderEbpf<C> {
     // Aggregates results from the eBPF layer, and evicts closed sockets.
     fn perform_aggregation_cycle(&mut self, nat_resolver: &Box<dyn NatResolver>) {
+        info!("Aggregating across sockets");
+
         // Apply adaptive sampling if we're receiving events faster than we can process.
         if self.ebpf_counters().map_insertion_errors > 0 {
             self.increase_sampling_interval();
@@ -145,7 +147,7 @@ impl<C: Clock> EventProvider for EventProviderEbpf<C> {
         let sock_nat_result = nat_resolver.store_beyond_nat_entries(&mut self.sock_cache);
 
         // Aggregate our delta stats into flows.
-        let _num_flows_before = self.flow_cache.len();
+        let num_flows_before = self.flow_cache.len();
         let flow_aggregation_result = SocketQueries::aggregate_into_flows(
             &self.sock_stream,
             &self.sock_cache,
@@ -155,7 +157,7 @@ impl<C: Clock> EventProvider for EventProviderEbpf<C> {
 
         // Collect some stats before evicting entries.
         self.agg_socks_handled = self.sock_cache.len().try_into().unwrap();
-        let (_num_cpus_min, _num_cpus_max, _num_cpus_avg) = self.sock_cache.num_cpus();
+        let (num_cpus_min, num_cpus_max, num_cpus_avg) = self.sock_cache.num_cpus();
 
         // Evict sockets.
         let (socks_to_evict, num_stale) = self.sock_cache.perform_eviction();
@@ -176,6 +178,22 @@ impl<C: Clock> EventProvider for EventProviderEbpf<C> {
 
         self.process_counters.socket_eviction_completed += sock_eviction_result.completed;
         self.process_counters.socket_eviction_failed += sock_eviction_result.failed;
+
+        info!(
+            sock_add_result:serde,
+            sock_delta_result:serde,
+            sock_nat_result:serde,
+            flow_aggregation_result:serde,
+            sock_eviction_result:serde,
+            control_data:serde = self.ebpf_control_data,
+            sock_cache_len = self.sock_cache.len(),
+            flows_before = num_flows_before,
+            flows_after = self.flow_cache.len(),
+            cpus_per_sock_min = num_cpus_min,
+            cpus_per_sock_avg = num_cpus_avg,
+            cpus_per_sock_max = num_cpus_max;
+            "Aggregation complete"
+        );
     }
 
     // Returns and resets aggregated network stats.

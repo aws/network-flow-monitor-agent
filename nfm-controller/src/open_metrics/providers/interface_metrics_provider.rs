@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::net::IpAddr;
+use std::path::Path;
 
 use crate::{
     metadata::{
@@ -31,12 +32,6 @@ pub struct NamespaceInfo {
     pub ip_addresses: Vec<IpAddr>,
 }
 
-/// Interface level metrics.
-struct InterfaceMetric {
-    key: InterfaceMetricKey,
-    value: InterfaceMetricValues,
-}
-
 /// Metric key.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct InterfaceMetricKey {
@@ -48,7 +43,7 @@ struct InterfaceMetricKey {
 }
 
 /// Values provided by the metrics.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct InterfaceMetricValues {
     ingress_pkt_count: u64,
     ingress_bytes_count: u64,
@@ -56,27 +51,53 @@ struct InterfaceMetricValues {
     egress_bytes_count: u64,
 }
 
-impl InterfaceMetric {
+impl InterfaceMetricValues {
+    fn swap_tx_rx(self) -> InterfaceMetricValues {
+        InterfaceMetricValues {
+            ingress_pkt_count: self.egress_pkt_count,
+            ingress_bytes_count: self.egress_bytes_count,
+            egress_pkt_count: self.ingress_pkt_count,
+            egress_bytes_count: self.ingress_bytes_count,
+        }
+    }
+
+    fn delta(&self, other: &Self) -> InterfaceMetricValues {
+        InterfaceMetricValues {
+            ingress_pkt_count: self
+                .ingress_pkt_count
+                .saturating_sub(other.ingress_pkt_count),
+            ingress_bytes_count: self
+                .ingress_bytes_count
+                .saturating_sub(other.ingress_bytes_count),
+            egress_pkt_count: self.egress_pkt_count.saturating_sub(other.egress_pkt_count),
+            egress_bytes_count: self
+                .egress_bytes_count
+                .saturating_sub(other.egress_bytes_count),
+        }
+    }
+}
+
+impl InterfaceMetricKey {
     fn label_values(&self, compute_platform: &ComputePlatform) -> Vec<&str> {
         // The order of the elements must match the labels for the trait MetricLabel
         match compute_platform {
             ComputePlatform::Ec2Plain => {
-                vec![&self.key.instance.as_str(), &self.key.iface.as_str()]
+                vec![&self.instance.as_str(), &self.iface.as_str()]
             }
             ComputePlatform::Ec2K8sEks | ComputePlatform::Ec2K8sVanilla => {
                 vec![
-                    &self.key.instance.as_str(),
-                    &self.key.iface.as_str(),
-                    &self.key.pod.as_str(),
-                    &self.key.pod_namespace.as_str(),
-                    &self.key.node.as_str(),
+                    &self.instance.as_str(),
+                    &self.iface.as_str(),
+                    &self.pod.as_str(),
+                    &self.pod_namespace.as_str(),
+                    &self.node.as_str(),
                 ]
             }
         }
     }
 }
 
-impl MetricLabel for InterfaceMetric {
+impl MetricLabel for InterfaceMetricKey {
     fn get_labels(compute_platform: &ComputePlatform) -> &[&str] {
         match compute_platform {
             ComputePlatform::Ec2Plain => &["instance_id", "iface"],
@@ -97,6 +118,9 @@ pub struct InterfaceMetricsProvider {
     ingress_bytes_count: IntGaugeVec,
     egress_pkt_count: IntGaugeVec,
     egress_bytes_count: IntGaugeVec,
+
+    // Current metrics to calculate the delta from previous reports
+    current_metrics: HashMap<InterfaceMetricKey, InterfaceMetricValues>,
 }
 
 impl InterfaceMetricsProvider {
@@ -106,33 +130,38 @@ impl InterfaceMetricsProvider {
             _ => "unknown".to_string(),
         };
 
-        InterfaceMetricsProvider {
+        let mut provider = InterfaceMetricsProvider {
             compute_platform: compute_platform.clone(),
             instance_id: retrieve_instance_id(&Client::builder().build()),
             node_name,
             command_runner: Box::new(RealCommandRunner {}),
 
-            ingress_pkt_count: build_gauge_metric::<InterfaceMetric>(
+            ingress_pkt_count: build_gauge_metric::<InterfaceMetricKey>(
                 &compute_platform,
-                "ingress_pkt_count",
+                "ingress_packets",
                 "Ingress packet count",
             ),
-            ingress_bytes_count: build_gauge_metric::<InterfaceMetric>(
+            ingress_bytes_count: build_gauge_metric::<InterfaceMetricKey>(
                 &compute_platform,
-                "ingress_bytes_count",
+                "ingress_bytes",
                 "Ingress bytes count",
             ),
-            egress_pkt_count: build_gauge_metric::<InterfaceMetric>(
+            egress_pkt_count: build_gauge_metric::<InterfaceMetricKey>(
                 &compute_platform,
-                "egress_pkt_count",
+                "egress_packets",
                 "Egress packet count",
             ),
-            egress_bytes_count: build_gauge_metric::<InterfaceMetric>(
+            egress_bytes_count: build_gauge_metric::<InterfaceMetricKey>(
                 &compute_platform,
-                "egress_bytes_count",
+                "egress_bytes",
                 "Egress bytes count",
             ),
-        }
+            current_metrics: HashMap::new(),
+        };
+
+        // This call will update the metrics for the first time bith the baseline.
+        provider.current_metrics = provider.get_metrics();
+        provider
     }
 
     fn get_metrics(&mut self) -> HashMap<InterfaceMetricKey, InterfaceMetricValues> {
@@ -143,20 +172,39 @@ impl InterfaceMetricsProvider {
             }
         };
 
-        get_device_status()
+        let mut new_current_metrics = HashMap::new();
+        let result = get_device_status()
             .iter()
-            .map(|(interface_name, interface_stats)| {
+            .map(|(interface, interface_stats)| {
                 let key =
-                    self.build_metric_key(interface_name, ns_to_pid.clone(), pod_info.clone());
-                let value = InterfaceMetricValues {
+                    self.build_metric_key(&interface.name, ns_to_pid.clone(), pod_info.clone());
+                let mut current_value = InterfaceMetricValues {
                     ingress_pkt_count: interface_stats.recv_packets,
                     ingress_bytes_count: interface_stats.recv_bytes,
                     egress_pkt_count: interface_stats.sent_packets,
                     egress_bytes_count: interface_stats.sent_bytes,
                 };
-                (key, value)
+
+                // If the interface is veth, we need to swap the values because the pod is on the other end
+                // of the link
+                if interface.is_virtual() {
+                    current_value = current_value.swap_tx_rx();
+                }
+
+                // Calculate deltas before inserting into new_current_metrics
+                let delta_metric = current_value.delta(
+                    self.current_metrics
+                        .get(&key)
+                        .unwrap_or(&InterfaceMetricValues::default()),
+                );
+
+                new_current_metrics.insert(key.clone(), current_value);
+                (key, delta_metric)
             })
-            .collect()
+            .collect();
+
+        self.current_metrics = new_current_metrics;
+        result
     }
 
     fn build_metric_key(
@@ -436,7 +484,34 @@ impl InterfaceMetricsProvider {
     }
 }
 
-fn get_device_status() -> HashMap<String, DeviceStatus> {
+#[derive(PartialEq, Eq, Hash)]
+struct HostInterface {
+    name: String,
+    virt: bool,
+}
+
+impl HostInterface {
+    fn new(name: String) -> Self {
+        HostInterface {
+            name: name.clone(),
+            virt: check_virtual_iface(&name),
+        }
+    }
+
+    fn is_virtual(&self) -> bool {
+        self.virt
+    }
+}
+
+fn check_virtual_iface(name: &String) -> bool {
+    // Check if /sys/class/net/<interface>/device exists
+    // Physical interfaces have this symlink, virtual interfaces don't
+    // https://man7.org/linux/man-pages/man5/sysfs.5.html
+    let device_path = format!("/sys/class/net/{}/device", name);
+    !Path::new(&device_path).exists()
+}
+
+fn get_device_status() -> HashMap<HostInterface, DeviceStatus> {
     // Get interface statistics from procfs
     let interfaces = match dev_status() {
         Ok(interfaces) => interfaces,
@@ -476,6 +551,7 @@ fn get_device_status() -> HashMap<String, DeviceStatus> {
 
             true
         })
+        .map(|(iface_name, device_status)| (HostInterface::new(iface_name), device_status))
         .collect()
 }
 
@@ -515,13 +591,8 @@ impl OpenMetricProvider for InterfaceMetricsProvider {
         info!(platform = self.compute_platform.to_string(); "Updating Interface Metrics");
         let metrics = self.get_metrics();
 
-        for (key, value) in &metrics {
-            // Create a temporary InterfaceMetric to use the existing label_values method
-            let metric = InterfaceMetric {
-                key: key.clone(),
-                value: value.clone(),
-            };
-            let label_values = metric.label_values(&self.compute_platform);
+        for (key, value) in metrics {
+            let label_values = key.label_values(&self.compute_platform);
 
             self.ingress_bytes_count
                 .with_label_values(&label_values)
@@ -563,14 +634,14 @@ mod tests {
     }
 
     #[test]
-    fn test_interface_metric_get_labels_ec2_plain() {
-        let labels = InterfaceMetric::get_labels(&ComputePlatform::Ec2Plain);
+    fn test_interface_metric_key_get_labels_ec2_plain() {
+        let labels = InterfaceMetricKey::get_labels(&ComputePlatform::Ec2Plain);
         assert_eq!(labels, &["instance_id", "iface"]);
     }
 
     #[test]
-    fn test_interface_metric_get_labels_eks() {
-        let labels = InterfaceMetric::get_labels(&ComputePlatform::Ec2K8sEks);
+    fn test_interface_metric_key_get_labels_eks() {
+        let labels = InterfaceMetricKey::get_labels(&ComputePlatform::Ec2K8sEks);
         assert_eq!(
             labels,
             &["instance_id", "iface", "pod", "namespace", "node"]
@@ -579,45 +650,29 @@ mod tests {
 
     #[test]
     fn test_interface_metric_label_values_ec2_plain() {
-        let metric = InterfaceMetric {
-            key: InterfaceMetricKey {
-                instance: "i-1234567890abcdef0".to_string(),
-                iface: "eth0".to_string(),
-                pod: "".to_string(),
-                pod_namespace: "".to_string(),
-                node: "test-node".to_string(),
-            },
-            value: InterfaceMetricValues {
-                ingress_pkt_count: 100,
-                ingress_bytes_count: 1000,
-                egress_pkt_count: 200,
-                egress_bytes_count: 2000,
-            },
+        let key = InterfaceMetricKey {
+            instance: "i-1234567890abcdef0".to_string(),
+            iface: "eth0".to_string(),
+            pod: "".to_string(),
+            pod_namespace: "".to_string(),
+            node: "test-node".to_string(),
         };
 
-        let label_values = metric.label_values(&ComputePlatform::Ec2Plain);
+        let label_values = key.label_values(&ComputePlatform::Ec2Plain);
         assert_eq!(label_values, vec!["i-1234567890abcdef0", "eth0"]);
     }
 
     #[test]
-    fn test_interface_metric_label_values_eks() {
-        let metric = InterfaceMetric {
-            key: InterfaceMetricKey {
-                instance: "i-1234567890abcdef0".to_string(),
-                iface: "eth0".to_string(),
-                pod: "test-pod".to_string(),
-                pod_namespace: "default".to_string(),
-                node: "test-node".to_string(),
-            },
-            value: InterfaceMetricValues {
-                ingress_pkt_count: 100,
-                ingress_bytes_count: 1000,
-                egress_pkt_count: 200,
-                egress_bytes_count: 2000,
-            },
+    fn test_interface_metric_key_label_values_eks() {
+        let key = InterfaceMetricKey {
+            instance: "i-1234567890abcdef0".to_string(),
+            iface: "eth0".to_string(),
+            pod: "test-pod".to_string(),
+            pod_namespace: "default".to_string(),
+            node: "test-node".to_string(),
         };
 
-        let label_values = metric.label_values(&ComputePlatform::Ec2K8sEks);
+        let label_values = key.label_values(&ComputePlatform::Ec2K8sEks);
         assert_eq!(
             label_values,
             vec![
@@ -741,14 +796,6 @@ mod tests {
         let result = provider.get_ns_from(&"eth0".to_string());
 
         assert_eq!(result, None);
-    }
-
-    #[test]
-    fn test_get_metrics_returns_hashmap() {
-        let mut provider = InterfaceMetricsProvider::new(&ComputePlatform::Ec2Plain);
-        let metrics = provider.get_metrics();
-        // Should return a HashMap (may be empty if no interfaces are available in test environment)
-        assert!(metrics.is_empty() || !metrics.is_empty()); // Just verify it returns a HashMap
     }
 
     #[test]
@@ -1201,10 +1248,10 @@ mod tests {
             .map(|mf| mf.get_name().to_string())
             .collect();
 
-        assert!(metric_names.contains(&"ingress_pkt_count".to_string()));
-        assert!(metric_names.contains(&"ingress_bytes_count".to_string()));
-        assert!(metric_names.contains(&"egress_pkt_count".to_string()));
-        assert!(metric_names.contains(&"egress_bytes_count".to_string()));
+        assert!(metric_names.contains(&"ingress_packets".to_string()));
+        assert!(metric_names.contains(&"ingress_bytes".to_string()));
+        assert!(metric_names.contains(&"egress_packets".to_string()));
+        assert!(metric_names.contains(&"egress_bytes".to_string()));
     }
 
     #[test]
@@ -1215,9 +1262,9 @@ mod tests {
         let device_status = get_device_status();
 
         // Verify that no interface name is "lo" (loopback should be filtered out)
-        for (interface_name, _) in &device_status {
+        for (interface, _) in &device_status {
             assert_ne!(
-                interface_name, "lo",
+                interface.name, "lo",
                 "Loopback interface should be filtered out"
             );
         }
@@ -1322,6 +1369,276 @@ mod tests {
         assert_eq!(result, ("".to_string(), "".to_string()));
     }
 
+    #[test]
+    fn test_interface_metric_values_sub_normal_case() {
+        let current = InterfaceMetricValues {
+            ingress_pkt_count: 1000,
+            ingress_bytes_count: 50000,
+            egress_pkt_count: 800,
+            egress_bytes_count: 40000,
+        };
+
+        let previous = InterfaceMetricValues {
+            ingress_pkt_count: 900,
+            ingress_bytes_count: 45000,
+            egress_pkt_count: 700,
+            egress_bytes_count: 35000,
+        };
+
+        let delta = current.delta(&previous);
+
+        assert_eq!(delta.ingress_pkt_count, 100);
+        assert_eq!(delta.ingress_bytes_count, 5000);
+        assert_eq!(delta.egress_pkt_count, 100);
+        assert_eq!(delta.egress_bytes_count, 5000);
+    }
+
+    #[test]
+    fn test_interface_metric_values_sub_saturating_subtraction() {
+        let current = InterfaceMetricValues {
+            ingress_pkt_count: 500,
+            ingress_bytes_count: 25000,
+            egress_pkt_count: 300,
+            egress_bytes_count: 15000,
+        };
+
+        let previous = InterfaceMetricValues {
+            ingress_pkt_count: 600,     // Higher than current - should saturate to 0
+            ingress_bytes_count: 30000, // Higher than current - should saturate to 0
+            egress_pkt_count: 400,      // Higher than current - should saturate to 0
+            egress_bytes_count: 20000,  // Higher than current - should saturate to 0
+        };
+
+        let delta = current.delta(&previous);
+
+        // All values should be 0 due to saturating subtraction
+        assert_eq!(delta.ingress_pkt_count, 0);
+        assert_eq!(delta.ingress_bytes_count, 0);
+        assert_eq!(delta.egress_pkt_count, 0);
+        assert_eq!(delta.egress_bytes_count, 0);
+    }
+
+    #[test]
+    fn test_interface_metric_values_sub_zero_previous() {
+        let current = InterfaceMetricValues {
+            ingress_pkt_count: 1000,
+            ingress_bytes_count: 50000,
+            egress_pkt_count: 800,
+            egress_bytes_count: 40000,
+        };
+
+        let previous = InterfaceMetricValues::default(); // All zeros
+
+        let delta = current.delta(&previous);
+
+        // Delta should equal current values when previous is zero
+        assert_eq!(delta.ingress_pkt_count, 1000);
+        assert_eq!(delta.ingress_bytes_count, 50000);
+        assert_eq!(delta.egress_pkt_count, 800);
+        assert_eq!(delta.egress_bytes_count, 40000);
+    }
+
+    #[test]
+    fn test_interface_metric_values_sub_equal_values() {
+        let current = InterfaceMetricValues {
+            ingress_pkt_count: 1000,
+            ingress_bytes_count: 50000,
+            egress_pkt_count: 800,
+            egress_bytes_count: 40000,
+        };
+
+        let previous = current.clone();
+
+        let delta = current.delta(&previous);
+
+        // Delta should be zero when values are equal
+        assert_eq!(delta.ingress_pkt_count, 0);
+        assert_eq!(delta.ingress_bytes_count, 0);
+        assert_eq!(delta.egress_pkt_count, 0);
+        assert_eq!(delta.egress_bytes_count, 0);
+    }
+
+    #[test]
+    fn test_interface_metric_values_default() {
+        let default_values = InterfaceMetricValues::default();
+
+        assert_eq!(default_values.ingress_pkt_count, 0);
+        assert_eq!(default_values.ingress_bytes_count, 0);
+        assert_eq!(default_values.egress_pkt_count, 0);
+        assert_eq!(default_values.egress_bytes_count, 0);
+    }
+
+    #[test]
+    fn test_interface_metric_values_clone() {
+        let original = InterfaceMetricValues {
+            ingress_pkt_count: 1000,
+            ingress_bytes_count: 50000,
+            egress_pkt_count: 800,
+            egress_bytes_count: 40000,
+        };
+
+        let cloned = original.clone();
+
+        assert_eq!(original.ingress_pkt_count, cloned.ingress_pkt_count);
+        assert_eq!(original.ingress_bytes_count, cloned.ingress_bytes_count);
+        assert_eq!(original.egress_pkt_count, cloned.egress_pkt_count);
+        assert_eq!(original.egress_bytes_count, cloned.egress_bytes_count);
+    }
+
+    #[test]
+    fn test_delta_calculation_in_internal_update_metrics() {
+        // Create a provider with mocked command runner
+        let mut provider = create_test_provider_with_runner(FakeCommandRunner::new());
+
+        // Simulate initial state - first call should establish baseline
+        let initial_key = InterfaceMetricKey {
+            instance: "test-instance".to_string(),
+            iface: "eth0".to_string(),
+            pod: "".to_string(),
+            pod_namespace: "".to_string(),
+            node: "test-node".to_string(),
+        };
+
+        let initial_values = InterfaceMetricValues {
+            ingress_pkt_count: 1000,
+            ingress_bytes_count: 50000,
+            egress_pkt_count: 800,
+            egress_bytes_count: 40000,
+        };
+
+        // Manually set initial metrics to simulate first reading
+        provider
+            .current_metrics
+            .insert(initial_key.clone(), initial_values.clone());
+
+        // Verify initial state
+        assert_eq!(provider.current_metrics.len(), 1);
+        let stored_values = provider.current_metrics.get(&initial_key).unwrap();
+        assert_eq!(stored_values.ingress_pkt_count, 1000);
+        assert_eq!(stored_values.ingress_bytes_count, 50000);
+        assert_eq!(stored_values.egress_pkt_count, 800);
+        assert_eq!(stored_values.egress_bytes_count, 40000);
+    }
+
+    #[test]
+    fn test_delta_calculation_with_counter_reset() {
+        // Test case where network counters reset (e.g., interface restart)
+        let current = InterfaceMetricValues {
+            ingress_pkt_count: 100, // Lower than previous (counter reset)
+            ingress_bytes_count: 5000,
+            egress_pkt_count: 80,
+            egress_bytes_count: 4000,
+        };
+
+        let previous = InterfaceMetricValues {
+            ingress_pkt_count: 1000, // Much higher than current
+            ingress_bytes_count: 50000,
+            egress_pkt_count: 800,
+            egress_bytes_count: 40000,
+        };
+
+        let delta = current.delta(&previous);
+
+        // Should saturate to 0 when counters appear to have reset
+        assert_eq!(delta.ingress_pkt_count, 0);
+        assert_eq!(delta.ingress_bytes_count, 0);
+        assert_eq!(delta.egress_pkt_count, 0);
+        assert_eq!(delta.egress_bytes_count, 0);
+    }
+
+    #[test]
+    fn test_delta_calculation_with_large_numbers() {
+        let current = InterfaceMetricValues {
+            ingress_pkt_count: u64::MAX,
+            ingress_bytes_count: u64::MAX - 1000,
+            egress_pkt_count: u64::MAX - 500,
+            egress_bytes_count: u64::MAX - 2000,
+        };
+
+        let previous = InterfaceMetricValues {
+            ingress_pkt_count: u64::MAX - 100,
+            ingress_bytes_count: u64::MAX - 2000,
+            egress_pkt_count: u64::MAX - 1000,
+            egress_bytes_count: u64::MAX - 3000,
+        };
+
+        let delta = current.delta(&previous);
+
+        assert_eq!(delta.ingress_pkt_count, 100);
+        assert_eq!(delta.ingress_bytes_count, 1000);
+        assert_eq!(delta.egress_pkt_count, 500);
+        assert_eq!(delta.egress_bytes_count, 1000);
+    }
+
+    #[test]
+    fn test_delta_calculation_mixed_scenarios() {
+        // Test mixed scenario where some counters increase normally, others reset
+        let current = InterfaceMetricValues {
+            ingress_pkt_count: 1500,    // Normal increase
+            ingress_bytes_count: 75000, // Normal increase
+            egress_pkt_count: 50,       // Counter reset (lower than previous)
+            egress_bytes_count: 2500,   // Counter reset (lower than previous)
+        };
+
+        let previous = InterfaceMetricValues {
+            ingress_pkt_count: 1000,
+            ingress_bytes_count: 50000,
+            egress_pkt_count: 800,     // Higher than current
+            egress_bytes_count: 40000, // Higher than current
+        };
+
+        let delta = current.delta(&previous);
+
+        // Normal increases should work
+        assert_eq!(delta.ingress_pkt_count, 500);
+        assert_eq!(delta.ingress_bytes_count, 25000);
+
+        // Counter resets should saturate to 0
+        assert_eq!(delta.egress_pkt_count, 0);
+        assert_eq!(delta.egress_bytes_count, 0);
+    }
+
+    #[test]
+    fn test_interface_metric_key_hash_and_eq() {
+        let key1 = InterfaceMetricKey {
+            instance: "i-1234567890abcdef0".to_string(),
+            iface: "eth0".to_string(),
+            pod: "test-pod".to_string(),
+            pod_namespace: "default".to_string(),
+            node: "test-node".to_string(),
+        };
+
+        let key2 = InterfaceMetricKey {
+            instance: "i-1234567890abcdef0".to_string(),
+            iface: "eth0".to_string(),
+            pod: "test-pod".to_string(),
+            pod_namespace: "default".to_string(),
+            node: "test-node".to_string(),
+        };
+
+        let key3 = InterfaceMetricKey {
+            instance: "i-1234567890abcdef0".to_string(),
+            iface: "eth1".to_string(), // Different interface
+            pod: "test-pod".to_string(),
+            pod_namespace: "default".to_string(),
+            node: "test-node".to_string(),
+        };
+
+        // Test equality
+        assert_eq!(key1, key2);
+        assert_ne!(key1, key3);
+
+        // Test that they can be used as HashMap keys
+        let mut map = HashMap::new();
+        map.insert(key1.clone(), InterfaceMetricValues::default());
+        map.insert(key3.clone(), InterfaceMetricValues::default());
+
+        assert_eq!(map.len(), 2);
+        assert!(map.contains_key(&key1));
+        assert!(map.contains_key(&key2)); // Should be the same as key1
+        assert!(map.contains_key(&key3));
+    }
+
     // Helper function to create a test provider with a custom command runner
     fn create_test_provider_with_runner(
         fake_runner: FakeCommandRunner,
@@ -1331,26 +1648,27 @@ mod tests {
             instance_id: "test-instance".to_string(),
             node_name: "test-node".to_string(),
             command_runner: Box::new(fake_runner),
-            ingress_pkt_count: build_gauge_metric::<InterfaceMetric>(
+            ingress_pkt_count: build_gauge_metric::<InterfaceMetricKey>(
                 &ComputePlatform::Ec2Plain,
                 "test_ingress_pkt_count",
                 "Test ingress packet count",
             ),
-            ingress_bytes_count: build_gauge_metric::<InterfaceMetric>(
+            ingress_bytes_count: build_gauge_metric::<InterfaceMetricKey>(
                 &ComputePlatform::Ec2Plain,
                 "test_ingress_bytes_count",
                 "Test ingress bytes count",
             ),
-            egress_pkt_count: build_gauge_metric::<InterfaceMetric>(
+            egress_pkt_count: build_gauge_metric::<InterfaceMetricKey>(
                 &ComputePlatform::Ec2Plain,
                 "test_egress_pkt_count",
                 "Test egress packet count",
             ),
-            egress_bytes_count: build_gauge_metric::<InterfaceMetric>(
+            egress_bytes_count: build_gauge_metric::<InterfaceMetricKey>(
                 &ComputePlatform::Ec2Plain,
                 "test_egress_bytes_count",
                 "Test egress bytes count",
             ),
+            current_metrics: HashMap::new(),
         }
     }
 }
