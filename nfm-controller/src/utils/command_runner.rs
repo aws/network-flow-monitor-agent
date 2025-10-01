@@ -6,14 +6,14 @@ use std::process::{Command, Output};
 use std::sync::{Arc, Mutex};
 
 pub trait CommandRunner {
-    fn run(&mut self, cmd: &str, args: &[&str]) -> std::io::Result<Output>;
+    fn run(&self, cmd: &str, args: &[&str]) -> std::io::Result<Output>;
 }
 
 #[derive(Default)]
 pub struct RealCommandRunner;
 
 impl CommandRunner for RealCommandRunner {
-    fn run(&mut self, cmd: &str, args: &[&str]) -> std::io::Result<Output> {
+    fn run(&self, cmd: &str, args: &[&str]) -> std::io::Result<Output> {
         Command::new(cmd).args(args).output()
     }
 }
@@ -62,7 +62,7 @@ impl FakeCommandRunner {
 }
 
 impl CommandRunner for FakeCommandRunner {
-    fn run(&mut self, cmd: &str, args: &[&str]) -> std::io::Result<Output> {
+    fn run(&self, cmd: &str, args: &[&str]) -> std::io::Result<Output> {
         let full_cmd = Self::full_command(cmd, args);
         self.expectations.lock().unwrap().remove(&full_cmd).unwrap()
     }

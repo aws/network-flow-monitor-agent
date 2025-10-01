@@ -72,7 +72,7 @@ pub trait HostStatsProvider {
 pub struct HostStatsProviderImpl {
     pub(crate) network_interface_stats: HashMap<NetworkDevice, NetworkInterfaceStats>,
 
-    command_runner: Box<dyn CommandRunner>,
+    pub(crate) command_runner: Box<dyn CommandRunner>,
 }
 
 impl HostStatsProvider for HostStatsProviderImpl {
