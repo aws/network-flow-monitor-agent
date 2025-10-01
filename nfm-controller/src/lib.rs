@@ -220,7 +220,7 @@ pub fn on_load(opt: Options) -> Result<(), anyhow::Error> {
     let host_stats_provider = HostStatsProviderImpl::new();
 
     #[cfg(feature = "open-metrics")]
-    start_open_metrics_server(&opt);
+    let _server = start_open_metrics_server(&opt);
 
     do_work(
         event_provider,
@@ -340,7 +340,7 @@ fn do_work(
 }
 
 #[cfg(feature = "open-metrics")]
-fn start_open_metrics_server(opt: &Options) {
+fn start_open_metrics_server(opt: &Options) -> Option<OpenMetricsServer> {
     // Start OpenMetrics server in a separate thread before entering main loop
     if opt.open_metrics == OnOff::On {
         let config = OpenMetricsServerConfig::for_addr(
@@ -351,6 +351,9 @@ fn start_open_metrics_server(opt: &Options) {
         if let Err(e) = server.start() {
             panic!("Failed to start OpenMetrics server: {}", e);
         }
+        Some(server)
+    } else {
+        None
     }
 }
 
