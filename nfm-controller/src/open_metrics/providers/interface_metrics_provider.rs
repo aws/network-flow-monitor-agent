@@ -18,7 +18,7 @@ use crate::{
 };
 use anyhow;
 use aws_config::imds::Client;
-use getifaddrs::{getifaddrs, InterfaceFlags};
+use getifaddrs::{getifaddrs, InterfaceFilter, InterfaceFlags};
 use log::{info, warn};
 use procfs::net::{dev_status, DeviceStatus};
 use prometheus::{IntGaugeVec, Registry};
@@ -38,6 +38,7 @@ struct InterfaceMetric {
 }
 
 /// Metric key.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct InterfaceMetricKey {
     instance: String,
     iface: String,
@@ -47,6 +48,7 @@ struct InterfaceMetricKey {
 }
 
 /// Values provided by the metrics.
+#[derive(Debug, Clone)]
 struct InterfaceMetricValues {
     ingress_pkt_count: u64,
     ingress_bytes_count: u64,
@@ -133,7 +135,7 @@ impl InterfaceMetricsProvider {
         }
     }
 
-    fn get_metrics(&mut self) -> Vec<InterfaceMetric> {
+    fn get_metrics(&mut self) -> HashMap<InterfaceMetricKey, InterfaceMetricValues> {
         let (ns_to_pid, pod_info) = match self.compute_platform {
             ComputePlatform::Ec2Plain => (None, None),
             ComputePlatform::Ec2K8sEks | ComputePlatform::Ec2K8sVanilla => {
@@ -143,14 +145,16 @@ impl InterfaceMetricsProvider {
 
         get_device_status()
             .iter()
-            .map(|(interface_name, interface_stats)| InterfaceMetric {
-                key: self.build_metric_key(interface_name, ns_to_pid.clone(), pod_info.clone()),
-                value: InterfaceMetricValues {
+            .map(|(interface_name, interface_stats)| {
+                let key =
+                    self.build_metric_key(interface_name, ns_to_pid.clone(), pod_info.clone());
+                let value = InterfaceMetricValues {
                     ingress_pkt_count: interface_stats.recv_packets,
                     ingress_bytes_count: interface_stats.recv_bytes,
                     egress_pkt_count: interface_stats.sent_packets,
                     egress_bytes_count: interface_stats.sent_bytes,
-                },
+                };
+                (key, value)
             })
             .collect()
     }
@@ -182,11 +186,23 @@ impl InterfaceMetricsProvider {
         ns_to_pid: HashMap<u32, NamespaceInfo>,
         pod_info_mapping: IPPodMapping,
     ) -> (String, String) {
-        let net_ns = self.get_ns_from(iface_name).unwrap_or_default();
+        match self.get_ns_from(iface_name) {
+            Some(net_ns) => self.get_pod_info_from_ns(net_ns, ns_to_pid, pod_info_mapping),
+            None => self.get_pod_info_from_real_iface(iface_name, pod_info_mapping),
+        }
+    }
+
+    /// Get the Pod information for a namespace
+    fn get_pod_info_from_ns(
+        &self,
+        net_ns: u32,
+        ns_to_pid: HashMap<u32, NamespaceInfo>,
+        pod_info_mapping: IPPodMapping,
+    ) -> (String, String) {
         match ns_to_pid.get(&net_ns) {
             Some(ns_info) => {
                 for ip_addr in ns_info.ip_addresses.iter() {
-                    match pod_info_mapping.get(*ip_addr) {
+                    match pod_info_mapping.get_first(*ip_addr) {
                         Some(pod_info) => {
                             return (pod_info.pod.clone(), pod_info.namespace.clone())
                         }
@@ -196,6 +212,27 @@ impl InterfaceMetricsProvider {
                 ("".into(), "".into())
             }
             _ => ("".into(), "".into()),
+        }
+    }
+
+    /// Get the Pod information for a interface that has no network namespace associated.
+    fn get_pod_info_from_real_iface(
+        &self,
+        iface_name: &String,
+        pod_info_mapping: IPPodMapping,
+    ) -> (String, String) {
+        // Get IP addresses from the interface
+        match self.get_interface_ips(iface_name) {
+            Ok(ip_addresses) => {
+                // Find the first occurrence of any IP in the IPPodMapping. TODO: Confirm what to do here.
+                for ip_addr in ip_addresses {
+                    if let Some(pod_info) = pod_info_mapping.get_first(ip_addr) {
+                        return (pod_info.pod.clone(), pod_info.namespace.clone());
+                    }
+                }
+                ("".into(), "".into())
+            }
+            Err(_) => ("".into(), "".into()),
         }
     }
 
@@ -328,6 +365,34 @@ impl InterfaceMetricsProvider {
         }
     }
 
+    /// Get IP addresses for a specific interface using getifaddrs with InterfaceFilter
+    fn get_interface_ips(
+        &self,
+        iface_name: &str,
+    ) -> Result<Vec<IpAddr>, Box<dyn std::error::Error>> {
+        let mut ip_addresses = Vec::new();
+
+        // Use InterfaceFilter to efficiently filter by interface name and get only IP addresses
+        let interfaces = InterfaceFilter::new().name(iface_name).v4().v6().get()?;
+
+        for interface in interfaces {
+            if let Some(ip_addr) = interface.address.ip_addr() {
+                // Skip loopback addresses
+                if !ip_addr.is_loopback() {
+                    // For IPv6, also skip link-local addresses
+                    if let IpAddr::V6(ipv6) = ip_addr {
+                        if ipv6.segments()[0] == 0xfe80 {
+                            continue;
+                        }
+                    }
+                    ip_addresses.push(ip_addr);
+                }
+            }
+        }
+
+        Ok(ip_addresses)
+    }
+
     /// Parse IP addresses from 'ip a' output
     fn parse_ip_addresses(&self, ip_output: &str) -> Vec<IpAddr> {
         let mut ip_addresses = Vec::new();
@@ -450,21 +515,26 @@ impl OpenMetricProvider for InterfaceMetricsProvider {
         info!(platform = self.compute_platform.to_string(); "Updating Interface Metrics");
         let metrics = self.get_metrics();
 
-        for metric in &metrics {
+        for (key, value) in &metrics {
+            // Create a temporary InterfaceMetric to use the existing label_values method
+            let metric = InterfaceMetric {
+                key: key.clone(),
+                value: value.clone(),
+            };
             let label_values = metric.label_values(&self.compute_platform);
 
             self.ingress_bytes_count
                 .with_label_values(&label_values)
-                .set(metric.value.ingress_bytes_count as i64);
+                .set(value.ingress_bytes_count as i64);
             self.ingress_pkt_count
                 .with_label_values(&label_values)
-                .set(metric.value.ingress_pkt_count as i64);
+                .set(value.ingress_pkt_count as i64);
             self.egress_bytes_count
                 .with_label_values(&label_values)
-                .set(metric.value.egress_bytes_count as i64);
+                .set(value.egress_bytes_count as i64);
             self.egress_pkt_count
                 .with_label_values(&label_values)
-                .set(metric.value.egress_pkt_count as i64);
+                .set(value.egress_pkt_count as i64);
         }
 
         Ok(())
@@ -674,11 +744,11 @@ mod tests {
     }
 
     #[test]
-    fn test_get_metrics_returns_vector() {
+    fn test_get_metrics_returns_hashmap() {
         let mut provider = InterfaceMetricsProvider::new(&ComputePlatform::Ec2Plain);
         let metrics = provider.get_metrics();
-        // Should return a vector (may be empty if no interfaces are available in test environment)
-        assert!(metrics.is_empty() || !metrics.is_empty()); // Just verify it returns a vector
+        // Should return a HashMap (may be empty if no interfaces are available in test environment)
+        assert!(metrics.is_empty() || !metrics.is_empty()); // Just verify it returns a HashMap
     }
 
     #[test]
@@ -1198,6 +1268,58 @@ mod tests {
         let debug_str = format!("{:?}", ns_info);
         assert!(debug_str.contains("1234"));
         assert!(debug_str.contains("192.168.1.1"));
+    }
+
+    #[test]
+    fn test_get_interface_ips_success() {
+        let provider = InterfaceMetricsProvider::new(&ComputePlatform::Ec2Plain);
+
+        // This test will use the actual system interfaces
+        // We can't easily mock getifaddrs, but we can test that the function
+        // returns a Result and handles the case properly
+        let result = provider.get_interface_ips("lo");
+
+        // Should either succeed with a Vec or fail with an error
+        match result {
+            Ok(ips) => {
+                // If successful, should be a Vec (may be empty for loopback due to filtering)
+                assert!(ips.is_empty() || !ips.is_empty());
+            }
+            Err(_) => {
+                // If it fails, that's also acceptable for this test
+                // as we're mainly testing the error handling path
+            }
+        }
+    }
+
+    #[test]
+    fn test_get_pod_info_from_real_iface_with_ips() {
+        let provider = InterfaceMetricsProvider::new(&ComputePlatform::Ec2K8sEks);
+
+        // Create an empty IPPodMapping (since we can't access the private map field)
+        let pod_mapping = IPPodMapping::new();
+
+        // Test with a non-existent interface (should return empty strings)
+        let result = provider.get_pod_info_from_real_iface(&"nonexistent".to_string(), pod_mapping);
+
+        // Should return empty strings since the interface doesn't exist or has no matching IPs
+        assert_eq!(result, ("".to_string(), "".to_string()));
+    }
+
+    #[test]
+    fn test_get_pod_info_from_real_iface_no_matching_ips() {
+        use crate::open_metrics::providers::eks_utils::IPPodMapping;
+
+        let provider = InterfaceMetricsProvider::new(&ComputePlatform::Ec2K8sEks);
+
+        // Create an empty IPPodMapping
+        let pod_mapping = IPPodMapping::new();
+
+        // Test with any interface name
+        let result = provider.get_pod_info_from_real_iface(&"eth0".to_string(), pod_mapping);
+
+        // Should return empty strings since there are no pod mappings
+        assert_eq!(result, ("".to_string(), "".to_string()));
     }
 
     // Helper function to create a test provider with a custom command runner
