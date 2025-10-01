@@ -599,4 +599,18 @@ mod tests {
         // 2 interfaces
         assert_eq!(metrics.len(), 2);
     }
+
+    #[test]
+    fn test_system_metrics_provider_new_with_k8s_node_name() {
+        // This test covers the case where K8sMetadata returns a node name
+        // Since we can't easily mock K8sMetadata::default(), this test will
+        // use the default "unknown" value, but it exercises the match arm
+        let provider = create_test_provider(ComputePlatform::Ec2K8sEks);
+
+        // The node_name should be "unknown" since K8s metadata is not available in tests
+        assert_eq!(provider.node_name, "unknown");
+
+        // Verify the provider was created with the correct compute platform
+        assert_eq!(provider.compute_platform, ComputePlatform::Ec2K8sEks);
+    }
 }

@@ -130,6 +130,7 @@ impl IPPodMapping {
     fn fetch_eni_data(&self) -> Result<ENIResponse, Box<dyn std::error::Error>> {
         debug!("Fetching ENI data from http://localhost:61679/v1/enis");
 
+        // Should we make this configurable?
         let response = reqwest::blocking::get("http://localhost:61679/v1/enis")?;
 
         if !response.status().is_success() {
@@ -147,12 +148,10 @@ impl IPPodMapping {
     }
 
     fn process_eni_response(&mut self, eni_response: ENIResponse) {
-        // Clear existing mappings
         self.map.clear();
 
         let mut total_processed = 0;
 
-        // Process each ENI
         for (eni_id, eni_info) in eni_response.enis {
             debug!(
                 "Processing ENI: {} (Primary: {}, Device: {})",
@@ -296,5 +295,357 @@ mod tests {
         let cloned = pod_info.clone();
         assert_eq!(pod_info.pod, cloned.pod);
         assert_eq!(pod_info.namespace, cloned.namespace);
+    }
+
+    #[test]
+    fn test_ip_pod_mapping_new() {
+        // This will try to fetch from localhost:61679 which will fail in tests
+        // but we can verify the structure is created
+        let mapping = IPPodMapping::new();
+        assert!(mapping.map.is_empty()); // Should be empty due to failed fetch
+    }
+
+    #[test]
+    fn test_ip_pod_mapping_get() {
+        let mut mapping = IPPodMapping {
+            map: HashMap::new(),
+        };
+
+        let ip: IpAddr = "192.168.1.1".parse().unwrap();
+        let pod_info = PodInfo {
+            pod: "test-pod".to_string(),
+            namespace: "test-namespace".to_string(),
+        };
+
+        mapping.map.insert(ip, pod_info.clone());
+
+        let result = mapping.get(ip);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().pod, "test-pod");
+        assert_eq!(result.unwrap().namespace, "test-namespace");
+
+        let non_existent_ip: IpAddr = "192.168.1.2".parse().unwrap();
+        assert!(mapping.get(non_existent_ip).is_none());
+    }
+
+    #[test]
+    fn test_process_eni_response_ipv4() {
+        let mut mapping = IPPodMapping {
+            map: HashMap::new(),
+        };
+
+        // Create test ENI response with IPv4 addresses
+        let mut enis = HashMap::new();
+        let mut available_ipv4_cidrs = HashMap::new();
+        let mut ip_addresses = HashMap::new();
+
+        let ip_info = IPAddressInfo {
+            address: "192.168.1.10".to_string(),
+            ipam_key: IPAMKey {
+                network_name: "aws-cni".to_string(),
+                container_id: "test-container".to_string(),
+                if_name: "eth0".to_string(),
+            },
+            ipam_metadata: IPAMMetadata {
+                k8s_pod_namespace: "default".to_string(),
+                k8s_pod_name: "test-pod".to_string(),
+            },
+            assigned_time: "2025-01-01T00:00:00Z".to_string(),
+            unassigned_time: "0001-01-01T00:00:00Z".to_string(),
+        };
+
+        ip_addresses.insert("192.168.1.10".to_string(), ip_info);
+
+        let cidr_info = CidrInfo {
+            cidr: CidrDetails {
+                ip: "192.168.1.0".to_string(),
+                mask: "24".to_string(),
+            },
+            ip_addresses,
+            is_prefix: false,
+            address_family: "ipv4".to_string(),
+        };
+
+        available_ipv4_cidrs.insert("192.168.1.0/24".to_string(), cidr_info);
+
+        let eni_info = ENIInfo {
+            id: "eni-12345".to_string(),
+            is_primary: true,
+            is_trunk: false,
+            is_efa: false,
+            device_number: 0,
+            available_ipv4_cidrs,
+            ipv6_cidrs: HashMap::new(),
+        };
+
+        enis.insert("eni-12345".to_string(), eni_info);
+
+        let eni_response = ENIResponse {
+            total_ips: 1,
+            assigned_ips: 1,
+            enis,
+        };
+
+        mapping.process_eni_response(eni_response);
+
+        let ip: IpAddr = "192.168.1.10".parse().unwrap();
+        let result = mapping.get(ip);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().pod, "test-pod");
+        assert_eq!(result.unwrap().namespace, "default");
+    }
+
+    #[test]
+    fn test_process_eni_response_ipv6() {
+        let mut mapping = IPPodMapping {
+            map: HashMap::new(),
+        };
+
+        // Create test ENI response with IPv6 addresses
+        let mut enis = HashMap::new();
+        let mut ipv6_cidrs = HashMap::new();
+        let mut ip_addresses = HashMap::new();
+
+        let ip_info = IPAddressInfo {
+            address: "2001:db8::1".to_string(),
+            ipam_key: IPAMKey {
+                network_name: "aws-cni".to_string(),
+                container_id: "test-container".to_string(),
+                if_name: "eth0".to_string(),
+            },
+            ipam_metadata: IPAMMetadata {
+                k8s_pod_namespace: "kube-system".to_string(),
+                k8s_pod_name: "test-pod-ipv6".to_string(),
+            },
+            assigned_time: "2025-01-01T00:00:00Z".to_string(),
+            unassigned_time: "0001-01-01T00:00:00Z".to_string(),
+        };
+
+        ip_addresses.insert("2001:db8::1".to_string(), ip_info);
+
+        let cidr_info = CidrInfo {
+            cidr: CidrDetails {
+                ip: "2001:db8::".to_string(),
+                mask: "64".to_string(),
+            },
+            ip_addresses,
+            is_prefix: false,
+            address_family: "ipv6".to_string(),
+        };
+
+        ipv6_cidrs.insert("2001:db8::/64".to_string(), cidr_info);
+
+        let eni_info = ENIInfo {
+            id: "eni-67890".to_string(),
+            is_primary: false,
+            is_trunk: true,
+            is_efa: false,
+            device_number: 1,
+            available_ipv4_cidrs: HashMap::new(),
+            ipv6_cidrs,
+        };
+
+        enis.insert("eni-67890".to_string(), eni_info);
+
+        let eni_response = ENIResponse {
+            total_ips: 1,
+            assigned_ips: 1,
+            enis,
+        };
+
+        mapping.process_eni_response(eni_response);
+
+        let ip: IpAddr = "2001:db8::1".parse().unwrap();
+        let result = mapping.get(ip);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().pod, "test-pod-ipv6");
+        assert_eq!(result.unwrap().namespace, "kube-system");
+    }
+
+    #[test]
+    fn test_process_eni_response_empty_metadata() {
+        let mut mapping = IPPodMapping {
+            map: HashMap::new(),
+        };
+
+        // Create test ENI response with empty pod metadata (should be skipped)
+        let mut enis = HashMap::new();
+        let mut available_ipv4_cidrs = HashMap::new();
+        let mut ip_addresses = HashMap::new();
+
+        let ip_info = IPAddressInfo {
+            address: "192.168.1.20".to_string(),
+            ipam_key: IPAMKey {
+                network_name: "aws-cni".to_string(),
+                container_id: "test-container".to_string(),
+                if_name: "eth0".to_string(),
+            },
+            ipam_metadata: IPAMMetadata {
+                k8s_pod_namespace: "".to_string(), // Empty namespace
+                k8s_pod_name: "".to_string(),      // Empty pod name
+            },
+            assigned_time: "2025-01-01T00:00:00Z".to_string(),
+            unassigned_time: "0001-01-01T00:00:00Z".to_string(),
+        };
+
+        ip_addresses.insert("192.168.1.20".to_string(), ip_info);
+
+        let cidr_info = CidrInfo {
+            cidr: CidrDetails {
+                ip: "192.168.1.0".to_string(),
+                mask: "24".to_string(),
+            },
+            ip_addresses,
+            is_prefix: false,
+            address_family: "ipv4".to_string(),
+        };
+
+        available_ipv4_cidrs.insert("192.168.1.0/24".to_string(), cidr_info);
+
+        let eni_info = ENIInfo {
+            id: "eni-empty".to_string(),
+            is_primary: true,
+            is_trunk: false,
+            is_efa: false,
+            device_number: 0,
+            available_ipv4_cidrs,
+            ipv6_cidrs: HashMap::new(),
+        };
+
+        enis.insert("eni-empty".to_string(), eni_info);
+
+        let eni_response = ENIResponse {
+            total_ips: 1,
+            assigned_ips: 0, // No assigned IPs due to empty metadata
+            enis,
+        };
+
+        mapping.process_eni_response(eni_response);
+
+        // Should be empty since metadata was empty
+        assert!(mapping.map.is_empty());
+    }
+
+    #[test]
+    fn test_process_eni_response_invalid_ip() {
+        let mut mapping = IPPodMapping {
+            map: HashMap::new(),
+        };
+
+        // Create test ENI response with invalid IP address
+        let mut enis = HashMap::new();
+        let mut available_ipv4_cidrs = HashMap::new();
+        let mut ip_addresses = HashMap::new();
+
+        let ip_info = IPAddressInfo {
+            address: "invalid-ip-address".to_string(), // Invalid IP
+            ipam_key: IPAMKey {
+                network_name: "aws-cni".to_string(),
+                container_id: "test-container".to_string(),
+                if_name: "eth0".to_string(),
+            },
+            ipam_metadata: IPAMMetadata {
+                k8s_pod_namespace: "default".to_string(),
+                k8s_pod_name: "test-pod".to_string(),
+            },
+            assigned_time: "2025-01-01T00:00:00Z".to_string(),
+            unassigned_time: "0001-01-01T00:00:00Z".to_string(),
+        };
+
+        ip_addresses.insert("invalid-ip-address".to_string(), ip_info);
+
+        let cidr_info = CidrInfo {
+            cidr: CidrDetails {
+                ip: "192.168.1.0".to_string(),
+                mask: "24".to_string(),
+            },
+            ip_addresses,
+            is_prefix: false,
+            address_family: "ipv4".to_string(),
+        };
+
+        available_ipv4_cidrs.insert("192.168.1.0/24".to_string(), cidr_info);
+
+        let eni_info = ENIInfo {
+            id: "eni-invalid".to_string(),
+            is_primary: true,
+            is_trunk: false,
+            is_efa: false,
+            device_number: 0,
+            available_ipv4_cidrs,
+            ipv6_cidrs: HashMap::new(),
+        };
+
+        enis.insert("eni-invalid".to_string(), eni_info);
+
+        let eni_response = ENIResponse {
+            total_ips: 1,
+            assigned_ips: 1,
+            enis,
+        };
+
+        mapping.process_eni_response(eni_response);
+
+        // Should be empty since IP was invalid
+        assert!(mapping.map.is_empty());
+    }
+
+    #[test]
+    fn test_process_eni_response_clears_existing_map() {
+        let mut mapping = IPPodMapping {
+            map: HashMap::new(),
+        };
+
+        // Add some existing data
+        let existing_ip: IpAddr = "10.0.0.1".parse().unwrap();
+        let existing_pod = PodInfo {
+            pod: "existing-pod".to_string(),
+            namespace: "existing-namespace".to_string(),
+        };
+        mapping.map.insert(existing_ip, existing_pod);
+
+        // Process empty ENI response
+        let eni_response = ENIResponse {
+            total_ips: 0,
+            assigned_ips: 0,
+            enis: HashMap::new(),
+        };
+
+        mapping.process_eni_response(eni_response);
+
+        // Map should be cleared
+        assert!(mapping.map.is_empty());
+    }
+
+    #[test]
+    fn test_fetch_eni_data_error_handling() {
+        let mapping = IPPodMapping {
+            map: HashMap::new(),
+        };
+
+        // This will fail because localhost:61679 is not running in tests
+        let result = mapping.fetch_eni_data();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_update_with_fetch_error() {
+        let mut mapping = IPPodMapping {
+            map: HashMap::new(),
+        };
+
+        // Add some existing data
+        let existing_ip: IpAddr = "10.0.0.1".parse().unwrap();
+        let existing_pod = PodInfo {
+            pod: "existing-pod".to_string(),
+            namespace: "existing-namespace".to_string(),
+        };
+        mapping.map.insert(existing_ip, existing_pod);
+
+        // Update will fail to fetch but shouldn't panic
+        mapping.update();
+
+        // Map should still contain existing data since fetch failed
+        assert_eq!(mapping.map.len(), 1);
     }
 }
