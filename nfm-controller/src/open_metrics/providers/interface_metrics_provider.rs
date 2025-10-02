@@ -20,7 +20,7 @@ use crate::{
 use anyhow;
 use aws_config::imds::Client;
 use getifaddrs::{getifaddrs, InterfaceFilter, InterfaceFlags};
-use log::{info, warn};
+use log::{debug, info, warn};
 use procfs::net::{dev_status, DeviceStatus};
 use prometheus::{IntGaugeVec, Registry};
 use regex::Regex;
@@ -593,6 +593,8 @@ impl OpenMetricProvider for InterfaceMetricsProvider {
 
         for (key, value) in metrics {
             let label_values = key.label_values(&self.compute_platform);
+
+            debug!(labels = format!("{:?}", label_values), metrics = format!("{:?}", value); "Interface metrics");
 
             self.ingress_bytes_count
                 .with_label_values(&label_values)
