@@ -15,13 +15,16 @@ if ! grep -qs '/mnt/cgroup-nfm cgroup2' /proc/mounts; then
     mount -t cgroup2 none /mnt/cgroup-nfm
 fi
 
+LOG_FILE_PATH=/test-context/agent.log
+PUBLISH_SECS=5
+
 # Start the agent in the background.
-rm -f /test-context/agent.log
 network-flow-monitor-agent --cgroup /mnt/cgroup-nfm --publish-reports off \
-    --log-reports on --publish-secs 5 > /test-context/agent.log &
+    --log-reports on --notrack-secs 10 --publish-secs $PUBLISH_SECS > $LOG_FILE_PATH &
 MONITOR_PID=$!
 
 # Run all tests in the test suite.
 for test_script in `ls /test-context/integration-test*`; do
-    $test_script
+    $test_script --log-path $LOG_FILE_PATH --publish-secs $PUBLISH_SECS
+    truncate -s 0 $LOG_FILE_PATH # for a clean slate for next test
 done

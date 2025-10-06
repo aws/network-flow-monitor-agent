@@ -7,7 +7,7 @@ use crate::metadata::env_metadata_provider::{EnvMetadata, EnvMetadataProvider};
 use crate::reports::report::ReportValue;
 use std::convert::From;
 
-const KEY_COMPUTE_PLATFORM: &str = "compute_platform";
+pub const KEY_COMPUTE_PLATFORM: &str = "compute_platform";
 
 #[derive(Debug, Clone, PartialEq)]
 /// Represents the underlying hardware fabric that the agent runs on, plus orchestration platform if applicable

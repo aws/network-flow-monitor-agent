@@ -47,6 +47,8 @@ jobs:
           ldd --version
       - name: Build release binary
         run: cargo build --release
+      - name: Build verifier binary
+        run: cargo build --release --package report-verifier
       - name: Run integration tests
         run: |
           docker build -t integration-test -f test-data/Dockerfile.test .

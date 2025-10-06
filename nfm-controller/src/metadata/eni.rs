@@ -9,8 +9,8 @@ use aws_config::imds::Client;
 use hashbrown::HashMap;
 use log::{error, warn};
 
-const KEY_INSTANCE_ID: &str = "instance-id";
-const KEY_INSTANCE_TYPE: &str = "instance-type";
+pub const KEY_INSTANCE_ID: &str = "instance-id";
+pub const KEY_INSTANCE_TYPE: &str = "instance-type";
 
 /// Metadata provider related to AWS. Only supports IMDSv2.
 pub struct EniMetadataProvider {

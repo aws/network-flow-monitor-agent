@@ -13,7 +13,7 @@ use nfm_common::network::EventCounters;
 use serde::{Deserialize, Serialize};
 use serde_json;
 
-const REPORT_VERSION: &str = "1.1";
+pub const REPORT_VERSION: &str = "1.1";
 
 #[derive(Debug, Default, Deserialize, PartialEq, Serialize)]
 #[cfg_attr(test, derive(Clone))]

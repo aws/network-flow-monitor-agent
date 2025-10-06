@@ -1,6 +1,7 @@
 [workspace]
-resolver = "2"
-members = ["nfm-controller", "nfm-common"]
+resolver = "3"
+members = ["nfm-controller", "nfm-common", "verifiers/report-verifier"]
+default-members = ["nfm-controller", "nfm-common"]
 
 [workspace.metadata]
 bpf_target = "bpfel-unknown-none"
