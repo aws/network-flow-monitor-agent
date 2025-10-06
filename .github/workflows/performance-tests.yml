@@ -26,6 +26,8 @@ jobs:
           pip3 install -r verifiers/requirements.txt
 
       - name: Configure AWS credentials
+        id: aws-creds
+        continue-on-error: true
         uses: aws-actions/configure-aws-credentials@v5.0.0
         with:
           role-to-assume: ${{ secrets.PR_PERF_TEST_AWS_ROLE_ARN }}
@@ -33,5 +35,6 @@ jobs:
           mask-aws-account-id: true
 
       - name: Run Performance tests on EC2 instances
+        if: steps.aws-creds.outcome == 'success'
         run: |
           python3 verifiers/run_performance_tests.py

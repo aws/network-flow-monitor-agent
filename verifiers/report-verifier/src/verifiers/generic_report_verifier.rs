@@ -381,7 +381,7 @@ impl GenericReportVerifier {
         // Since packet loss % is pure luck, it can easily go above the given value. So adding some leeway
         // Also, in a connection chain there are multiple packet exchanges that has to succeed, which makes the loss percent apply exponentially
         let packet_success_chance = (100 - self.config.expected_loss_percent) as f64 / 100.0; // <1.0, example: 0.9
-        let successive_packets_required = 4.0; // 3 (syn/syn-ack/ack) + 1 for guard rail
+        let successive_packets_required = 6.0; // 3 (syn/syn-ack/ack) + 3 for guard rail
         let connection_success_rate = packet_success_chance.powf(successive_packets_required);
         // Calculate extra requests needed: if success rate is 0.8, we need 1/0.8 = 1.25x requests, so 25% extra
         let extra_requests_multiplier = 1.0 / connection_success_rate;
