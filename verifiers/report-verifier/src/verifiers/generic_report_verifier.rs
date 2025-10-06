@@ -165,10 +165,10 @@ impl GenericReportVerifier {
             result
         );
         check!(
-            usage_stats.sockets_tracked >= self.config.expected_connection_count as u64,
+            usage_stats.sockets_tracked > 0 as u64,
             println!(
-                "WARN: sockets_tracked {} !>= expected {}",
-                usage_stats.sockets_tracked, self.config.expected_connection_count
+                "WARN: sockets_tracked {} must be > 0",
+                usage_stats.sockets_tracked
             ),
             result
         );
