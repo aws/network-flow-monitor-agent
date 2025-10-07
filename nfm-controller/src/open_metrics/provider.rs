@@ -7,13 +7,19 @@ use prometheus::Registry;
 
 use crate::{
     metadata::runtime_environment_metadata::ComputePlatform,
-    open_metrics::providers::system_metrics_provider::SystemMetricsProvider,
+    open_metrics::providers::{
+        interface_metrics_provider::InterfaceMetricsProvider,
+        system_metrics_provider::SystemMetricsProvider,
+    },
 };
 
 pub fn get_open_metric_providers(
     compute_platform: ComputePlatform,
 ) -> Vec<Box<dyn OpenMetricProvider>> {
-    vec![Box::new(SystemMetricsProvider::new(&compute_platform))]
+    vec![
+        Box::new(SystemMetricsProvider::new(&compute_platform)),
+        Box::new(InterfaceMetricsProvider::new(&compute_platform)),
+    ]
 }
 
 pub trait OpenMetricProvider {
