@@ -1,0 +1,42 @@
+#!/usr/bin/python3
+
+import argparse
+import subprocess
+from test_common import (
+    start_http_server, send_http_request, find_free_port
+)
+
+def main():
+    """
+    Send a few of http requests to a server hosting on localhost.
+    Make sure all are captured by the agent verbatim.
+    """
+    parser = argparse.ArgumentParser(description='Integration test 02')
+    parser.add_argument('--log-path', help='Path to agent log file')
+    parser.add_argument('--publish-secs', type=int, help='Publish interval in seconds')
+    args = parser.parse_args()
+
+    connection_requests = 5
+    ip_addr = "127.0.0.1"
+    port = find_free_port()
+    # Start an HTTP server and send a few requests.
+    server = start_http_server(ip_addr, port)
+    for _ in range(connection_requests):
+        if not send_http_request(ip_addr, port):
+            exit(1)
+    server.shutdown()
+    # Run verifier
+    success = subprocess.run([
+        "report-verifier", "--log-file", args.log_path,
+        "--publish-secs", str(args.publish_secs),
+        "--expected-connection-count", str(connection_requests),
+        "--local-ip-under-test", ip_addr,
+        "--local-port-under-test", str(port),
+        "--remote-ip-under-test", ip_addr,
+        "--remote-port-under-test", str(port),
+    ])
+
+    exit(0 if success.returncode == 0 else 1)
+
+if __name__ == '__main__':
+    main()

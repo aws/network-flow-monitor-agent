@@ -9,7 +9,7 @@ use crate::reports::report::ReportValue;
 
 shadow!(build);
 
-const PROJECT_NAME: &str = "network-flow-monitor";
+pub const PROJECT_NAME: &str = "network-flow-monitor";
 
 #[derive(Clone, Debug, Serialize, PartialEq, Deserialize)]
 pub struct ServiceMetadata {

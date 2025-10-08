@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 // on which the agent is running.  This allows for correlation with issues visible on the host.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct HostStats {
-    pub(crate) interface_stats: Vec<GroupedInterfaceStats>,
+    pub interface_stats: Vec<GroupedInterfaceStats>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]

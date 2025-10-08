@@ -6,12 +6,15 @@ RUN cat /etc/os-release && ldd --version
 RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
+    iproute2 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY target/release/network-flow-monitor-agent /usr/local/bin/
+COPY target/release/report-verifier /usr/local/bin/
 COPY test-data/integration-* /test-context/
+COPY test-data/tools/* /test-context/
 
-RUN chmod +x /test-context/integration-*
+RUN chmod +x /test-context/*
 
 # Set the entrypoint with unbuffered output.
 ENV PYTHONUNBUFFERED=1
