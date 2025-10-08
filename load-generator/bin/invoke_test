@@ -15,7 +15,7 @@ bin/build-bpftop
 tar --transform 's/.*\///g' -czf load-test-scripts.tgz \
     target/release/network-flow-monitor-agent \
     load-generator/target/release/tcp-tester \
-    load-generator/target/release/bpftop/target/release/bpftop \
+    /tmp/bpftop/target/release/bpftop \
     load-generator/bin/*
 
 echo "Uploading test artifacts to S3..."
