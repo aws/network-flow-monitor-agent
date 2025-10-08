@@ -8,12 +8,12 @@ help_msg=$(cat <<EOF
 Creates EC2 instances for performance testing
 Usage: $0 [--instance-types type1,type2] [--region region]
 Examples:
-    $0 --instance-types m6.xlarge,m6.4xlarge --region us-west-2
+    $0 --instance-types m6a.xlarge,m6a.4xlarge --region us-west-2
 EOF
 )
 
 # Default values
-instance_types="m6.xlarge,m6.4xlarge"
+instance_types="m6a.xlarge,m6a.4xlarge"
 region="us-west-2"
 
 while [[ $# -gt 0 ]]; do
