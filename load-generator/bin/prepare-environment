@@ -1,0 +1,76 @@
+#!/bin/sh
+
+set -o errexit
+set -o pipefail
+set -o nounset
+#set -o xtrace
+
+source bin/set-env-vars
+
+handle_error() {
+    msg=$1
+    echo "[ERROR] $msg"
+    exit 1
+}
+
+# Confirm kernel 4.13 or later.
+uname -r | cut -d. -f1,2 | tr '.' ' ' | awk '{
+    if($1 > 4 || ($1 == 4 && $2 >= 13)) { \
+        printf "[INFO] Kernel version is good\n" \
+    } else { \
+        printf "[ERROR] Kernel version must be above 4.13, found %d.%d\n", $1, $2; \
+        exit 1;
+    } \
+}'
+
+# Setup tc/qdisc for traffic manipulation
+sudo yum install -y iproute-tc
+
+# Validate the BPF setup.
+yum install -y bpftool tree
+# Explicitly set PATH to include common binary locations
+export PATH=/usr/sbin:/sbin:/usr/local/sbin:$PATH
+echo "PATH is set to: $PATH"
+which bpftool || handle_error "bpftool not found in PATH: $PATH"
+which bpftop || handle_error "bpftop not found in PATH: $PATH"
+
+grep CONFIG_BPF_SYSCALL=y /boot/config-$(uname -r) || handle_error 'BPF syscalls not enabled'
+grep CONFIG_CGROUP_BPF=y /boot/config-$(uname -r) || handle_error 'BPF cgroups not enabled'
+/usr/sbin/bpftool feature | grep 'sock_ops is available' || handle_error 'BPF sock_ops not enabled'
+echo "✅ BPF features are OK"
+mount | grep cgroup2 | \
+    awk '{if ($3 != "/sys/fs/cgroup") {printf "[WARN] Note the atypical cgroup mount point: "$3"\n"}}' \
+    || handle_error 'Mounted cgroup2 not found'
+echo "✅ Cgroup v2 is OK"
+# Install flamegraph dependencies.
+yum install -y gcc make # Install GCC cause c compiler is required for flamegraph
+echo "✅ GCC is installed"
+curl https://sh.rustup.rs -sSf | sh -s -- -y # Cargo
+source $HOME/.cargo/env # Source the cargo environment
+echo "✅ Rust is installed. Installing Perf"
+yum install -y perf
+echo "✅ Perf is installed. Installing Flamegraph"
+cargo install flamegraph
+echo "✅ Flamegraph is installed"
+sudo ln -sf $HOME/.cargo/bin/* /usr/local/bin/
+
+# Grant permissions to instance for agent to publish
+echo "Modifying IAM role for EC2 instance..."
+aws s3 cp s3://network-sonar-onboarding-artifacts/onboard_instance_role.sh . \
+    || handle_error 'Failed to fetch NFM onboarding artifacts; ensure credentials are set up and run with `sudo --preserve-env`'
+chmod +x onboard_instance_role.sh
+./onboard_instance_role.sh --region=`ec2-metadata -R | grep region | awk '{print $2}' | tr -d '\n'` --instance-id=`ec2-metadata -i | grep instance-id | awk '{print $2}' | tr -d '\n'`
+rm onboard_instance_role.sh
+
+# Set up network namespaces for the tcp-tester.
+echo "Setting up network config"
+bin/network-setup.sh
+
+if [ -n "${LOAD_TEST_ENABLE_NETWORK_LOSS}" ]; then
+    bin/configure_loss --enable --loss_percent 10 --delay 50ms --jitter 500ms
+else
+    bin/configure_loss --disable
+fi
+echo "✅ Network config is setup"
+
+echo "✅ [INFO] Success! ✅"

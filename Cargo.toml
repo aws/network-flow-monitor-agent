@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["nfm-controller", "nfm-common", "verifiers/report-verifier"]
+members = ["nfm-controller", "nfm-common", "verifiers/report-verifier", "load-generator/tcp-tester", "load-generator/tcp-tester-common"]
 default-members = ["nfm-controller", "nfm-common"]
 
 [workspace.metadata]

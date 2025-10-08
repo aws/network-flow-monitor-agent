@@ -1,0 +1,55 @@
+#!/bin/sh
+
+set -o errexit
+set -o pipefail
+set -o nounset
+
+help_msg=$(cat <<EOF
+Performs a secure copy of files to or from your distributed fleet
+Usage: $0 [up|dn] <source-path> <remote-path>
+Examples:
+    $0 dn 'remote-path/file.tgz' 'local-path/\$host/file.tgz'
+    $0 up local-file remote-path
+EOF
+)
+
+if [[ $# -ne 3 || "$1" == "--help" || "$1" == "-h" ]]; then
+    echo "$help_msg"
+    exit 0
+fi
+
+# Load the developer's load-test environment variables.
+source bin/set-env-vars
+
+direction="$1"
+src_path="$2"
+dst_path="$3"
+
+for host in $LOAD_TEST_HOSTS
+do
+    if [ "$direction" = "up" ]; then
+        src_spec="$src_path"
+        dst_spec="$LOAD_TEST_USER@$host:$dst_path"
+    elif [ "$direction" = "dn" ]; then
+        src_spec="$LOAD_TEST_USER@$host:$src_path"
+        dst_spec="$dst_path"
+    else
+        echo "Invalid direction: Use 'up' for upload or 'dn' for download."
+        exit 1
+    fi
+
+    SSH_OPTS="-o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=false"
+    if [ -n "$LOAD_TEST_KEY_FILE" ]; then
+        # Fix permissions on the key file if needed
+        if [ -f "$LOAD_TEST_KEY_FILE" ]; then
+            chmod 600 "$LOAD_TEST_KEY_FILE"
+        fi
+        SSH_OPTS="$SSH_OPTS -i $LOAD_TEST_KEY_FILE"
+    fi
+
+    # Note the use of `eval` to expand any possible wildcards in path specs.
+    printf "\nSCPing from $src_spec to $dst_spec\n"
+    eval scp $SSH_OPTS -r "$src_spec" "$dst_spec"
+done
+
+wait

@@ -1,0 +1,44 @@
+#!/bin/sh
+
+set -o errexit
+set -o pipefail
+set -o nounset
+
+help_msg=$(cat <<EOF
+Downloads files from S3 bucket on test instances
+Usage: $0 <s3-key> <local-path>
+Examples:
+    $0 scripts/load-test-scripts.tgz /usr/tmp/load-test-scripts.tgz
+EOF
+)
+
+if [[ $# -ne 2 || "$1" == "--help" || "$1" == "-h" ]]; then
+    echo "$help_msg"
+    exit 0
+fi
+
+source bin/set-env-vars
+
+s3_key="$1"
+local_path="$2"
+
+for instance_id in $LOAD_TEST_INSTANCE_IDS
+do
+    printf "\nDownloading s3://$LOAD_TEST_S3_BUCKET/$s3_key to $local_path on instance $instance_id\n"
+
+    command_id=$(aws ssm send-command \
+        --instance-ids "$instance_id" \
+        --document-name "AWS-RunShellScript" \
+        --parameters "commands=[\"aws s3 cp s3://$LOAD_TEST_S3_BUCKET/$s3_key $local_path\"]" \
+        --output text --query 'Command.CommandId')
+
+    # Wait for command completion
+    aws ssm wait command-executed --command-id "$command_id" --instance-id "$instance_id"
+
+    # Check if download was successful
+    aws ssm get-command-invocation \
+        --command-id "$command_id" \
+        --instance-id "$instance_id" \
+        --query 'StandardOutputContent' \
+        --output text
+done

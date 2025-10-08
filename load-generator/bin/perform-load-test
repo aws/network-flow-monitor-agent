@@ -1,0 +1,105 @@
+#!/bin/sh
+
+# Use this script to perform a load test between client and server endpoints on
+# the current host. This script starts the tcp-tester application at your
+# desired rate of TPS, starts the network-flow-monitor-agent, and records multiple
+# measurements across the host. Measurements include CPU utilization per BPF
+# program, per user-space process, host-wide, as well as memory utilization and
+# network stats.
+
+set -o errexit
+set -o pipefail
+set -o nounset
+
+# Explicitly set PATH to include common binary locations
+source bin/set-env-vars
+echo "PATH is set to: $PATH"
+echo "Current working directory is" $(pwd)
+which bpftool || handle_error "bpftool not found in PATH: $PATH"
+which bpftop || handle_error "bpftop not found in PATH: $PATH"
+
+# Color definitions
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+create_systemd_content() {
+    cat << EOF
+[Unit]
+Description=Network Flow Monitor Agent
+
+[Service]
+Type=simple
+ExecStart=/opt/aws/network-flow-monitor/network-flow-monitor-start
+Restart=always
+RestartSec=5
+User=networkflowmonitor
+StandardOutput=file:/usr/tmp/results/$1/$(date +%Y-%m-%dT%H:%M:%S)-agent
+
+LimitAS=100M
+LimitNICE=+10
+CPUQuota=5%
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+help_msg=$(cat <<EOF
+Runs a load test on the current host and records results
+Usage: $0 <TPS> <region> <duration-secs> <agent|service> [flamegraph]
+Example:
+    $0 5000 us-west-2 300
+EOF
+)
+
+if [[ $# -lt 4 || "$1" == "--help" || "$1" == "-h" ]]; then
+    echo "$help_msg"
+    exit 0
+fi
+
+tps=$1
+delay_ms=$2
+region=$3
+duration_sec=$4
+flamegraph_option="${5:-}"
+
+handle_stuff_running_error() {
+    printf "[ERROR] A prior load test appears to be running: pgrep -fl '$1'\n"
+    exit 1
+}
+
+# Ensure a prior test isn't running, which would pollute results.
+proc_name_pattern='bpftool|bpftop|mpstat|pidstat|poll-|network-flow-monitor-agent|tcp-tester'
+
+pgrep -fl "$proc_name_pattern" && handle_stuff_running_error "$proc_name_pattern"
+
+cleanup() {
+    echo "Exiting perform-load-test"
+    pkill -P $$
+}
+trap cleanup EXIT
+
+mkdir -p results
+
+output_dir="results/$tps"
+mkdir $output_dir || { echo "❌ Intentionally failing as the output dir already exists, so as not to conflate results with a prior load test"; exit 1; }
+echo "Writing results to $output_dir"
+
+bin/start-tcp-tester 8080 $tps $delay_ms &
+sleep 1
+
+echo -e "\n${GREEN}Executing agent-related tasks...${NC}"
+bin/start-agent $tps $region $flamegraph_option &
+sleep 1
+
+bin/start-monitoring $tps &
+
+inst_type=`ec2-metadata -t`
+echo "Running load test for $duration_sec seconds at $tps TPS on $inst_type"
+sleep $duration_sec
+
+bin/stop-load-test
+cleanup

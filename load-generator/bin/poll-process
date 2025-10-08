@@ -1,0 +1,11 @@
+#!/bin/sh
+
+set -o errexit
+set -o pipefail
+set -o nounset
+
+# Report resource utilization of the Sonar agent and TCP tester every N
+# seconds.  Note the importance of the -I argument to normalize the "%CPU"
+# field across CPU capacity of the host.
+pids=`pgrep -f 'network-flow-monitor-agent|tcp-tester' | xargs -I{} echo "-p {}" | tr '\n' ' '`
+pidstat -T TASK -hIur $pids 5

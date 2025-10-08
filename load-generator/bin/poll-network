@@ -1,0 +1,18 @@
+#!/bin/sh
+
+set -o errexit
+set -o pipefail
+set -o nounset
+
+# Print static limits once.
+max_tcp_pages=$(cat /proc/sys/net/ipv4/tcp_mem | awk '{print $3}')
+page_size_kb=$(getconf PAGESIZE | awk '{print $1 / 1024}')
+echo "{\"tcp_mem_pages\":{\"limit\": $max_tcp_pages, \"size_kb\": $page_size_kb}}"
+
+# Report sock stats every N seconds.
+while true
+do
+    echo "# sockstat"
+    cat /proc/net/sockstat
+    sleep 5
+done

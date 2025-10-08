@@ -1,0 +1,84 @@
+#!/bin/sh
+
+# Run this script from your dispatch host to coordinate load tests across the
+# full spectrum of TPS rates against every host in your fleet.
+
+set -o errexit
+set -o pipefail
+set -o nounset
+
+source bin/set-env-vars
+
+# Function to display usage
+show_usage() {
+    echo -e "[O]ptional and [M]andatory parameters exists:
+        [M] region: mandatory, will determine agents endpoint
+        [O] tps_steps: can be fed manually, or will be read from set-env-vars
+        [O] flamegraph: this will generate flamegraphs
+    $CYAN ./fetch-and-graph-results --graph_title='v1.1' $NC"
+    exit 1
+}
+
+region=""
+tps_steps=""
+help=""
+flamegraph=""
+duration_sec=300
+
+while [[ $# -gt 0 ]]; do
+   case "$1" in
+        --region=*) region="${1#*=}" ;;
+        --region) region="$2"; shift ;;
+
+        --tps-values=*) tps_steps="${1#*=}" ;;
+        --tps-values) tps_steps="$2"; shift ;;
+
+        --duration_sec=*) duration_sec="${1#*=}" ;;
+        --duration_sec) duration_sec="$2"; shift ;;
+
+        --help) help="true" ;;
+        --flamegraph) flamegraph="flamegraph" ;;
+   esac
+   shift
+done
+
+if [[ $help == "true" ]]; then
+    show_usage
+fi
+
+if [[ -z $tps_steps ]]; then
+    echo -e "\n$GREEN Reading tps_steps from config as $LOAD_TEST_TPS_STEPS.$NC\n"
+    tps_steps=$LOAD_TEST_TPS_STEPS
+fi
+
+# Check mandatory parameters
+if [[ -z $region ]]; then
+    echo -e "\n$RED region must be supplied.$NC\n"
+    show_usage
+fi
+
+# Display parameters
+echo -e "${GREEN}Parameters received:${NC}"
+echo -e "${BLUE}Region:${NC} $region"
+
+cleanup() {
+    echo "Exiting perform-load-test-suite"
+    pkill -P $$
+}
+trap cleanup EXIT
+
+response_delay_ms=0
+
+IFS=',' read -ra TPS_ARRAY <<< "$tps_steps"
+for tps in "${TPS_ARRAY[@]}"
+do
+    echo -e "${GREEN}Starting TPS iteration: ${NC} $tps"
+    # Run each load test long enough to complete multiple publish periods, plus buffer.
+    bin/run-ssm-command async "cd /usr/tmp &&
+    export PATH=\$PATH:/usr/sbin &&
+    sudo bin/perform-load-test $tps $response_delay_ms $region $duration_sec $flamegraph"
+    echo -e "${GREEN}Completed TPS iteration: ${NC} $tps"
+
+    echo -e "${BLUE} Sleeping 90 sec to allow prior in-use sockets to clear${NC}"
+    sleep 90
+done

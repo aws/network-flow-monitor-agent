@@ -1,0 +1,19 @@
+#!/bin/sh
+
+set -o errexit
+set -o pipefail
+set -o nounset
+
+BPFTOP_DIR="load-generator/target/release"
+
+echo "Building bpftop..."
+
+rm -rf "$BPFTOP_DIR"
+mkdir -p "$BPFTOP_DIR" && cd "$BPFTOP_DIR"
+
+git clone https://github.com/reyzell/bpftop.git
+cd bpftop
+git checkout -b old-glibc origin/old-glibc
+cargo build --release
+
+echo "bpftop built at: $BPFTOP_DIR/bpftop/target/release/bpftop"

@@ -1,0 +1,59 @@
+#!/bin/sh
+
+set -o errexit
+set -o pipefail
+set -o nounset
+
+help_msg=$(cat <<EOF
+Executes a command on all nodes of your distributed fleet via SSM
+Usage: $0 [async] '<command>'
+Examples:
+    $0 'ls'
+    $0 async 'long-running-command'
+EOF
+)
+
+if [[ $# -lt 1 || "$1" == "--help" || "$1" == "-h" ]]; then
+    echo "$help_msg"
+    exit 0
+fi
+
+run_async=false
+if [ "$1" == "async" ]; then
+    run_async=true
+    shift
+fi
+
+# Load the developer's load-test environment variables.
+source bin/set-env-vars
+
+for instance_id in $LOAD_TEST_INSTANCE_IDS
+do
+    printf "\nExecuting command on instance $instance_id\n"
+
+    if [ "$run_async" = true ]; then
+        aws ssm send-command \
+            --instance-ids "$instance_id" \
+            --document-name "AWS-RunShellScript" \
+            --parameters "commands=[\"PATH=\$PATH:/usr/sbin:/sbin:/usr/local/sbin; $*\"]" \
+            --output text --query 'Command.CommandId' &
+    else
+        command_id=$(aws ssm send-command \
+            --instance-ids "$instance_id" \
+            --document-name "AWS-RunShellScript" \
+            --parameters "commands=[\"PATH=\$PATH:/usr/sbin:/sbin:/usr/local/sbin; $*\"]" \
+            --output text --query 'Command.CommandId')
+
+        # Wait for command completion
+        aws ssm wait command-executed --command-id "$command_id" --instance-id "$instance_id"
+
+        # Get command output
+        aws ssm get-command-invocation \
+            --command-id "$command_id" \
+            --instance-id "$instance_id" \
+            --query 'StandardOutputContent' \
+            --output text
+    fi
+done
+
+wait

@@ -1,0 +1,32 @@
+#!/bin/sh
+
+set -o errexit
+set -o pipefail
+set -o nounset
+
+help_msg=$(cat <<EOF
+Uploads files to S3 bucket for distribution to test instances
+Usage: $0 <local-file> <s3-key>
+Examples:
+    $0 load-test-scripts.tgz scripts/load-test-scripts.tgz
+EOF
+)
+
+if [[ $# -ne 2 || "$1" == "--help" || "$1" == "-h" ]]; then
+    echo "$help_msg"
+    exit 0
+fi
+
+source bin/set-env-vars
+
+local_file="$1"
+s3_key="$2"
+
+# Create bucket if it doesn't exist
+aws s3api head-bucket --bucket "$LOAD_TEST_S3_BUCKET" 2>/dev/null || \
+    aws s3 mb "s3://$LOAD_TEST_S3_BUCKET"
+
+# Upload file
+aws s3 cp "$local_file" "s3://$LOAD_TEST_S3_BUCKET/$s3_key"
+
+echo "Uploaded $local_file to s3://$LOAD_TEST_S3_BUCKET/$s3_key"

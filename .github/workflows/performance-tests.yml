@@ -1,8 +1,9 @@
 name: Performance Tests
 
 on:
+  workflow_dispatch:
   pull_request:
-    branches: [main]
+    types: [opened, synchronize, reopened]
 
 jobs:
   aws-perf-tests:
@@ -20,10 +21,20 @@ jobs:
         with:
           python-version: '3.13'
 
-      - name: Install Python dependencies
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          components: rustfmt, clippy
+          override: true
+
+      - name: Build agent
+        run: cargo build --release
+
+      - name: Build tcp-tester
         run: |
-          python3 -m pip install --upgrade pip
-          pip3 install -r verifiers/requirements.txt
+          cargo build --release --package tcp-tester
 
       - name: Configure AWS credentials
         id: aws-creds
@@ -34,7 +45,21 @@ jobs:
           aws-region: ${{ secrets.PR_PERF_TEST_AWS_REGION }}
           mask-aws-account-id: true
 
+      - name: Create EC2 instances
+        if: steps.aws-creds.outcome == 'success'
+        run: |
+          cd load-generator
+          chmod +x bin/*
+          bin/create-instances --region ${{ secrets.PR_PERF_TEST_AWS_REGION }}
+
       - name: Run Performance tests on EC2 instances
         if: steps.aws-creds.outcome == 'success'
         run: |
-          python3 verifiers/run_performance_tests.py
+          cd load-generator
+          bin/invoke_test_modern
+
+      - name: Cleanup EC2 instances
+        if: steps.aws-creds.outcome == 'success' && always()
+        run: |
+          cd load-generator
+          bin/cleanup-instances --region ${{ secrets.PR_PERF_TEST_AWS_REGION }}

@@ -1,0 +1,50 @@
+#!/bin/sh
+
+set -o errexit
+set -o pipefail
+set -o nounset
+
+source bin/set-env-vars
+
+echo "Building test artifacts..."
+
+# Build bpftop
+bin/build-bpftop
+
+# Create the bundle with built binaries
+tar --transform 's/.*\///g' -czf load-test-scripts.tgz \
+    target/release/network-flow-monitor-agent \
+    load-generator/target/release/tcp-tester \
+    load-generator/target/release/bpftop/target/release/bpftop \
+    load-generator/bin/*
+
+echo "Uploading test artifacts to S3..."
+bin/upload-to-s3 load-test-scripts.tgz scripts/load-test-scripts.tgz
+
+echo "Downloading and extracting artifacts on test instances..."
+bin/download-from-s3 scripts/load-test-scripts.tgz /usr/tmp/load-test-scripts.tgz
+
+bin/run-ssm-command '
+    cd /usr/tmp
+    mkdir -p bin
+    tar -xzf load-test-scripts.tgz --directory bin
+    sudo mv bin/bpftop /usr/local/sbin 2>/dev/null || true
+    sudo mv bin/network-flow-monitor-agent /usr/local/sbin
+    sudo mv bin/tcp-tester /usr/local/sbin
+    rm load-test-scripts.tgz
+    sudo rm -rf /usr/tmp/results && sudo rm -rf /usr/tmp/*.tgz && sudo pkill -f "bpftool|bpftop|mpstat|pidstat|poll-|tcp-tester|network-flow-monitor-agent" || true
+'
+
+echo "Preparing test environment..."
+bin/run-ssm-command 'cd /usr/tmp && sudo --preserve-env bin/prepare-environment'
+
+echo "Running load test suite..."
+bin/run-load-test-suite \
+    --region us-west-2 \
+    --duration_sec 300
+
+echo "Fetching and generating results..."
+bin/fetch-and-graph-results --graph-title 'pr-latest'
+
+# Clean up the local tarball
+rm -f load-test-scripts.tgz

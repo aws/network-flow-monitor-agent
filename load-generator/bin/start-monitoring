@@ -1,0 +1,25 @@
+#!/bin/sh
+
+set -o errexit
+set -o pipefail
+set -o nounset
+
+output_dir=$1
+
+cleanup() {
+    echo "Exiting from monitoring"
+    pkill -P $$
+}
+trap cleanup EXIT
+
+prefix=`date +%Y-%m-%dT%H:%M:%S`
+
+# Monitor all aspects of the load test.
+echo "Monitoring resource utilization"
+bin/poll-network > results/$output_dir/$prefix-network &
+bin/poll-process > results/$output_dir/$prefix-process &
+bin/poll-host-cpu > results/$output_dir/$prefix-hostcpu &
+bin/poll-bpf-cpu > results/$output_dir/$prefix-bpfcpu &
+bin/poll-bpf-stats > results/$output_dir/$prefix-bpfstats &
+
+wait

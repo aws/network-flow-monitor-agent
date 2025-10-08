@@ -1,0 +1,121 @@
+#!/usr/bin/python3.7
+
+# This script produces a PNG image of a graph from the supplied data series.
+
+import argparse
+import math
+import os
+import plotly.graph_objs as go
+import re
+
+parser = argparse.ArgumentParser("generate-graph")
+parser.add_argument('--title', help='The chart\'s title', required=True)
+parser.add_argument('--image-name-prefix', required=False, default='')
+parser.add_argument('--x-axis-label', required=True)
+parser.add_argument('--x-values', help='Values along the x-axis, comma separated', required=True)
+parser.add_argument('--y-axis-label', required=True)
+parser.add_argument('--y-axis-suffix', required=False, default='')
+parser.add_argument('--line', help='Specify for each line plotted on the graph.  Syntax: "name:value,value,..."', required=True, action='append')
+parser.add_argument('--output-dir', help='Image output directory', required=False, default='.')
+args = parser.parse_args()
+
+# Use line decorations to help out colorblind folks.
+shapes = ['circle', 'diamond', 'hexagon', 'hexagram', 'pentagon', 'triangle']
+shape_ix = 0
+x_values = list(map(int, args.x_values.split(',')))
+y_max = 0
+
+lines = []
+for line in args.line:
+    parts = line.split(':')
+    if len(parts) != 2:
+        raise Exception('Invalid line format: ' + line)
+
+    name = parts[0]
+    y_values = list(map(float, parts[1].split(',')))
+    y_max = max(y_max, max(y_values))
+    line = go.Scatter(x=x_values, y=y_values, mode='lines+markers', name=name, line_shape='spline', marker=dict(symbol=shapes[shape_ix], size=6))
+    lines.append(line)
+    shape_ix = (shape_ix + 1) % len(shapes)
+
+if y_max > 0:
+    # Make sure we have a y-axis label at or above the highest y value.  This math
+    # sets the y-max to a multiple of a power of 10, meaning all digits zero but
+    # the first.
+    recent_pow_10 = 10 ** math.floor(math.log10(y_max))
+    power_10_factor = math.ceil(y_max / recent_pow_10)
+    next_y_max = recent_pow_10 * power_10_factor
+
+    # Use the new y max if not too far, otherwise add a small bit of buffer to the
+    # current y max to not cut off lines.
+    y_delta = next_y_max / y_max
+    if y_delta < 1.5 and y_delta > 1.1:
+        y_max = next_y_max
+    else:
+        y_max *= 1.1
+
+layout = go.Layout(
+    title=dict(
+        text=args.title,
+        x=0.5,
+        xanchor='center',
+        yanchor='top',
+        font=dict(size=16),
+    ),
+    xaxis=dict(
+        title=dict(
+            text=args.x_axis_label,
+            font=dict(size=10),
+        ),
+        tickformat=".0f",
+        tickfont=dict(size=12),
+        showline=False,
+    ),
+    yaxis=dict(
+        title=dict(
+            text=args.y_axis_label,
+            font=dict(size=12),
+        ),
+        range=[0, y_max],
+        tickformat=',.0f%',
+        ticksuffix=args.y_axis_suffix,
+        tickfont=dict(size=12),
+        ticks='inside',
+        showline=True,
+        linecolor='lightblue',
+        tickcolor='lightblue',
+        minor_ticks='inside',
+        minor_tickcolor='lightblue',
+        minor_ticklen=3,
+        minor_tickwidth=1,
+        tickwidth=1,
+        ticklen=3,
+        gridcolor='lightgray',
+        showgrid=True,
+        zeroline=True,
+        zerolinecolor='lightgray',
+        minallowed=0,
+    ),
+    legend=dict(
+        x=1.05,  # Move the legend outside the plot area
+        y=0.45,
+    ),
+    margin=dict(
+        t=50,  # Reduce top margin to save space
+        b=50,  # Bottom margin for x-axis label
+        l=60,  # Left margin for y-axis label
+        r=100  # Right margin to make room for the legend
+    ),
+    plot_bgcolor='white',
+    height=320,
+    width=600,
+)
+
+# Remove superfluous characters from the name.
+image_name = re.sub(r'[^\w\-]', '', args.title.replace(' ', '-').lower()) + '.png'
+image_name = args.image_name_prefix + image_name
+image_path = os.path.join(args.output_dir, image_name)
+
+# Produce the image!
+fig = go.Figure(data=lines, layout=layout)
+fig.write_image(image_path)

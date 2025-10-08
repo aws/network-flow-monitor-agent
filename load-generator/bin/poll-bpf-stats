@@ -1,0 +1,41 @@
+#!/bin/sh
+
+set -o errexit
+set -o pipefail
+set -o nounset
+
+# It takes a few seconds for bpftool to see a newly launched program.
+while ! bpftool prog show name nfm_sock_ops > /dev/null
+do
+    # Use stderr to keep the file empty. Otherwise jq fails.
+    >&2 echo "Waiting for initial BPF program stats"
+    sleep 1
+done
+
+handle_bpftool_error() {
+    type=$1
+    printf "[ERROR] Sonar $type not found via bpftool\n"
+    exit 1
+}
+
+# Using awk we remove the trailing bytes indicator: "B".
+program_kb=$(bpftool prog show name nfm_sock_ops | awk '$5 == "memlock" {sub(/B/, "", $6); print $6 / 1024}') || handle_bpftool_error program
+map_kb=$(sudo bpftool map show | grep -A1 NFM | awk '$7 == "memlock" {sub(/B/, "", $8); bytes += $8} END {print bytes / 1024}') || handle_bpftool_error maps
+if [[ ! $program_kb -gt 0 ]]; then
+    handle_bpftool_error maps
+fi
+if [[ ! $map_kb -gt 0 ]]; then
+    handle_bpftool_error maps
+fi
+
+# No need to poll these repeatedly – the program and data size are static.
+num_cpus=`nproc`
+echo "{\"num_cpus\": $num_cpus}"
+echo "{\"mem_kb\":{\"program\": $program_kb, \"data\": $map_kb, \"total\": $((map_kb + program_kb))}}"
+
+# Continually show runtime stats.
+while true
+do
+    bpftool prog show name nfm_sock_ops --json | jq -c '{"runtime_ns": .run_time_ns, "run_cnt": .run_cnt}'
+    sleep 5
+done

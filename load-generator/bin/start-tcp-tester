@@ -1,0 +1,38 @@
+#!/bin/sh
+
+set -o errexit
+set -o pipefail
+set -o nounset
+
+start_port=$1
+tps=$2
+delay_ms=$3
+
+output_dir=$tps
+num_cpus=`nproc`
+tps=$(($tps / $num_cpus))
+
+echo "Context: cpus=$num_cpus tps-per-cpu=$tps start-port=$start_port response-delay=$delay_ms"
+
+# Divide by 2, as client and server are on the same machine.
+tps=$(($tps / 2))
+
+cleanup() {
+    echo "Exiting tcp-tester"
+    pkill -P $$ 
+}
+trap cleanup EXIT
+
+# Distribute TCP tester applications across CPUs.
+for ((cpu = 0; cpu < num_cpus; cpu++))
+do
+    port=$(($start_port + $cpu))
+    echo "Staring tcp-tester cpu=$cpu listen-port=$port tps=$tps"
+
+    RUST_LOG=OFF taskset -c $cpu tcp-tester --servers 1 \
+        --starting-port $port --connection-rate $tps --traffic-shaping off \
+        --response-delay-ms $delay_ms \
+        > results/$output_dir/`date +%Y-%m-%dT%H:%M:%S`-cpu${cpu}-tcp-tester &
+done
+
+wait
