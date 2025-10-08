@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 
 # Use this script to perform a load test between client and server endpoints on
 # the current host. This script starts the tcp-tester application at your

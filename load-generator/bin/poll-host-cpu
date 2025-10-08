@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 
 # Report overall CPU stats every N seconds.
 mpstat -u 5

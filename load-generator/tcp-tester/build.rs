@@ -79,5 +79,5 @@ fn build_ebpf(release: bool) {
         .status()
         .expect("Failed to build eBPF program");
     assert!(status.success());
-    println!("cargo:rerun-if-changed=../nfm-bpf/**");
+    println!("cargo:rerun-if-changed=../tcp-tester-bpf/**");
 }

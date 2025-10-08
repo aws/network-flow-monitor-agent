@@ -1,4 +1,4 @@
-#!/bin/sh -x
+#!/bin/bash -x
 
 set -o errexit
 set -o pipefail
@@ -38,7 +38,7 @@ bin/run-ssm-command '
 
 local_dir="results-${graph_title}"
 mkdir -p $local_dir
-bin/run-scp dn '/usr/tmp/*'${graph_title}'.tgz' $local_dir/ # only retrieve what we have just created, ignore other results
+bin/download-file-ssm '/usr/tmp/*'${graph_title}'.tgz' $local_dir/ # only retrieve what we have just created, ignore other results
 
 # Unpack the results which are now local.
 cd $local_dir

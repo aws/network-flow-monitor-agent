@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 
 # Send a SIGINT to the NFM agent, allowing flamegraph to write out its image.
 pkill -2 -f network-flow-monitor-agent

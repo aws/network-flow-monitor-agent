@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 
 # Run this script from your dispatch host to coordinate load tests across the
 # full spectrum of TPS rates against every host in your fleet.
