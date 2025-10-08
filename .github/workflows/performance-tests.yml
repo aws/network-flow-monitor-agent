@@ -56,7 +56,7 @@ jobs:
         if: steps.aws-creds.outcome == 'success'
         run: |
           cd load-generator
-          bin/invoke_test_modern
+          bin/invoke_test
 
       - name: Cleanup EC2 instances
         if: steps.aws-creds.outcome == 'success' && always()
