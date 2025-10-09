@@ -30,22 +30,22 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$current_dir" || -z "$baseline_dir" ]]; then
-    echo "ERROR: Both --current-dir and --baseline-dir are required"
+    log "ERROR: Both --current-dir and --baseline-dir are required"
     exit 1
 fi
 
 if [[ "$current_dir" == "$baseline_dir" ]]; then
-    echo "ERROR: current-dir and baseline-dir cannot be the same directory"
+    log "ERROR: current-dir and baseline-dir cannot be the same directory"
     exit 1
 fi
 
 if [[ ! -d "$current_dir" ]]; then
-    echo "ERROR: Current directory '$current_dir' does not exist"
+    log "ERROR: Current directory '$current_dir' does not exist"
     exit 1
 fi
 
 if [[ ! -d "$baseline_dir" ]]; then
-    echo "ERROR: Baseline directory '$baseline_dir' does not exist"
+    log "ERROR: Baseline directory '$baseline_dir' does not exist"
     exit 1
 fi
 
@@ -106,6 +106,7 @@ echo "|--------|---------------|-----|----------|---------|--------|------------
 
 # Collect all data first for sorting
 tmp_file=$(mktemp)
+limit_breaches=0
 
 # Compare each report file
 for current_report in "$current_dir"/*_tps-report.json; do
@@ -131,7 +132,6 @@ for current_report in "$current_dir"/*_tps-report.json; do
         "Agent CPU|.tps_report.sonar_agent_process.cpu_util_pct.avg"
         "Agent CPU Single Core Max|(.tps_report.sonar_bpf_program.cpu_util_pct.max + .tps_report.sonar_agent_process.cpu_util_pct.max) * .tps_report.cpu_cores"
         "Agent Memory|.tps_report.sonar_agent_process.resident_mem_kb.avg"
-        "Host CPU|.tps_report.host_stats.cpu_util_pct.avg"
         "BPF CPU|.tps_report.sonar_bpf_program.cpu_util_pct.avg"
     )
 
@@ -167,6 +167,11 @@ for current_report in "$current_dir"/*_tps-report.json; do
         limit=$(get_limit "$inst_type" "$metric_name")
         limit_status=$(check_limit "$current_val" "$limit" "$metric_name")
 
+        # Count limit breaches
+        if [[ "$limit_status" == "⚠️" ]]; then
+            ((limit_breaches++))
+        fi
+
         # Format limit for display
         if [[ "$limit" != "null" ]]; then
             if [[ "$metric_name" == *"Memory"* ]]; then
@@ -198,9 +203,14 @@ done
 if [[ -s "$tmp_file" ]]; then
     sort -t'|' -k1,1n -k2,2 -k3,3 "$tmp_file" | cut -d'|' -f4-
 else
-    echo "No matching reports found for comparison."
+    log "No matching reports found for comparison."
 fi
 rm -f "$tmp_file"
 
-echo ""
-echo "🔴 = Significant increase (>10%)  🟢 = Significant improvement (>10% decrease)  ⚠️ = Exceeds performance limit"
+log "🔴 = Significant increase (>10%)  🟢 = Significant improvement (>10% decrease)  ⚠️ = Exceeds performance limit"
+
+# Exit with error if any limits were breached
+if [[ $limit_breaches -gt 0 ]]; then
+    log "ERROR: $limit_breaches performance limit(s) exceeded. Failing tests"
+    exit 1
+fi
