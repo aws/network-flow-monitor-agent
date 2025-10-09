@@ -58,8 +58,10 @@ tar --transform 's/.*\///g' -czf "$test_bundle_name" \
     ./bin/bpftop
 
 cleanup() {
-    echo "Exiting invoke_test"
-    rm "$test_bundle_name"
+    log "Exiting invoke_test"
+    rm "$test_bundle_name" || true
+    aws s3 rm "s3://$LOAD_TEST_S3_BUCKET/scripts/$test_bundle_name" || true
+    log "Cleaned artifacts."
 }
 trap cleanup EXIT
 
