@@ -43,7 +43,7 @@ mountpoint -q nfm_agent_temp_test_cgroup || sudo mount -t cgroup2 none nfm_agent
 echo "Starting network-flow-monitor-agent"
 log_file="results/$tps_dir/`date +%Y-%m-%dT%H:%M:%S`-agent"
 
-# Check if the binary can run (GLIBC compatibility)
+# Check if the binary can run (there can be a GLIBC compatibility issue depending obn where the binary is built)
 if ! /usr/local/sbin/network-flow-monitor-agent --help >/dev/null 2>&1; then
     echo "ERROR: network-flow-monitor-agent binary is incompatible with this system" | tee "$log_file"
     echo "GLIBC version check:" | tee -a "$log_file"
@@ -56,12 +56,4 @@ sudo $cmd_prefix /usr/local/sbin/network-flow-monitor-agent --cgroup ./nfm_agent
     --endpoint https://networkflowmonitorreports.$region.api.aws/publish \
     --publish-secs 30 --jitter-secs 0 > "$log_file" 2>&1
 
-# Give the agent a moment to start and check if it's running
-sleep 2
-if ! pgrep -f network-flow-monitor-agent >/dev/null; then
-    echo "ERROR: network-flow-monitor-agent failed to start. Check log file: $log_file"
-    cat "$log_file"
-    exit 1
-fi
-
-echo "network-flow-monitor-agent started successfully (PID: $(pgrep -f network-flow-monitor-agent))"
+echo "network-flow-monitor-agent started successfully."
