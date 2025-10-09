@@ -67,11 +67,45 @@ calc_change() {
     fi
 }
 
+# Function to get performance limit for instance type and metric
+get_limit() {
+    local inst_type="$1"
+    local metric_name="$2"
+    local limits_file="performance-limits.json"
+
+    if [[ -f "$limits_file" ]]; then
+        jq -r ".limits[\"$inst_type\"][\"$metric_name\"] // null" "$limits_file" 2>/dev/null || echo "null"
+    else
+        echo "null"
+    fi
+}
+
+# Function to check if value exceeds limit
+check_limit() {
+    local value="$1"
+    local limit="$2"
+    local metric_name="$3"
+
+    if [[ "$limit" == "null" || "$limit" == "0" ]]; then
+        echo ""
+        return
+    fi
+
+    if (( $(echo "$value > $limit" | bc -l 2>/dev/null || echo 0) )); then
+        echo "⚠️"
+    else
+        echo ""
+    fi
+}
+
 # Generate comparison report
 echo "## 📊 Performance Comparison"
 echo ""
-echo "| Metric | Instance Type | TPS | Baseline | Current | Change |"
-echo "|--------|---------------|-----|----------|---------|--------|"
+echo "| Metric | Instance Type | TPS | Baseline | Current | Change | Change Status | Limit Status |"
+echo "|--------|---------------|-----|----------|---------|--------|---------------|--------------|"
+
+# Collect all data first for sorting
+tmp_file=$(mktemp)
 
 # Compare each report file
 for current_report in "$current_dir"/*_tps-report.json; do
@@ -95,6 +129,7 @@ for current_report in "$current_dir"/*_tps-report.json; do
     # Compare key metrics
     metrics=(
         "Agent CPU|.tps_report.sonar_agent_process.cpu_util_pct.avg"
+        "Agent CPU Single Core Max|(.tps_report.sonar_bpf_program.cpu_util_pct.max + .tps_report.sonar_agent_process.cpu_util_pct.max) * .tps_report.cpu_cores"
         "Agent Memory|.tps_report.sonar_agent_process.resident_mem_kb.avg"
         "Host CPU|.tps_report.host_stats.cpu_util_pct.avg"
         "BPF CPU|.tps_report.sonar_bpf_program.cpu_util_pct.avg"
@@ -110,11 +145,11 @@ for current_report in "$current_dir"/*_tps-report.json; do
 
         # Format values
         if [[ "$metric_name" == *"Memory"* ]]; then
-            baseline_fmt=$(python3 -c "print(f'{float('$baseline_val')/1024:.1f}MB')" 2>/dev/null || echo "${baseline_val}KB")
-            current_fmt=$(python3 -c "print(f'{float('$current_val')/1024:.1f}MB')" 2>/dev/null || echo "${current_val}KB")
+            baseline_fmt="${baseline_val}KB"
+            current_fmt="${current_val}KB"
         else
-            baseline_fmt=$(python3 -c "print(f'{float('$baseline_val'):.2f}%')" 2>/dev/null || echo "$baseline_val")
-            current_fmt=$(python3 -c "print(f'{float('$current_val'):.2f}%')" 2>/dev/null || echo "$current_val")
+            baseline_fmt=$baseline_val
+            current_fmt="$current_val"
         fi
 
         # Add emoji for significant changes
@@ -128,9 +163,44 @@ for current_report in "$current_dir"/*_tps-report.json; do
             fi
         fi
 
-        echo "| $metric_name | $inst_type | $tps | $baseline_fmt | $current_fmt | $change_icon $change |"
+        # Check against performance limits
+        limit=$(get_limit "$inst_type" "$metric_name")
+        limit_status=$(check_limit "$current_val" "$limit" "$metric_name")
+
+        # Format limit for display
+        if [[ "$limit" != "null" ]]; then
+            if [[ "$metric_name" == *"Memory"* ]]; then
+                limit_fmt="${limit}KB"
+            else
+                limit_fmt=$limit
+            fi
+            limit_display="$limit_status $limit_fmt"
+        else
+            limit_display="$limit_status"
+        fi
+
+        # Store data for sorting: TPS|METRIC|INSTANCE|ROW
+        printf "| %s | %s | %06d | %s | %s | %s | %s | %s |\n" "$metric_name" "$inst_type" "$tps" "$baseline_fmt" "$current_fmt" "$change" "$change_icon" "$limit_display" >> "$tmp_file"
     done
 done
 
+# Sort by TPS, then metric, then instance type and output
+# metric A - inst type A, tps 100
+# metric A - inst type B, tps 100
+# metric A - inst type C, tps 100
+# ...
+# metric A - inst type A, tps 1000
+# metric A - inst type B, tps 1000
+# metric A - inst type C, tps 1000
+# ...
+# metric B - inst type A, tps 100
+# ...
+if [[ -s "$tmp_file" ]]; then
+    sort -t'|' -k1,1n -k2,2 -k3,3 "$tmp_file" | cut -d'|' -f4-
+else
+    echo "No matching reports found for comparison."
+fi
+rm -f "$tmp_file"
+
 echo ""
-echo "🔴 = Significant increase (>10%)  🟢 = Significant improvement (>10% decrease)"
+echo "🔴 = Significant increase (>10%)  🟢 = Significant improvement (>10% decrease)  ⚠️ = Exceeds performance limit"

@@ -1,0 +1,46 @@
+{
+  "limits": {
+    "m6a.xlarge": {
+      "Agent CPU": 2.0,
+      "Agent CPU Single Core Max": 20.0,
+      "Agent Memory": 30000,
+      "Host CPU": 100,
+      "BPF CPU": 5.0
+    },
+    "m6a.4xlarge": {
+      "Agent CPU": 2.0,
+      "Agent CPU Single Core Max": 30.0,
+      "Agent Memory": 40000,
+      "Host CPU": 100,
+      "BPF CPU": 4.0
+    },
+    "m6a.8xlarge": {
+      "Agent CPU": 2.0,
+      "Agent CPU Single Core Max": 40.0,
+      "Agent Memory": 50000,
+      "Host CPU": 100,
+      "BPF CPU": 3.0
+    },
+    "m6a.16xlarge": {
+      "Agent CPU": 2.0,
+      "Agent CPU Single Core Max": 60.0,
+      "Agent Memory": 60000,
+      "Host CPU": 100,
+      "BPF CPU": 2.5
+    },
+    "m6a.24xlarge": {
+      "Agent CPU": 2.0,
+      "Agent CPU Single Core Max": 80.0,
+      "Agent Memory": 70000,
+      "Host CPU": 100,
+      "BPF CPU": 2.0
+    },
+    "m6a.48xlarge": {
+      "Agent CPU": 2.0,
+      "Agent CPU Single Core Max": 100.0,
+      "Agent Memory": 75000,
+      "Host CPU": 100,
+      "BPF CPU": 1.5
+    }
+  }
+}
