@@ -61,12 +61,6 @@ fi
 log "Parameters received:"
 log "Region: $region"
 
-cleanup() {
-    log "Exiting perform-load-test-suite"
-    pkill -f 'bpftool|bpftop|mpstat|pidstat|poll-|network-flow-monitor-agent|tcp-tester' || true
-}
-trap cleanup EXIT
-
 response_delay_ms=0
 
 IFS=',' read -ra TPS_ARRAY <<< "$tps_steps"
@@ -87,3 +81,5 @@ for i in "${!TPS_ARRAY[@]}"; do
         log "TCP connections reset, proceeding to next iteration"
     fi
 done
+
+log "Exiting perform-load-test-suite"
