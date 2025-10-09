@@ -39,14 +39,13 @@ else
     echo "No instances to terminate"
 fi
 
-# Clean up S3 bucket
+# Clean up S3 bucket contents only
 if aws s3api head-bucket --bucket "$LOAD_TEST_S3_BUCKET" 2>/dev/null; then
-    echo "Cleaning up S3 bucket: $LOAD_TEST_S3_BUCKET"
+    echo "Cleaning up S3 bucket contents: $LOAD_TEST_S3_BUCKET"
     aws s3 rm "s3://$LOAD_TEST_S3_BUCKET" --recursive
-    aws s3 rb "s3://$LOAD_TEST_S3_BUCKET"
-    echo "S3 bucket cleaned up"
+    echo "S3 bucket contents cleaned up"
 else
-    echo "S3 bucket does not exist or already cleaned up"
+    echo "S3 bucket does not exist"
 fi
 
 # Clear instance IDs and bucket name from set-env-vars
