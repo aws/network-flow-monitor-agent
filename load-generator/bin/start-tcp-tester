@@ -32,7 +32,7 @@ do
     RUST_LOG=OFF taskset -c $cpu tcp-tester --servers 1 \
         --starting-port $port --connection-rate $tps --traffic-shaping off \
         --response-delay-ms $delay_ms \
-        > results/$output_dir/`date +%Y-%m-%dT%H:%M:%S`-cpu${cpu}-tcp-tester &
+        2>/dev/null &
 done
 
 wait

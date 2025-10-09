@@ -57,11 +57,22 @@ wait_for_command() {
 
         case "$status" in
             "Success")
-                aws ssm get-command-invocation \
+                # Get output and truncate if too large
+                output=$(aws ssm get-command-invocation \
                     --command-id "$command_id" \
                     --instance-id "$instance_id" \
                     --query 'StandardOutputContent' \
-                    --output text --no-cli-pager
+                    --output text --no-cli-pager)
+
+                # Truncate output if longer than 100 lines
+                line_count=$(echo "$output" | wc -l)
+                if [ "$line_count" -gt 100 ]; then
+                    log "$output" | head -50
+                    log "... [OUTPUT TRUNCATED - showing first and last 50 of $line_count lines] ..."
+                    log "$output" | tail -50
+                else
+                    log "$output"
+                fi
                 return 0
                 ;;
             "Failed"|"Cancelled"|"TimedOut")

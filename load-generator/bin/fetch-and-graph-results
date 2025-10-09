@@ -62,14 +62,47 @@ do
         fi
         for tps in `ls $local_dir/$inst_type/$test_name`
         do
-            echo "DEBUG: Processing TPS $tps for $inst_type/$test_name"
-            echo "DEBUG: Directory contents:"
+            log "Processing TPS $tps for $inst_type/$test_name"
             ls -la "$local_dir/$inst_type/$test_name/$tps" || echo "Directory does not exist"
-            echo "DEBUG: Looking for required files:"
-            ls "$local_dir/$inst_type/$test_name/$tps"/*-bpfstats 2>/dev/null || echo "No bpfstats files found"
-            ls "$local_dir/$inst_type/$test_name/$tps"/*-agent 2>/dev/null || echo "No agent files found"
 
-            bin/generate-tps-report $local_dir/$inst_type/$test_name $tps > $local_dir/${test_name}_${inst_type}_${tps}_tps-report.json
+            # Check for required files and their sizes
+            test_dir="$local_dir/$inst_type/$test_name/$tps"
+            required_files=("bpfstats" "agent" "process" "hostcpu" "network" "bpfcpu")
+            missing_files=()
+            empty_files=()
+
+            for file_type in "${required_files[@]}"; do
+                file_pattern="$test_dir/*-$file_type"
+                if ! ls $file_pattern >/dev/null 2>&1; then
+                    missing_files+=("$file_type")
+                else
+                    for file in $file_pattern; do
+                        if [[ ! -s "$file" ]]; then
+                            empty_files+=("$(basename "$file")")
+                        fi
+                    done
+                fi
+            done
+
+            if [[ ${#missing_files[@]} -gt 0 ]]; then
+                log "ERROR: Missing required files: ${missing_files[*]}"
+                log "Skipping TPS report generation for $inst_type/$test_name/$tps"
+                continue
+            fi
+
+            if [[ ${#empty_files[@]} -gt 0 ]]; then
+                log "ERROR: Empty files detected: ${empty_files[*]}"
+                log "This indicates monitoring processes failed to collect data"
+                log "Skipping TPS report generation for $inst_type/$test_name/$tps"
+                continue
+            fi
+
+            log "DEBUG: All required files present and non-empty, generating TPS report"
+            if ! bin/generate-tps-report $local_dir/$inst_type/$test_name $tps > $local_dir/${test_name}_${inst_type}_${tps}_tps-report.json; then
+                log "ERROR: generate-tps-report failed for $inst_type/$test_name/$tps"
+                log "Check the generated report file for details"
+                cat $local_dir/${test_name}_${inst_type}_${tps}_tps-report.json 2>/dev/null || echo "No report file generated"
+            fi
         done
     done
 done

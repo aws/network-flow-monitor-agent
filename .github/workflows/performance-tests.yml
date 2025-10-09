@@ -79,6 +79,24 @@ jobs:
           path: load-generator/results-${{ env.GRAPH_ID }}/graphs/*.png
           retention-days: 30
 
+      - name: Download baseline performance reports
+        if: steps.aws-creds.outcome == 'success' && github.event_name == 'pull_request'
+        run: |
+          cd load-generator
+          # Try to download baseline reports from main branch
+          mkdir -p baseline-reports
+          git show main:load-generator/baseline-reports/ > /dev/null 2>&1 && \
+            git archive main:load-generator/baseline-reports | tar -x -C baseline-reports/ || \
+            echo "No baseline reports found in main branch"
+
+      - name: Generate performance comparison
+        if: steps.aws-creds.outcome == 'success' && github.event_name == 'pull_request'
+        run: |
+          cd load-generator
+          chmod +x bin/compare-performance
+          bin/compare-performance --current-dir results-${{ env.GRAPH_ID }} --baseline-dir baseline-reports > performance-comparison.md || \
+            echo "# Performance Comparison\n\nNo baseline reports available for comparison." > performance-comparison.md
+
       - name: Comment PR with performance results
         if: steps.aws-creds.outcome == 'success' && github.event_name == 'pull_request'
         uses: actions/github-script@v7
@@ -92,7 +110,10 @@ jobs:
             const graphsDir = `load-generator/results-${graphId}/graphs`;
             const graphs = fs.readdirSync(graphsDir).filter(f => f.endsWith('.png'));
 
-            // Create comment with graph links
+            // Read performance comparison
+            const comparison = fs.readFileSync('load-generator/performance-comparison.md', 'utf8');
+
+            // Create comment with graph links and performance comparison
             let comment = '## 📊 Performance Test Results\n\n';
             comment += `Performance tests completed successfully! Generated ${graphs.length} performance graphs.\n\n`;
             comment += '**Generated Graphs:**\n';
@@ -100,7 +121,8 @@ jobs:
               const name = graph.replace('.png', '').replace(/-/g, ' ');
               comment += `- ${name}\n`;
             });
-            comment += `\n📎 Download the [performance-graphs-${{ env.GRAPH_ID }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) artifact to view the charts.`;
+            comment += `\n📎 Download the [performance-graphs-${{ env.GRAPH_ID }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) artifact to view the charts.\n\n`;
+            comment += comparison;
 
             github.rest.issues.createComment({
               issue_number: context.issue.number,
@@ -108,6 +130,21 @@ jobs:
               repo: context.repo.repo,
               body: comment
             });
+
+      - name: Store baseline reports (main branch only)
+        if: steps.aws-creds.outcome == 'success' && github.ref == 'refs/heads/main'
+        run: |
+          cd load-generator
+          # Copy current reports as new baseline
+          mkdir -p baseline-reports
+          cp results-${{ env.GRAPH_ID }}/*_tps-report.json baseline-reports/ || true
+          
+          # Commit baseline reports back to main
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add baseline-reports/
+          git commit -m "Update baseline performance reports" || echo "No changes to commit"
+          git push || echo "Failed to push baseline reports"
 
       - name: Cleanup EC2 instances
         if: steps.aws-creds.outcome == 'success' && always()

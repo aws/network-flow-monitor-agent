@@ -49,17 +49,13 @@ source bin/set-env-vars
 UNIQUE_ID="${USER:-$(whoami)}-$(date +%s)"
 test_bundle_name="load-test-scripts-${UNIQUE_ID}.tgz"
 
-log "Building test artifacts..."
-
-# Build bpftop
-bin/build-bpftop
-
+log "Bundling test artifacts..."
 # Create the bundle with built binaries
 tar --transform 's/.*\///g' -czf "$test_bundle_name" \
     ../target/release/network-flow-monitor-agent \
     ../target/release/tcp-tester \
     ../load-generator/bin/* \
-    /tmp/bpftop/bpftop/target/release/bpftop
+    ./bin/bpftop
 
 log "Uploading $test_bundle_name test artifact to S3..."
 bin/upload-to-s3 "$test_bundle_name" "scripts/$test_bundle_name"

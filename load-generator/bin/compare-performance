@@ -1,0 +1,122 @@
+#!/bin/bash
+
+set -o errexit
+set -o pipefail
+set -o nounset
+
+source bin/set-env-vars
+
+help_msg=$(cat <<EOF
+Compare performance results with baseline
+Usage: $0 --current-dir <dir> --baseline-dir <dir>
+Examples:
+    $0 --current-dir results-pr-123 --baseline-dir baseline-reports
+EOF
+)
+
+current_dir=""
+baseline_dir=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --current-dir=*) current_dir="${1#*=}" ;;
+        --current-dir) current_dir="$2"; shift ;;
+        --baseline-dir=*) baseline_dir="${1#*=}" ;;
+        --baseline-dir) baseline_dir="$2"; shift ;;
+        --help|-h) echo "$help_msg"; exit 0 ;;
+        *) echo "Unknown option: $1"; echo "$help_msg"; exit 1 ;;
+    esac
+    shift
+done
+
+if [[ -z "$current_dir" || -z "$baseline_dir" ]]; then
+    echo "ERROR: Both --current-dir and --baseline-dir are required"
+    exit 1
+fi
+
+# Function to extract metric value from JSON report
+get_metric() {
+    local file="$1"
+    local path="$2"
+    jq -r "$path // 0" "$file" 2>/dev/null || echo "0"
+}
+
+# Function to calculate percentage change
+calc_change() {
+    local old="$1"
+    local new="$2"
+    if [[ "$old" == "0" || "$old" == "0.000" ]]; then
+        echo "N/A"
+    else
+        python3 -c "print(f'{((float('$new') - float('$old')) / float('$old') * 100):+.1f}%')"
+    fi
+}
+
+# Generate comparison report
+echo "## 📊 Performance Comparison"
+echo ""
+echo "| Metric | Instance Type | TPS | Baseline | Current | Change |"
+echo "|--------|---------------|-----|----------|---------|--------|"
+
+# Compare each report file
+for current_report in "$current_dir"/*_tps-report.json; do
+    if [[ ! -f "$current_report" ]]; then
+        continue
+    fi
+
+    filename=$(basename "$current_report")
+    baseline_report="$baseline_dir/$filename"
+
+    if [[ ! -f "$baseline_report" ]]; then
+        echo "⚠️ No baseline found for $filename"
+        continue
+    fi
+
+    # Extract instance type and TPS from filename
+    # Format: results-pr-58_m6a.xlarge_10000_tps-report.json
+    inst_type=$(echo "$filename" | sed 's/.*_\([^_]*\)_[0-9]*_tps-report.json/\1/')
+    tps=$(echo "$filename" | sed 's/.*_\([0-9]*\)_tps-report.json/\1/')
+
+    # Compare key metrics
+    metrics=(
+        "Agent CPU|.tps_report.sonar_agent_process.cpu_util_pct.avg"
+        "Agent Memory|.tps_report.sonar_agent_process.resident_mem_kb.avg"
+        "Host CPU|.tps_report.host_stats.cpu_util_pct.avg"
+        "BPF CPU|.tps_report.sonar_bpf_program.cpu_util_pct.avg"
+        "TCP Memory|.tps_report.sock_stats.tcp_mem_used_kb.avg"
+    )
+
+    for metric_def in "${metrics[@]}"; do
+        metric_name=$(echo "$metric_def" | cut -d'|' -f1)
+        metric_path=$(echo "$metric_def" | cut -d'|' -f2)
+
+        baseline_val=$(get_metric "$baseline_report" "$metric_path")
+        current_val=$(get_metric "$current_report" "$metric_path")
+        change=$(calc_change "$baseline_val" "$current_val")
+
+        # Format values
+        if [[ "$metric_name" == *"Memory"* ]]; then
+            baseline_fmt=$(python3 -c "print(f'{float('$baseline_val')/1024:.1f}MB')" 2>/dev/null || echo "${baseline_val}KB")
+            current_fmt=$(python3 -c "print(f'{float('$current_val')/1024:.1f}MB')" 2>/dev/null || echo "${current_val}KB")
+        else
+            baseline_fmt=$(python3 -c "print(f'{float('$baseline_val'):.2f}%')" 2>/dev/null || echo "$baseline_val")
+            current_fmt=$(python3 -c "print(f'{float('$current_val'):.2f}%')" 2>/dev/null || echo "$current_val")
+        fi
+
+        # Add emoji for significant changes
+        change_icon=""
+        if [[ "$change" != "N/A" ]]; then
+            change_num=$(echo "$change" | sed 's/[+%]//g')
+            if (( $(echo "$change_num > 10" | bc -l 2>/dev/null || echo 0) )); then
+                change_icon="🔴"
+            elif (( $(echo "$change_num < -10" | bc -l 2>/dev/null || echo 0) )); then
+                change_icon="🟢"
+            fi
+        fi
+
+        echo "| $metric_name | $inst_type | $tps | $baseline_fmt | $current_fmt | $change_icon $change |"
+    done
+done
+
+echo ""
+echo "🔴 = Significant increase (>10%)  🟢 = Significant improvement (>10% decrease)"
