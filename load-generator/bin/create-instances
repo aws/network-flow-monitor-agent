@@ -8,7 +8,7 @@ help_msg=$(cat <<EOF
 Creates EC2 instances for performance testing
 Usage: $0 [--instance-types type1,type2] [--region region]
 Examples:
-    $0 --instance-types m6a.xlarge,m6a.4xlarge --region us-west-2
+    $0 --instance-types m6a.xlarge,m6a.4xlarge,m6a.8xlarge,m6a.16xlarge,m6a.24xlarge,m6a.48xlarge --region us-west-2
 EOF
 )
 
