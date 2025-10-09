@@ -34,6 +34,21 @@ if [[ -z "$current_dir" || -z "$baseline_dir" ]]; then
     exit 1
 fi
 
+if [[ "$current_dir" == "$baseline_dir" ]]; then
+    echo "ERROR: current-dir and baseline-dir cannot be the same directory"
+    exit 1
+fi
+
+if [[ ! -d "$current_dir" ]]; then
+    echo "ERROR: Current directory '$current_dir' does not exist"
+    exit 1
+fi
+
+if [[ ! -d "$baseline_dir" ]]; then
+    echo "ERROR: Baseline directory '$baseline_dir' does not exist"
+    exit 1
+fi
+
 # Function to extract metric value from JSON report
 get_metric() {
     local file="$1"
@@ -83,7 +98,6 @@ for current_report in "$current_dir"/*_tps-report.json; do
         "Agent Memory|.tps_report.sonar_agent_process.resident_mem_kb.avg"
         "Host CPU|.tps_report.host_stats.cpu_util_pct.avg"
         "BPF CPU|.tps_report.sonar_bpf_program.cpu_util_pct.avg"
-        "TCP Memory|.tps_report.sock_stats.tcp_mem_used_kb.avg"
     )
 
     for metric_def in "${metrics[@]}"; do

@@ -61,7 +61,7 @@ log "Uploading $test_bundle_name test artifact to S3..."
 bin/upload-to-s3 "$test_bundle_name" "scripts/$test_bundle_name"
 
 log "Downloading and extracting artifacts on test instances..."
-bin/run-ssm-command async "aws s3 cp s3://$LOAD_TEST_S3_BUCKET/scripts/$test_bundle_name /usr/tmp/$test_bundle_name"
+bin/run-ssm-command async "aws s3 cp s3://$LOAD_TEST_S3_BUCKET/scripts/$test_bundle_name /usr/tmp/$test_bundle_name --quiet"
 
 log "Unpacking artifacts"
 bin/run-ssm-command async "cd /usr/tmp && mkdir -p bin && tar -xzf $test_bundle_name --directory bin && sudo mv bin/bpftop /usr/local/sbin 2>/dev/null || true && sudo mv bin/network-flow-monitor-agent /usr/local/sbin && sudo mv bin/tcp-tester /usr/local/sbin && rm $test_bundle_name && sudo rm -rf /usr/tmp/results && sudo rm -rf /usr/tmp/*.tgz"
