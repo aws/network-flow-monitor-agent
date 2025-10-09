@@ -54,14 +54,6 @@ cargo install flamegraph
 echo "✅ Flamegraph is installed"
 sudo ln -sf $HOME/.cargo/bin/* /usr/local/bin/
 
-# Grant permissions to instance for agent to publish
-echo "Modifying IAM role for EC2 instance..."
-aws s3 cp s3://network-sonar-onboarding-artifacts/onboard_instance_role.sh . \
-    || handle_error 'Failed to fetch NFM onboarding artifacts; ensure credentials are set up and run with `sudo --preserve-env`'
-chmod +x onboard_instance_role.sh
-./onboard_instance_role.sh --region=`ec2-metadata -R | grep region | awk '{print $2}' | tr -d '\n'` --instance-id=`ec2-metadata -i | grep instance-id | awk '{print $2}' | tr -d '\n'`
-rm onboard_instance_role.sh
-
 # Set up network namespaces for the tcp-tester.
 echo "Setting up network config"
 bin/network-setup.sh

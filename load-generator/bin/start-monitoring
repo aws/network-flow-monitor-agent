@@ -8,7 +8,7 @@ output_dir=$1
 
 cleanup() {
     echo "Exiting from monitoring"
-    pkill -P $$
+    pkill -f "poll-" 2>/dev/null || true
 }
 trap cleanup EXIT
 

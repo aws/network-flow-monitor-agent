@@ -20,7 +20,8 @@ parser.add_argument('--output-dir', help='Image output directory', required=Fals
 args = parser.parse_args()
 
 # Use line decorations to help out colorblind folks.
-shapes = ['circle', 'diamond', 'hexagon', 'hexagram', 'pentagon', 'triangle']
+# Using only valid plotly marker symbols
+shapes = ['circle', 'diamond', 'square', 'triangle-up', 'pentagon', 'hexagon']
 shape_ix = 0
 x_values = list(map(int, args.x_values.split(',')))
 y_max = 0
@@ -34,7 +35,7 @@ for line in args.line:
     name = parts[0]
     y_values = list(map(float, parts[1].split(',')))
     y_max = max(y_max, max(y_values))
-    line = go.Scatter(x=x_values, y=y_values, mode='lines+markers', name=name, line_shape='spline', marker=dict(symbol=shapes[shape_ix], size=6))
+    line = go.Scatter(x=x_values, y=y_values, mode='lines+markers', name=name, line_shape='spline', marker=dict(symbol=shapes[shape_ix], size=7))
     lines.append(line)
     shape_ix = (shape_ix + 1) % len(shapes)
 

@@ -11,6 +11,8 @@ jobs:
     permissions:
       id-token: write   # This is required for requesting the JWT
       contents: read    # This is required for actions/checkout
+    env:
+      GRAPH_ID: pr-${{ github.event.number || github.run_id }}
 
     steps:
       - name: Checkout code
@@ -67,7 +69,45 @@ jobs:
         if: steps.aws-creds.outcome == 'success'
         run: |
           cd load-generator
-          bin/invoke_test
+          bin/invoke_test --bucket ${{ secrets.PR_PERF_TEST_BUCKET }} --region ${{ secrets.PR_PERF_TEST_AWS_REGION }} --graph_identifier $GRAPH_ID
+
+      - name: Upload performance graphs
+        if: steps.aws-creds.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-graphs-${{ env.GRAPH_ID }}
+          path: load-generator/results-${{ env.GRAPH_ID }}/graphs/*.png
+          retention-days: 30
+
+      - name: Comment PR with performance results
+        if: steps.aws-creds.outcome == 'success' && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            // Get list of generated graphs
+            const graphId = '${{ env.GRAPH_ID }}';
+            const graphsDir = `load-generator/results-${graphId}/graphs`;
+            const graphs = fs.readdirSync(graphsDir).filter(f => f.endsWith('.png'));
+
+            // Create comment with graph links
+            let comment = '## 📊 Performance Test Results\n\n';
+            comment += `Performance tests completed successfully! Generated ${graphs.length} performance graphs.\n\n`;
+            comment += '**Generated Graphs:**\n';
+            graphs.forEach(graph => {
+              const name = graph.replace('.png', '').replace(/-/g, ' ');
+              comment += `- ${name}\n`;
+            });
+            comment += `\n📎 Download the [performance-graphs-${{ env.GRAPH_ID }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) artifact to view the charts.`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
 
       - name: Cleanup EC2 instances
         if: steps.aws-creds.outcome == 'success' && always()

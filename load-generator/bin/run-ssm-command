@@ -5,7 +5,7 @@ set -o pipefail
 set -o nounset
 
 help_msg=$(cat <<EOF
-Executes a command on all nodes of your distributed fleet via SSM
+Executes a command on all LOAD_TEST_INSTANCE_IDS via SSM
 Usage: $0 [async] '<command>'
 Examples:
     $0 'ls'
@@ -14,7 +14,7 @@ EOF
 )
 
 if [[ $# -lt 1 || "$1" == "--help" || "$1" == "-h" ]]; then
-    echo "$help_msg"
+    log "$help_msg"
     exit 0
 fi
 
@@ -27,33 +27,97 @@ fi
 # Load the developer's load-test environment variables.
 source bin/set-env-vars
 
-for instance_id in $LOAD_TEST_INSTANCE_IDS
-do
-    printf "\nExecuting command on instance $instance_id\n"
+# Function to wait for SSM command completion
+wait_for_command() {
+    local command_id="$1"
+    local instance_id="$2"
+    local timeout="600"  # Default 10 minutes
 
-    if [ "$run_async" = true ]; then
-        aws ssm send-command \
-            --instance-ids "$instance_id" \
-            --document-name "AWS-RunShellScript" \
-            --parameters "commands=[\"PATH=\$PATH:/usr/sbin:/sbin:/usr/local/sbin; $*\"]" \
-            --output text --query 'Command.CommandId' &
-    else
-        command_id=$(aws ssm send-command \
-            --instance-ids "$instance_id" \
-            --document-name "AWS-RunShellScript" \
-            --parameters "commands=[\"PATH=\$PATH:/usr/sbin:/sbin:/usr/local/sbin; $*\"]" \
-            --output text --query 'Command.CommandId')
+    local start_time=$(date +%s)
 
-        # Wait for command completion
-        aws ssm wait command-executed --command-id "$command_id" --instance-id "$instance_id"
+    while true; do
+        local current_time=$(date +%s)
+        local elapsed=$((current_time - start_time))
 
-        # Get command output
-        aws ssm get-command-invocation \
+        if [ $elapsed -gt $timeout ]; then
+            log "Command timed out after $timeout seconds on $instance_id"
+            aws ssm get-command-invocation \
+                --command-id "$command_id" \
+                --instance-id "$instance_id" \
+                --query '{Status:Status,StdOut:StandardOutputContent,StdErr:StandardErrorContent}' \
+                --output json --no-cli-pager
+            return 1
+        fi
+
+        local status=$(aws ssm get-command-invocation \
             --command-id "$command_id" \
             --instance-id "$instance_id" \
-            --query 'StandardOutputContent' \
-            --output text
+            --query 'Status' \
+            --output text 2>/dev/null || echo "Pending")
+
+        case "$status" in
+            "Success")
+                aws ssm get-command-invocation \
+                    --command-id "$command_id" \
+                    --instance-id "$instance_id" \
+                    --query 'StandardOutputContent' \
+                    --output text --no-cli-pager
+                return 0
+                ;;
+            "Failed"|"Cancelled"|"TimedOut")
+                log "Command failed with status: $status on $instance_id"
+                aws ssm get-command-invocation \
+                    --command-id "$command_id" \
+                    --instance-id "$instance_id" \
+                    --query '{Status:Status,StdOut:StandardOutputContent,StdErr:StandardErrorContent}' \
+                    --output json --no-cli-pager
+                return 1
+                ;;
+            *)
+                printf "."
+                sleep 5
+                ;;
+        esac
+    done
+}
+
+# Arrays to store command IDs and instance IDs for async mode
+command_ids=()
+instance_ids_array=()
+
+for instance_id in $LOAD_TEST_INSTANCE_IDS
+do
+    log "Executing command on instance $instance_id"
+
+    command_id=$(aws ssm send-command \
+        --instance-ids "$instance_id" \
+        --document-name "AWS-RunShellScript" \
+        --parameters "commands=[\"PATH=\$PATH:/usr/sbin:/sbin:/usr/local/sbin; $*\"]" \
+        --output text --query 'Command.CommandId' --no-cli-pager)
+
+    if [ "$run_async" = true ]; then
+        command_ids+=("$command_id")
+        instance_ids_array+=("$instance_id")
+    else
+        wait_for_command "$command_id" "$instance_id" || exit 1
     fi
 done
 
-wait
+# If async mode, wait for all commands to complete
+if [ "$run_async" = true ]; then
+    log "Waiting for all async commands to complete..."
+
+    for i in "${!command_ids[@]}"; do
+        command_id="${command_ids[$i]}"
+        instance_id="${instance_ids_array[$i]}"
+
+        log "Waiting for command on instance $instance_id"
+        if wait_for_command "$command_id" "$instance_id"; then
+            log "Command completed on instance $instance_id"
+        else
+            exit 1
+        fi
+    done
+
+    log "All async commands completed successfully"
+fi

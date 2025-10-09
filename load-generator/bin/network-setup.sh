@@ -59,7 +59,6 @@ ip netns exec $(name server) ip addr add 2.2.2.2 dev lo
 ip netns exec $(name client) ip route add 2.2.2.2 via 10.0.0.2 src 1.1.1.1
 ip netns exec $(name tcp-tester) ip route add 2.2.2.2 via 20.0.0.2
 
-
 ip netns exec $(name server) ip route add 1.1.1.1 via 20.0.0.1 src 2.2.2.2
 ip netns exec $(name tcp-tester) ip route add 1.1.1.1 via 10.0.0.1
 
@@ -67,7 +66,6 @@ ip netns exec $(name tcp-tester) ip route add 1.1.1.1 via 10.0.0.1
 # correspond to packets.
 ip netns exec $(name client) ethtool -K i1 tx-tcp-segmentation off
 ip netns exec $(name server) ethtool -K i4 tx-tcp-segmentation off
-
 
 ip netns exec $(name client) sysctl -w net.ipv4.tcp_sack=1
 ip netns exec $(name server) sysctl -w net.ipv4.tcp_sack=1

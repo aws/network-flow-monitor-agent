@@ -2,7 +2,7 @@
 
 cleanup() {
     echo "Exiting poll-bpf-cpu"
-    pkill -P $$ 
+    pkill -f "poll-bpf-cpu" || true
 }
 trap cleanup EXIT
 

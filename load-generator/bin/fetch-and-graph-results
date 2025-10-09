@@ -31,14 +31,11 @@ if [[ $help == "true" ]]; then
 fi
 
 # Fetch results from the fleet of hosts.
-bin/run-ssm-command '
-    cd /usr/tmp
-    tar -C results -czf `ec2-metadata --instance-type | cut -d" " -f2`-results-'${graph_title}'.tgz .
-'
+bin/run-ssm-command "cd /usr/tmp && mkdir -p rar && tar -C results -czf rar/\$(ec2-metadata --instance-type | cut -d' ' -f2)-results-${graph_title}.tgz ."
 
 local_dir="results-${graph_title}"
 mkdir -p $local_dir
-bin/download-file-ssm '/usr/tmp/*'${graph_title}'.tgz' $local_dir/ # only retrieve what we have just created, ignore other results
+bin/download-from-remote "/usr/tmp/rar/*" "${local_dir}/" # only retrieve what we have just created, ignore other results
 
 # Unpack the results which are now local.
 cd $local_dir

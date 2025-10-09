@@ -19,7 +19,7 @@ tps=$(($tps / 2))
 
 cleanup() {
     echo "Exiting tcp-tester"
-    pkill -P $$ 
+    pkill -f "tcp-tester" 2>/dev/null || true
 }
 trap cleanup EXIT
 

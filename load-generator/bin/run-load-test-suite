@@ -47,38 +47,43 @@ if [[ $help == "true" ]]; then
 fi
 
 if [[ -z $tps_steps ]]; then
-    echo -e "\n$GREEN Reading tps_steps from config as $LOAD_TEST_TPS_STEPS.$NC\n"
+    log "Reading tps_steps from config as $LOAD_TEST_TPS_STEPS"
     tps_steps=$LOAD_TEST_TPS_STEPS
 fi
 
 # Check mandatory parameters
 if [[ -z $region ]]; then
-    echo -e "\n$RED region must be supplied.$NC\n"
+    log "ERROR: region must be supplied"
     show_usage
 fi
 
 # Display parameters
-echo -e "${GREEN}Parameters received:${NC}"
-echo -e "${BLUE}Region:${NC} $region"
+log "Parameters received:"
+log "Region: $region"
 
 cleanup() {
-    echo "Exiting perform-load-test-suite"
-    pkill -P $$
+    log "Exiting perform-load-test-suite"
+    pkill -f 'bpftool|bpftop|mpstat|pidstat|poll-|network-flow-monitor-agent|tcp-tester' || true
 }
 trap cleanup EXIT
 
 response_delay_ms=0
 
 IFS=',' read -ra TPS_ARRAY <<< "$tps_steps"
-for tps in "${TPS_ARRAY[@]}"
-do
-    echo -e "${GREEN}Starting TPS iteration: ${NC} $tps"
+for i in "${!TPS_ARRAY[@]}"; do
+    tps="${TPS_ARRAY[$i]}"
+
+    log "${GREEN}Starting TPS iteration: ${CYAN} $tps ${NC}"
     # Run each load test long enough to complete multiple publish periods, plus buffer.
     bin/run-ssm-command async "cd /usr/tmp &&
     export PATH=\$PATH:/usr/sbin &&
     sudo bin/perform-load-test $tps $response_delay_ms $region $duration_sec $flamegraph"
-    echo -e "${GREEN}Completed TPS iteration: ${NC} $tps"
+    log "${GREEN}Completed TPS iteration: ${CYAN} $tps ${NC} "
 
-    echo -e "${BLUE} Sleeping 90 sec to allow prior in-use sockets to clear${NC}"
-    sleep 90
+    # Skip sleep for the last iteration
+    if [ $i -lt $((${#TPS_ARRAY[@]} - 1)) ]; then
+        log "Force closing TCP connections in network namespaces"
+        bin/run-ssm-command async "sudo ip netns exec nfm-perf-test-client ss -K state all 2>/dev/null || true && sudo ip netns exec nfm-perf-test-tcp-tester ss -K state all 2>/dev/null || true && sudo ip netns exec nfm-perf-test-server ss -K state all 2>/dev/null || true"
+        log "TCP connections reset, proceeding to next iteration"
+    fi
 done

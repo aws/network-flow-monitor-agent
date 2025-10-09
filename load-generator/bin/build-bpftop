@@ -4,7 +4,7 @@ set -o errexit
 set -o pipefail
 set -o nounset
 
-BPFTOP_DIR="/tmp"
+BPFTOP_DIR="/tmp/bpftop"
 
 echo "Building bpftop..."
 

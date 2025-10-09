@@ -13,8 +13,8 @@ EOF
 )
 
 # Default values
-instance_types="m6a.xlarge,m6a.4xlarge"
-region="us-west-2"
+instance_types="m6a.xlarge,m6a.4xlarge,m6a.8xlarge,m6a.16xlarge,m6a.24xlarge,m6a.48xlarge"
+region=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -28,13 +28,18 @@ while [[ $# -gt 0 ]]; do
     shift
 done
 
+if [[ -z $region ]]; then
+    echo "ERROR: region is required as tests are regional"
+    exit 1
+fi
+
 source bin/set-env-vars
 
 # User data script to install SSM agent and dependencies
 user_data=$(cat <<'EOF'
 #!/bin/bash
 yum update -y
-yum install -y amazon-ssm-agent awscli
+yum install -y amazon-ssm-agent awscli sysstat
 systemctl enable amazon-ssm-agent
 systemctl start amazon-ssm-agent
 mkdir -p /usr/tmp

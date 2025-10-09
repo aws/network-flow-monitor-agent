@@ -12,7 +12,7 @@ Examples:
 EOF
 )
 
-region="us-west-2"
+region=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -28,8 +28,8 @@ source bin/set-env-vars
 
 if [ -n "$LOAD_TEST_INSTANCE_IDS" ]; then
     echo "Terminating instances: $LOAD_TEST_INSTANCE_IDS"
-    aws ec2 terminate-instances --instance-ids $LOAD_TEST_INSTANCE_IDS --region "$region"
-    
+    aws ec2 terminate-instances --instance-ids $LOAD_TEST_INSTANCE_IDS --region "$region" --output text --no-cli-pager
+
     echo "Waiting for instances to terminate..."
     aws ec2 wait instance-terminated --instance-ids $LOAD_TEST_INSTANCE_IDS --region "$region"
     echo "All instances terminated"
