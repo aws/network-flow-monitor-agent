@@ -52,31 +52,31 @@ test_bundle_name="load-test-scripts-${UNIQUE_ID}.tgz"
 log "Building test artifacts..."
 
 # Build bpftop
-#bin/build-bpftop
+bin/build-bpftop
 
-## Create the bundle with built binaries
-#tar --transform 's/.*\///g' -czf "$test_bundle_name" \
-#    ../target/release/network-flow-monitor-agent \
-#    ../target/release/tcp-tester \
-#    ../load-generator/bin/* \
-#    /tmp/bpftop/bpftop/target/release/bpftop
+# Create the bundle with built binaries
+tar --transform 's/.*\///g' -czf "$test_bundle_name" \
+    ../target/release/network-flow-monitor-agent \
+    ../target/release/tcp-tester \
+    ../load-generator/bin/* \
+    /tmp/bpftop/bpftop/target/release/bpftop
 
-#log "Uploading $test_bundle_name test artifact to S3..."
-#bin/upload-to-s3 "$test_bundle_name" "scripts/$test_bundle_name"
+log "Uploading $test_bundle_name test artifact to S3..."
+bin/upload-to-s3 "$test_bundle_name" "scripts/$test_bundle_name"
 
-#log "Downloading and extracting artifacts on test instances..."
-#bin/run-ssm-command async "aws s3 cp s3://$LOAD_TEST_S3_BUCKET/scripts/$test_bundle_name /usr/tmp/$test_bundle_name"
+log "Downloading and extracting artifacts on test instances..."
+bin/run-ssm-command async "aws s3 cp s3://$LOAD_TEST_S3_BUCKET/scripts/$test_bundle_name /usr/tmp/$test_bundle_name"
 
-#log "Unpacking artifacts"
-#bin/run-ssm-command async "cd /usr/tmp && mkdir -p bin && tar -xzf $test_bundle_name --directory bin && sudo mv bin/bpftop /usr/local/sbin 2>/dev/null || true && sudo mv bin/network-flow-monitor-agent /usr/local/sbin && sudo mv bin/tcp-tester /usr/local/sbin && rm $test_bundle_name && sudo rm -rf /usr/tmp/results && sudo rm -rf /usr/tmp/*.tgz"
+log "Unpacking artifacts"
+bin/run-ssm-command async "cd /usr/tmp && mkdir -p bin && tar -xzf $test_bundle_name --directory bin && sudo mv bin/bpftop /usr/local/sbin 2>/dev/null || true && sudo mv bin/network-flow-monitor-agent /usr/local/sbin && sudo mv bin/tcp-tester /usr/local/sbin && rm $test_bundle_name && sudo rm -rf /usr/tmp/results && sudo rm -rf /usr/tmp/*.tgz"
 
-#log "Preparing test environment..."
-#bin/run-ssm-command async "cd /usr/tmp && sudo --preserve-env bin/prepare-environment"
+log "Preparing test environment..."
+bin/run-ssm-command async "cd /usr/tmp && sudo --preserve-env bin/prepare-environment"
 
-#log "Running load test suite..."
-#bin/run-load-test-suite \
-#    --region $region \
-#    --duration_sec 300
+log "Running load test suite..."
+bin/run-load-test-suite \
+    --region $region \
+    --duration_sec 300
 
 log "Fetching and generating results..."
 bin/fetch-and-graph-results --graph-title $graph_identifier
