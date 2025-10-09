@@ -62,6 +62,13 @@ do
         fi
         for tps in `ls $local_dir/$inst_type/$test_name`
         do
+            echo "DEBUG: Processing TPS $tps for $inst_type/$test_name"
+            echo "DEBUG: Directory contents:"
+            ls -la "$local_dir/$inst_type/$test_name/$tps" || echo "Directory does not exist"
+            echo "DEBUG: Looking for required files:"
+            ls "$local_dir/$inst_type/$test_name/$tps"/*-bpfstats 2>/dev/null || echo "No bpfstats files found"
+            ls "$local_dir/$inst_type/$test_name/$tps"/*-agent 2>/dev/null || echo "No agent files found"
+
             bin/generate-tps-report $local_dir/$inst_type/$test_name $tps > $local_dir/${test_name}_${inst_type}_${tps}_tps-report.json
         done
     done

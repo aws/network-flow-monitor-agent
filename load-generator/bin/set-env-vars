@@ -16,7 +16,7 @@ LOAD_TEST_S3_BUCKET='network-flow-monitor-agent-perf-test-artifacts'
 
 # setup test config
 #LOAD_TEST_TPS_STEPS='1000,5000,10000,25000,50000,75000,100000,150000,200000,300000,400000,500000'
-LOAD_TEST_TPS_STEPS='10000,50000'
+LOAD_TEST_TPS_STEPS='10000,20000,30000,40000,50000'
 
 # if set to anything other than empty, following will add a heavy loss & delay on the traffic
 LOAD_TEST_ENABLE_NETWORK_LOSS=''
