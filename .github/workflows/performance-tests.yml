@@ -7,7 +7,7 @@ on:
 
 jobs:
   aws-perf-tests:
-    runs-on: ubuntu-22.04 # 24.04 has GLIBC 2.39, if agent is built with that with dynamic linking it wont run in AL2023 which do not have it
+    runs-on: ubuntu-20.04 # 24.04 has GLIBC 2.39, if agent is built with that with dynamic linking it wont run in AL2023 which do not have it
     timeout-minutes: 90
     permissions:
       id-token: write   # This is required for requesting the JWT
