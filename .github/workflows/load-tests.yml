@@ -25,7 +25,10 @@ jobs:
           python-version: '3.13'
 
       - name: Install Python dependencies
-        run: pip3 install sh plotly kaleido
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install sh plotly kaleido
+          python3 -c "import sh; print('sh module installed successfully')"
 
       - name: Install Rust
         uses: actions-rs/toolchain@v1
