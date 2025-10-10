@@ -24,6 +24,9 @@ jobs:
         with:
           python-version: '3.13'
 
+      - name: Install Python dependencies
+        run: pip install sh
+
       - name: Install Rust
         uses: actions-rs/toolchain@v1
         with:
