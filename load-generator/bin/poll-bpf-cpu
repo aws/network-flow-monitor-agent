@@ -1,0 +1,10 @@
+#!/bin/bash
+
+cleanup() {
+    echo "Exiting poll-bpf-cpu"
+    pkill -f "poll-bpf-cpu" || true
+}
+trap cleanup EXIT
+
+# Continually report resource utilization for sock-ops BPF programs.
+bpftop --text-mode --filter SockOps --period-secs 5

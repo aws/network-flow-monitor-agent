@@ -1,0 +1,352 @@
+#!/usr/bin/python3
+
+import argparse
+import os
+import sh
+
+from sh import CommandNotFound
+
+# This script generates PNG images from the data series across all TPS ranges
+# of a set of load tests.
+
+parser = argparse.ArgumentParser("generate-graph-set")
+parser.add_argument('--tps-report-dir', required=True)
+parser.add_argument('--test-run-id', required=True)
+parser.add_argument('--instance-types', help='A list of instance types, comma separated', required=True)
+parser.add_argument('--tps-values', help='The TPS test values, comma separated', required=True)
+parser.add_argument('--output-dir', help='Image output directory', required=True)
+args = parser.parse_args()
+
+inst_types = args.instance_types.split(',')
+tps_values = args.tps_values.split(',')
+
+def get_y_vals(inst_type, jquery):
+    y_vals = []
+    for tps_val in tps_values:
+        file_prefix = str.format("results-{}", args.test_run_id)
+        filename = '_'.join([file_prefix, inst_type, tps_val, 'tps-report.json'])
+        filepath = os.path.join(args.tps_report_dir, filename)
+        try:
+            val = sh.jq('--monochrome-output', jquery, filepath).strip()
+            y_vals.append("{:.3f}".format(float(val)))
+        except sh.ErrorReturnCode as e:
+            print(f"Error processing {filepath} with query '{jquery}': {e}")
+            print(f"File exists: {os.path.exists(filepath)}")
+            if os.path.exists(filepath):
+                print(f"File size: {os.path.getsize(filepath)} bytes")
+            raise
+
+    return y_vals
+
+graph_position = 0
+def produce_graph(title, jquery, y_label='', y_suffix=''):
+    global graph_position
+    graph_position += 1
+
+    line_args = []
+    for inst_type in inst_types:
+        y_vals = get_y_vals(inst_type, jquery)
+        line_args.append(['--line', inst_type + ':' + ','.join(y_vals)])
+
+    print('Generating', title)
+    try:
+        cmd = getattr(sh, 'generate-graph')
+    except CommandNotFound:
+        # In case we are running this from the package root.
+        cmd = getattr(sh, 'bin/generate-graph')
+
+    cmd(
+        '--title', title,
+        '--x-values', args.tps_values,
+        '--x-axis-label', 'TPS',
+        '--y-axis-label', y_label,
+        '--y-axis-suffix', y_suffix,
+        '--output-dir', args.output_dir,
+        '--image-name-prefix', "{:02d}-".format(graph_position),
+        *line_args,
+    )
+
+run_id =  args.test_run_id.upper()
+
+# Produce each graph from a given jquery.
+
+for pct in ['max', 'p95', 'p90', 'avg']:
+    produce_graph(
+        title=str.format('Agent CPU Utilization {} ({})', pct.replace('max', 'p100'), run_id),
+        jquery=f'(.tps_report.sonar_bpf_program.cpu_util_pct.{pct} + .tps_report.sonar_agent_process.cpu_util_pct.{pct})',
+        y_label='',
+        y_suffix='%',
+    )
+
+produce_graph(
+    title=str.format('Agent Single-CPU Utilization p100 ({})', run_id),
+    jquery='(.tps_report.sonar_bpf_program.cpu_util_pct.max + .tps_report.sonar_agent_process.cpu_util_pct.max) * .tps_report.cpu_cores',
+    y_label='',
+    y_suffix='%',
+)
+
+produce_graph(
+    title=str.format('Agent User-space CPU Utilization p100 ({})', run_id),
+    jquery='(.tps_report.sonar_agent_process.cpu_util_pct.max)',
+    y_label='',
+    y_suffix='%',
+)
+
+produce_graph(
+    title=str.format('Agent BPF CPU Utilization p100 ({})', run_id),
+    jquery='(.tps_report.sonar_bpf_program.cpu_util_pct.max)',
+    y_label='',
+    y_suffix='%',
+)
+
+produce_graph(
+    title=str.format('BPF microsecs per iteration avg ({})', run_id),
+    jquery='(.tps_report.sonar_bpf_program.runtime_us / .tps_report.sonar_bpf_program.run_count)',
+    y_label='µs',
+    y_suffix='',
+)
+
+produce_graph(
+    title=str.format('Agent Memory Utilization p100 ({})', run_id),
+    jquery='(.tps_report.sonar_bpf_program.resident_mem_kb.total + .tps_report.sonar_agent_process.resident_mem_kb.max)/1024 | round',
+    y_label='MB'
+)
+
+produce_graph(
+    title=str.format('Agent User-space Memory Utilization p100 ({})', run_id),
+    jquery='(.tps_report.sonar_agent_process.resident_mem_kb.max)/1024 | round',
+    y_label='MB'
+)
+
+produce_graph(
+    title=str.format('Agent BPF Memory Utilization p100 ({})', run_id),
+    jquery='(.tps_report.sonar_bpf_program.resident_mem_kb.total)/1024 | round',
+    y_label='MB'
+)
+
+produce_graph(
+    title=str.format('Aggregation Event Load p100 ({})', run_id),
+    jquery='(.tps_report.agent_reports.aggregation_completion_ms.max / .tps_report.agent_reports.aggregation_period_ms) | if . < 1.0 then . else 1.0 end',
+)
+
+produce_graph(
+    title=str.format('Host CPU Utilization p100 ({})', run_id),
+    jquery='(.tps_report.host_stats.cpu_util_pct.max)',
+    y_label='',
+    y_suffix='%',
+)
+
+produce_graph(
+    title=str.format('Host TCP Mem Used MB p100 ({})', run_id),
+    jquery='(.tps_report.sock_stats.tcp_mem_used_kb.max / 1024)',
+    y_label='MB',
+)
+
+produce_graph(
+    title=str.format('Host TCP Mem Used Pct p100 ({})', run_id),
+    jquery='(.tps_report.sock_stats.tcp_mem_used_pct.max)',
+    y_label='',
+    y_suffix='%',
+)
+
+produce_graph(
+    title=str.format('tcp-tester CPU Utilization ({})', run_id),
+    jquery='(.tps_report.tcp_tester_process.cpu_util_pct.max)',
+    y_label='',
+    y_suffix='%',
+)
+
+produce_graph(
+    title=str.format('Sockets processed per sec avg ({})', run_id),
+    jquery='(.tps_report.agent_reports.socks_new_per_period.avg * (1000 / .tps_report.agent_reports.aggregation_period_ms))',
+    y_label='',
+    y_suffix='',
+)
+
+produce_graph(
+    title=str.format('Sockets in cache p100 ({})', run_id),
+    jquery='.tps_report.agent_reports.sock_cache_len.max',
+    y_label='',
+    y_suffix='',
+)
+
+produce_graph(
+    title=str.format('Max allowed new sockets per sec ({})', run_id),
+    jquery='(.tps_report.agent_reports.max_bpf_map_entries.sk_props * (1000 / .tps_report.agent_reports.aggregation_period_ms))',
+    y_label='',
+    y_suffix='',
+)
+
+produce_graph(
+    title=str.format('New socket sampling interval avg ({})', run_id),
+    jquery='.tps_report.agent_reports.sampling_interval.avg',
+    y_label='',
+    y_suffix='',
+)
+
+produce_graph(
+    title=str.format('CPUs per socket avg ({})', run_id),
+    jquery='.tps_report.agent_reports.cpus_per_sock.avg',
+    y_label='',
+    y_suffix='',
+)
+
+# Event counters per second
+produce_graph(
+    title=str.format('Active Connect Events per sec ({})', run_id),
+    jquery='.tps_report.agent_reports.event_counters_per_sec.active_connect_events',
+    y_label='events/sec',
+)
+
+produce_graph(
+    title=str.format('Active Established Events per sec ({})', run_id),
+    jquery='.tps_report.agent_reports.event_counters_per_sec.active_established_events',
+    y_label='events/sec',
+)
+
+produce_graph(
+    title=str.format('Passive Established Events per sec ({})', run_id),
+    jquery='.tps_report.agent_reports.event_counters_per_sec.passive_established_events',
+    y_label='events/sec',
+)
+
+produce_graph(
+    title=str.format('State Change Events per sec ({})', run_id),
+    jquery='.tps_report.agent_reports.event_counters_per_sec.state_change_events',
+    y_label='events/sec',
+)
+
+produce_graph(
+    title=str.format('RTT Events per sec ({})', run_id),
+    jquery='.tps_report.agent_reports.event_counters_per_sec.rtt_events',
+    y_label='events/sec',
+)
+
+produce_graph(
+    title=str.format('Retrans Events per sec ({})', run_id),
+    jquery='.tps_report.agent_reports.event_counters_per_sec.retrans_events',
+    y_label='events/sec',
+)
+
+produce_graph(
+    title=str.format('RTO Events per sec ({})', run_id),
+    jquery='.tps_report.agent_reports.event_counters_per_sec.rto_events',
+    y_label='events/sec',
+)
+
+produce_graph(
+    title=str.format('Other Events per sec ({})', run_id),
+    jquery='.tps_report.agent_reports.event_counters_per_sec.other_events',
+    y_label='events/sec',
+)
+
+produce_graph(
+    title=str.format('Socket Events per sec ({})', run_id),
+    jquery='.tps_report.agent_reports.event_counters_per_sec.socket_events',
+    y_label='events/sec',
+)
+
+produce_graph(
+    title=str.format('Invalid Sockets per sec ({})', run_id),
+    jquery='.tps_report.agent_reports.event_counters_per_sec.sockets_invalid',
+    y_label='errors/sec',
+)
+
+produce_graph(
+    title=str.format('Map Insertion Errors per sec ({})', run_id),
+    jquery='.tps_report.agent_reports.event_counters_per_sec.map_insertion_errors',
+    y_label='errors/sec',
+)
+
+produce_graph(
+    title=str.format('Props Insertion Errors per sec ({})', run_id),
+    jquery='.tps_report.agent_reports.event_counters_per_sec.props_insertion_errors',
+    y_label='errors/sec',
+)
+
+produce_graph(
+    title=str.format('Stats Insertion Errors per sec ({})', run_id),
+    jquery='.tps_report.agent_reports.event_counters_per_sec.stats_insertion_errors',
+    y_label='errors/sec',
+)
+
+produce_graph(
+    title=str.format('Invalid RTTs per sec ({})', run_id),
+    jquery='.tps_report.agent_reports.event_counters_per_sec.rtts_invalid',
+    y_label='errors/sec',
+)
+
+produce_graph(
+    title=str.format('Set Flags Errors per sec ({})', run_id),
+    jquery='.tps_report.agent_reports.event_counters_per_sec.set_flags_errors',
+    y_label='errors/sec',
+)
+
+# Process counters per second
+produce_graph(
+    title=str.format('Sockets Added per sec ({})', run_id),
+    jquery='.tps_report.agent_reports.process_counters_per_sec.sockets_added',
+    y_label='sockets/sec',
+)
+
+produce_graph(
+    title=str.format('Socket Deltas Completed per sec ({})', run_id),
+    jquery='.tps_report.agent_reports.process_counters_per_sec.socket_deltas_completed',
+    y_label='deltas/sec',
+)
+
+produce_graph(
+    title=str.format('Socket Aggregations per sec ({})', run_id),
+    jquery='.tps_report.agent_reports.process_counters_per_sec.socket_agg_completed',
+    y_label='aggregations/sec',
+)
+
+produce_graph(
+    title=str.format('Socket Evictions per sec ({})', run_id),
+    jquery='.tps_report.agent_reports.process_counters_per_sec.socket_eviction_completed',
+    y_label='evictions/sec',
+)
+
+produce_graph(
+    title=str.format('NAT Sockets per sec ({})', run_id),
+    jquery='.tps_report.agent_reports.process_counters_per_sec.sockets_natd',
+    y_label='sockets/sec',
+)
+
+produce_graph(
+    title=str.format('Stale Sockets per sec ({})', run_id),
+    jquery='.tps_report.agent_reports.process_counters_per_sec.sockets_stale',
+    y_label='sockets/sec',
+)
+
+produce_graph(
+    title=str.format('Socket Deltas Missing Props per sec ({})', run_id),
+    jquery='.tps_report.agent_reports.process_counters_per_sec.socket_deltas_missing_props',
+    y_label='deltas/sec',
+)
+
+produce_graph(
+    title=str.format('Socket Deltas Above Limit per sec ({})', run_id),
+    jquery='.tps_report.agent_reports.process_counters_per_sec.socket_deltas_above_limit',
+    y_label='deltas/sec',
+)
+
+produce_graph(
+    title=str.format('Socket Agg Missing Props per sec ({})', run_id),
+    jquery='.tps_report.agent_reports.process_counters_per_sec.socket_agg_missing_props',
+    y_label='aggregations/sec',
+)
+
+produce_graph(
+    title=str.format('Socket Agg Above Limit per sec ({})', run_id),
+    jquery='.tps_report.agent_reports.process_counters_per_sec.socket_agg_above_limit',
+    y_label='aggregations/sec',
+)
+
+produce_graph(
+    title=str.format('Socket Eviction Failed per sec ({})', run_id),
+    jquery='.tps_report.agent_reports.process_counters_per_sec.socket_eviction_failed',
+    y_label='failures/sec',
+)
+
+print('Done!')

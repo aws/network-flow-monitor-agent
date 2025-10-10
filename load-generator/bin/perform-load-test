@@ -1,0 +1,76 @@
+#!/bin/bash
+
+# Use this script to perform a load test between client and server endpoints on
+# the current host. This script starts the tcp-tester application at your
+# desired rate of TPS, starts the network-flow-monitor-agent, and records multiple
+# measurements across the host. Measurements include CPU utilization per BPF
+# program, per user-space process, host-wide, as well as memory utilization and
+# network stats.
+
+set -o errexit
+set -o pipefail
+set -o nounset
+
+# Explicitly set PATH to include common binary locations
+source bin/set-env-vars
+log "PATH is set to: $PATH"
+log "Current working directory is" $(pwd)
+which bpftool || handle_error "bpftool not found in PATH: $PATH"
+which bpftop || handle_error "bpftop not found in PATH: $PATH"
+
+help_msg=$(cat <<EOF
+Runs a load test on the current host and records results
+Usage: $0 <TPS> <region> <duration-secs> [flamegraph]
+Example:
+    $0 5000 us-west-2 300
+EOF
+)
+
+if [[ $# -lt 4 || "$1" == "--help" || "$1" == "-h" ]]; then
+    log "$help_msg"
+    exit 0
+fi
+
+tps=$1
+delay_ms=$2
+region=$3
+duration_sec=$4
+flamegraph_option="${5:-}"
+
+handle_stuff_running_error() {
+    printf "[ERROR] A prior load test appears to be running: pgrep -fl '$1'\n"
+    exit 1
+}
+
+# Ensure a prior test isn't running, which would pollute results.
+proc_name_pattern='bpftool|bpftop|mpstat|pidstat|poll-|network-flow-monitor-agent|tcp-tester'
+
+pgrep -fl "$proc_name_pattern" && handle_stuff_running_error "$proc_name_pattern"
+
+cleanup() {
+    log "Exiting perform-load-test"
+    # Kill specific background processes instead of all child processes
+    pkill -f $proc_name_pattern 2>/dev/null || true
+}
+trap cleanup EXIT
+
+mkdir -p results
+
+output_dir="results/$tps"
+mkdir $output_dir || { log "❌ Intentionally failing as the output dir already exists, so as not to conflate results with a prior load test"; exit 1; }
+log "Writing results to $output_dir"
+
+bin/start-tcp-tester 8080 $tps $delay_ms &
+sleep 1
+
+log "Executing agent-related tasks..."
+bin/start-agent $tps $region $flamegraph_option &
+sleep 1
+
+bin/start-monitoring $tps &
+
+inst_type=`ec2-metadata -t`
+log "Running load test for $duration_sec seconds at $tps TPS on $inst_type"
+sleep $duration_sec
+
+bin/stop-load-test

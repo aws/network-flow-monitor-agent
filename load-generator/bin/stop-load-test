@@ -1,0 +1,9 @@
+#!/bin/bash
+
+# Send a SIGINT to the NFM agent, allowing flamegraph to write out its image.
+printf "Sending SIGINT to NFM agent\n"
+pkill -2 -f network-flow-monitor-agent || true
+
+printf "Sending SIGTERM to all other processes\n"
+# Send a SIGTERM to all other processes associated with our load test.
+pkill -15 -f 'bpftool|bpftop|mpstat|pidstat|poll-|tcp-tester' || true
