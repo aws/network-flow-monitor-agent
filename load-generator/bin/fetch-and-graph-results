@@ -1,0 +1,113 @@
+#!/bin/bash
+
+set -o errexit
+set -o pipefail
+set -o nounset
+
+source bin/set-env-vars
+
+show_help() {
+    echo -e "[O]ptional parameters exists:
+        [O] graph-title: this will be appended to all graphs as title
+    $CYAN ./fetch-and-graph-results --graph_title='v1.1' $NC"
+    exit 1
+}
+
+graph_title=""
+help=""
+# Loop through arguments to get users input parameters
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --graph-title=*) graph_title="${1#*=}" ;;
+        --graph-title) graph_title="$2"; shift ;;
+        --help) help="true" ;;
+   esac
+   shift
+done
+
+if [[ $help == "true" ]]; then
+    show_help
+fi
+
+# Fetch results from the fleet of hosts.
+bin/run-ssm-command "cd /usr/tmp && mkdir -p rar && tar -C results -czf rar/\$(ec2-metadata --instance-type | cut -d' ' -f2)-results-${graph_title}.tgz ."
+
+local_dir="results-${graph_title}"
+mkdir -p $local_dir
+bin/download-from-remote "/usr/tmp/rar/*" "${local_dir}/" # only retrieve what we have just created, ignore other results
+
+# Unpack the results which are now local.
+cd $local_dir
+ls *.tgz | sed 's/\.tgz$//' | sed 's/-results/\/results/' | xargs -I{} mkdir -p {}
+for f in `ls *.tgz`
+do 
+    tar -xzf $f -C `echo $f | sed 's/\.tgz$//' | sed 's/-results/\/results/'`
+done
+
+# Generate a TPS report for each host and TPS rate.
+cd -
+# Deduct host types from folder names
+instance_types=`ls -l $local_dir | awk '$1 ~ "d.*" && $NF != "graphs" {print $NF}' | paste -sd,`
+tps_steps=""
+
+for inst_type in ${instance_types//,/ }
+do
+    for test_name in `ls $local_dir/$inst_type`
+    do
+        # infer tps steps from folder names that are populated in remote host
+        if [[ -z $tps_steps ]]; then
+            tps_steps=$(ls -l $local_dir/$inst_type/$test_name | awk '$1 ~ /^d/ {print $NF}' | sort -n | paste -sd,)
+            echo -e "\n$GREEN Inferring tps_steps from folders as $tps_steps.$NC\n"
+        fi
+        for tps in `ls $local_dir/$inst_type/$test_name`
+        do
+            log "Processing TPS $tps for $inst_type/$test_name"
+            ls -la "$local_dir/$inst_type/$test_name/$tps" || echo "Directory does not exist"
+
+            # Check for required files and their sizes
+            test_dir="$local_dir/$inst_type/$test_name/$tps"
+            required_files=("bpfstats" "agent" "process" "hostcpu" "network" "bpfcpu")
+            missing_files=()
+            empty_files=()
+
+            for file_type in "${required_files[@]}"; do
+                file_pattern="$test_dir/*-$file_type"
+                if ! ls $file_pattern >/dev/null 2>&1; then
+                    missing_files+=("$file_type")
+                else
+                    for file in $file_pattern; do
+                        if [[ ! -s "$file" ]]; then
+                            empty_files+=("$(basename "$file")")
+                        fi
+                    done
+                fi
+            done
+
+            if [[ ${#missing_files[@]} -gt 0 ]]; then
+                log "ERROR: Missing required files: ${missing_files[*]}. Skipping TPS report generation for $inst_type/$test_name/$tps"
+                continue
+            fi
+
+            if [[ ${#empty_files[@]} -gt 0 ]]; then
+                log "ERROR: Empty files detected: ${empty_files[*]}. This indicates monitoring processes failed to collect data"
+                log "Skipping TPS report generation for $inst_type/$test_name/$tps"
+                continue
+            fi
+
+            log "DEBUG: All required files present and non-empty, generating TPS report"
+            if ! bin/generate-tps-report $local_dir/$inst_type/$test_name $tps > $local_dir/${test_name}_${inst_type}_${tps}_tps-report.json; then
+                log "ERROR: generate-tps-report failed for $inst_type/$test_name/$tps. Check the generated report file for details"
+                cat $local_dir/${test_name}_${inst_type}_${tps}_tps-report.json 2>/dev/null || echo "No report file generated"
+            fi
+        done
+    done
+done
+
+# Generate the set of graphs that depict all results.
+mkdir -p $local_dir/graphs
+bin/generate-graph-set \
+    --tps-report-dir $local_dir \
+    --test-run-id $graph_title \
+    --output-dir $local_dir/graphs \
+    --instance-types $instance_types \
+    --tps-values $tps_steps

@@ -1,0 +1,331 @@
+#!/bin/bash
+
+set -o errexit
+set -o pipefail
+set -o nounset
+
+# This script is intended to be able to generate a TPS report from the results
+# of a load test that has been run on a different machine.  Hence, this script
+# must make no assumptions based on the environment of the local machine – all
+# inputs into TPS report generation must come only the supplied results
+# directory.
+
+results_dir=$1
+tps=$2
+dir="$results_dir/$tps"
+
+# Prints the min, max, and avg across all numbers read from stdin.
+compute_stats() {
+    sort -n \
+    | awk '
+    BEGIN {
+        sum=0;
+    }
+    {
+        val = $1;
+        sum += val;
+        sorted_list[NR - 1] = val;
+    }
+    END {
+        count = length(sorted_list);
+        if (count == 0) {
+            printf "[ERROR] No records found in `compute_stats`";
+            exit 1;
+        }
+        p90_index = int((count - 1) * 0.9);
+        p95_index = int((count - 1) * 0.95);
+
+        min = sorted_list[0];
+        avg = sum / count;
+        p90 = sorted_list[p90_index];
+        p95 = sorted_list[p95_index];
+        max = sorted_list[count - 1];
+
+        printf "\"min\":%.3f,\"avg\":%.3f,\"p90\":%.3f,\"p95\":%.3f,\"max\":%.3f",
+            min, avg, p90, p95, max;
+    }'
+}
+
+# Prints an explanatory grep error message and exits the application.
+handle_grep_error() {
+    sought=$1
+    file_suffix=$2
+    section="${3:-}"
+    if [ -n "$section" ]; then
+        section="for $section"
+    fi
+
+    printf "\n\n[ERROR] Failed to find records via: grep $sought $dir/*-$file_suffix $section\n"
+    exit 1
+}
+
+num_cpus=$(grep num_cpus $dir/*-bpfstats | jq -r '.num_cpus' | tr -d '\n') || handle_grep_error num_cpus bpfstats
+
+# Detect column index for %CPU in process stats. Skip # at the start.
+cpu_col=$(grep -m 1 "^#" $dir/*-process | awk '{ for(i=1;i<=NF;i++) if($i=="%CPU") print i-1}')
+vsz_col=$(grep -m 1 "^#" $dir/*-process | awk '{ for(i=1;i<=NF;i++) if($i=="VSZ") print i-1}')
+rss_col=$(grep -m 1 "^#" $dir/*-process | awk '{ for(i=1;i<=NF;i++) if($i=="RSS") print i-1}')
+
+# Prints a JSON TPS report.
+printf '{"tps_report":{"target_tps":'$tps','
+    printf '"cpu_cores":'$num_cpus','
+    printf '"sonar_bpf_program":{'
+	printf '"run_count":'
+	if ! grep run_cnt $dir/*-bpfstats | tail -1 | jq -r '.run_cnt' | tr -d '\n'; then
+	    handle_grep_error run_cnt bpfstats
+        fi
+	printf ','
+
+	printf '"runtime_us":'
+	if ! grep runtime_ns $dir/*-bpfstats | tail -1 | jq -r '(.runtime_ns / 1000) | round' | tr -d '\n'; then
+	    handle_grep_error runtime_ns bpfstats
+        fi
+	printf ','
+
+        printf '"cpu_util_pct":{'
+        if ! grep nfm_sock_ops $dir/*-bpfcpu | awk '{print $8/'$num_cpus'}' | compute_stats; then
+            handle_grep_error nfm_sock_ops bpfcpu
+        fi
+        printf '},'
+
+        printf '"resident_mem_kb":'
+        if ! grep mem_kb $dir/*-bpfstats | jq -Mc '.mem_kb' | tr -d '\n'; then
+	    handle_grep_error mem_kb bpfstats
+        fi
+    printf '},'
+
+    printf '"host_stats":{'
+	printf '"cpu_util_pct":{'
+        if ! grep all $dir/*-hostcpu | awk '$2 == "all" {print (100 - $12)}' | compute_stats; then
+	    handle_grep_error all hostcpu
+        fi
+        printf '}'
+    printf '},'
+
+    printf '"sock_stats":{'
+        page_size_kb=$(grep tcp_mem_pages $dir/*-network | jq '.tcp_mem_pages.size_kb')
+	printf '"tcp_mem_used_kb":{'
+	if ! grep 'TCP:' $dir/*-network | awk '$10 == "mem" {print $11 * '$page_size_kb'}' | compute_stats; then
+	    handle_grep_error tcp_mem network
+        fi
+	printf '},'
+
+        tcp_page_limit=$(grep tcp_mem_pages $dir/*-network | jq '.tcp_mem_pages.limit')
+	printf '"tcp_mem_used_pct":{'
+        if ! grep 'TCP:' $dir/*-network | awk '$10 == "mem" {printf "%3f\n", ($11 / '$tcp_page_limit' * 100)}' | compute_stats; then
+	    handle_grep_error tcp_mem network
+        fi
+	printf '}'
+    printf '},'
+
+    printf '"tcp_tester_process":{'
+        printf '"cpu_util_pct":{'
+        # Note that a tcp-tester processes runs on each CPU, so we'll need to
+        # sum across all instances here, resetting the sum after each header
+        # line (which begins with a "#").
+        if ! grep -P '#|tcp-tester' $dir/*-process \
+            | awk '{ \
+                if ($1 == "#") { \
+                    if (cpu > 0) {print cpu;} \
+                    cpu = 0; \
+                } else { \
+                    cpu += $'$cpu_col' \
+                } \
+            } \
+            END {print cpu}' \
+            | compute_stats; then
+            handle_grep_error tcp-tester process
+        fi
+        printf '}'
+    printf '},'
+
+    printf '"sonar_agent_process":{'
+        printf '"cpu_util_pct":{'
+        if ! grep 'network-flow' $dir/*-process | awk '{print $'$cpu_col'}' | compute_stats; then
+            handle_grep_error network-flow-monitor-agent process
+        fi
+        printf '},'
+
+        printf '"resident_mem_kb":{'
+        if ! grep 'network-flow' $dir/*-process | awk '{print $'$rss_col'}' | compute_stats; then
+            handle_grep_error network-flow-monitor-agent process
+        fi
+        printf '},'
+
+        printf '"virtual_mem_kb":{'
+        if ! grep 'network-flow' $dir/*-process | awk '{print $'$vsz_col'}' | compute_stats; then
+            handle_grep_error network-flow-monitor-agent process
+        fi
+        printf '}'
+    printf '},'
+
+    printf '"agent_reports":{'
+        printf '"publish_periods":'
+        if ! grep -c Publish $dir/*-agent | tr -d '\n'; then
+            handle_grep_error Publish agent publish_periods
+        fi
+        printf ','
+
+        printf '"aggregation_period_ms":'
+        if ! grep 'Starting up' $dir/*-agent | jq '.args.aggregate_msecs' | tr -d '\n'; then
+            handle_grep_error 'Starting up' agent aggregation_period_ms
+        fi
+        printf ','
+
+        printf '"cpu_util_pct":{'
+        if ! grep Publish $dir/*-agent | grep usage | jq '.report.process_stats.usage[].cpu_util * 100' | compute_stats; then
+            handle_grep_error Publish agent cpu_util
+        fi
+        printf '},'
+
+        printf '"mem_util_pct":{'
+        if ! grep Publish $dir/*-agent | grep usage | jq '.report.process_stats.usage[].mem_used_ratio * 100' | compute_stats; then
+            handle_grep_error Publish agent mem_util
+        fi
+        printf '},'
+
+        printf '"mem_used_kb":{'
+        if ! grep Publish $dir/*-agent | grep usage | jq '.report.process_stats.usage[].mem_used_kb' | compute_stats; then
+            handle_grep_error Publish agent mem_used_kb
+        fi
+        printf '},'
+
+        printf '"max_bpf_map_entries":{'
+            printf '"sk_props":'
+            if ! grep sock_props_max_entries $dir/*-agent | jq '.sock_props_max_entries' | head -n 1 | tr -d '\n'; then
+                handle_grep_error sock_props_max_entries agent
+            fi
+
+            printf ',"sk_stats":'
+            if ! grep sock_stats_max_entries $dir/*-agent | jq '.sock_stats_max_entries' | head -n 1 | tr -d '\n'; then
+                handle_grep_error sock_props_max_entries agent
+            fi
+        printf '},'
+
+        printf '"map_insertion_errors":{'
+        if ! grep Publish $dir/*-agent | jq '.report.process_stats.counters.event_related.map_insertion_errors' | compute_stats; then
+            handle_grep_error Publish agent map_insertion_errors
+        fi
+        printf '},'
+
+        printf '"sampling_interval":{'
+        if ! grep 'Aggregation complete' $dir/*-agent | jq '.control_data.sampling_interval' | compute_stats; then
+            handle_grep_error 'Aggregation complete' agent sampling_interval
+        fi
+        printf '},'
+
+        printf '"flows_per_publish":{'
+        if ! grep Publish $dir/*-agent | jq '.report.network_stats | length' | compute_stats; then
+            handle_grep_error Publish agent flows_per_publish
+        fi
+        printf '},'
+
+        printf '"socks_new_per_period":{'
+        if ! grep 'Aggregation complete' $dir/*-agent | jq '.sock_add_result.completed' | compute_stats; then
+            handle_grep_error 'Aggregation complete' agent socks_new_per_period
+        fi
+        printf '},'
+
+        printf '"sock_cache_len":{'
+        if ! grep 'Aggregation complete' $dir/*-agent | jq '.sock_cache_len' | compute_stats; then
+            handle_grep_error 'Aggregation complete' agent sock_cache_len
+        fi
+        printf '},'
+
+        printf '"cpus_per_sock":{'
+        if ! grep 'Aggregation complete' $dir/*-agent | jq '.cpus_per_sock_avg' | compute_stats; then
+            handle_grep_error 'Aggregation complete' agent cpus_per_sock
+        fi
+        printf '},'
+
+        printf '"socks_per_flow":{'
+        if ! grep Publish $dir/*-agent | jq 'if has(".report.network_stats") then .report.network_stats[].stats.sockets_total else 0 end' | compute_stats; then
+            handle_grep_error Publish agent socks_per_flow
+        fi
+        printf '},'
+
+	printf '"aggregation_completion_ms":{'
+	if ! grep -P 'Aggregating across sockets|Aggregation complete' $dir/*-agent  | jq '.timestamp' | paste - - | awk '$2 > $1 {print ($2 - $1)}' | compute_stats; then
+            handle_grep_error 'Aggregating across sockets|Aggregation complete' aggregation_ms
+	fi
+	printf '},'
+
+	printf '"publish_completion_ms":{'
+	if ! grep -P 'Publish|HTTP request complete' $dir/*-agent  | jq '.timestamp' | paste - - | awk '$2 > $1 {print ($2 - $1)}' | compute_stats; then
+            handle_grep_error 'Publish|HTTP request complete' aggregation_ms
+	fi
+	printf '},'
+        # Print event/process counters as per second metrics
+        first_ts=$(grep -o '"timestamp":[0-9]*' $dir/*-agent | head -1 | cut -d: -f2) || true
+        last_ts=$(grep -o '"timestamp":[0-9]*' $dir/*-agent | tail -1 | cut -d: -f2) || true
+        last_counters=$(grep 'event_related' $dir/*-agent | tail -1 | jq '.report.process_stats.counters // .counters // empty' 2>/dev/null) || true
+
+        if [ -n "$first_ts" ] && [ -n "$last_ts" ] && [ -n "$last_counters" ]; then
+            time_delta_sec=$(awk "BEGIN {printf \"%.3f\", ($last_ts - $first_ts) / 1000}")
+
+            printf '"event_counters_per_sec":{'
+            printf '"active_connect_events":'
+            echo "$last_counters" | jq -r ".event_related.active_connect_events / $time_delta_sec" | tr -d '\n'
+            printf ',"active_established_events":'
+            echo "$last_counters" | jq -r ".event_related.active_established_events / $time_delta_sec" | tr -d '\n'
+            printf ',"passive_established_events":'
+            echo "$last_counters" | jq -r ".event_related.passive_established_events / $time_delta_sec" | tr -d '\n'
+            printf ',"state_change_events":'
+            echo "$last_counters" | jq -r ".event_related.state_change_events / $time_delta_sec" | tr -d '\n'
+            printf ',"rtt_events":'
+            echo "$last_counters" | jq -r ".event_related.rtt_events / $time_delta_sec" | tr -d '\n'
+            printf ',"retrans_events":'
+            echo "$last_counters" | jq -r ".event_related.retrans_events / $time_delta_sec" | tr -d '\n'
+            printf ',"rto_events":'
+            echo "$last_counters" | jq -r ".event_related.rto_events / $time_delta_sec" | tr -d '\n'
+            printf ',"other_events":'
+            echo "$last_counters" | jq -r ".event_related.other_events / $time_delta_sec" | tr -d '\n'
+            printf ',"socket_events":'
+            echo "$last_counters" | jq -r ".event_related.socket_events / $time_delta_sec" | tr -d '\n'
+            printf ',"sockets_invalid":'
+            echo "$last_counters" | jq -r ".event_related.sockets_invalid / $time_delta_sec" | tr -d '\n'
+            printf ',"map_insertion_errors":'
+            echo "$last_counters" | jq -r "(.event_related.map_insertion_errors // 0) / $time_delta_sec" | tr -d '\n'
+            printf ',"props_insertion_errors":'
+            echo "$last_counters" | jq -r "(.event_related.props_insertion_errors // 0) / $time_delta_sec" | tr -d '\n'
+            printf ',"stats_insertion_errors":'
+            echo "$last_counters" | jq -r "(.event_related.stats_insertion_errors // 0) / $time_delta_sec" | tr -d '\n'
+            printf ',"rtts_invalid":'
+            echo "$last_counters" | jq -r ".event_related.rtts_invalid / $time_delta_sec" | tr -d '\n'
+            printf ',"set_flags_errors":'
+            echo "$last_counters" | jq -r ".event_related.set_flags_errors / $time_delta_sec" | tr -d '\n'
+            printf '},'
+
+            printf '"process_counters_per_sec":{'
+            printf '"sockets_added":'
+            echo "$last_counters" | jq -r ".process_related.sockets_added / $time_delta_sec" | tr -d '\n'
+            printf ',"socket_deltas_completed":'
+            echo "$last_counters" | jq -r ".process_related.socket_deltas_completed / $time_delta_sec" | tr -d '\n'
+            printf ',"socket_agg_completed":'
+            echo "$last_counters" | jq -r ".process_related.socket_agg_completed / $time_delta_sec" | tr -d '\n'
+            printf ',"socket_eviction_completed":'
+            echo "$last_counters" | jq -r ".process_related.socket_eviction_completed / $time_delta_sec" | tr -d '\n'
+            printf ',"sockets_natd":'
+            echo "$last_counters" | jq -r ".process_related.sockets_natd / $time_delta_sec" | tr -d '\n'
+            printf ',"sockets_stale":'
+            echo "$last_counters" | jq -r ".process_related.sockets_stale / $time_delta_sec" | tr -d '\n'
+            printf ',"socket_deltas_completed":'
+            echo "$last_counters" | jq -r ".process_related.socket_deltas_completed / $time_delta_sec" | tr -d '\n'
+            printf ',"socket_deltas_missing_props":'
+            echo "$last_counters" | jq -r ".process_related.socket_deltas_missing_props / $time_delta_sec" | tr -d '\n'
+            printf ',"socket_deltas_above_limit":'
+            echo "$last_counters" | jq -r ".process_related.socket_deltas_above_limit / $time_delta_sec" | tr -d '\n'
+            printf ',"socket_agg_completed":'
+            echo "$last_counters" | jq -r ".process_related.socket_agg_completed / $time_delta_sec" | tr -d '\n'
+            printf ',"socket_agg_missing_props":'
+            echo "$last_counters" | jq -r ".process_related.socket_agg_missing_props / $time_delta_sec" | tr -d '\n'
+            printf ',"socket_agg_above_limit":'
+            echo "$last_counters" | jq -r ".process_related.socket_agg_above_limit / $time_delta_sec" | tr -d '\n'
+            printf ',"socket_eviction_completed":'
+            echo "$last_counters" | jq -r ".process_related.socket_eviction_completed / $time_delta_sec" | tr -d '\n'
+            printf ',"socket_eviction_failed":'
+            echo "$last_counters" | jq -r ".process_related.socket_eviction_failed / $time_delta_sec" | tr -d '\n'
+            printf '}'
+        fi
+    printf '}'
+printf '}}\n'

@@ -133,33 +133,33 @@ impl GenericReportVerifier {
     fn verify_usage_stats(&self, usage_stats: &UsageStats) -> bool {
         let mut result = true;
         check!(
-            usage_stats.cpu_util > 0.0 && usage_stats.cpu_util < 20.0,
+            usage_stats.cpu_util > 0.0 && usage_stats.cpu_util < 2.0,
             println!(
-                "WARN: cpu_util {} not in range (0.0, 20.0)",
+                "WARN: cpu_util {} not in range (0.0, 2.0)",
                 usage_stats.cpu_util
             ),
             result
         );
         check!(
-            usage_stats.mem_used_kb > 0 && usage_stats.mem_used_kb < 50_000,
+            usage_stats.mem_used_kb > 0 && usage_stats.mem_used_kb < 30_000,
             println!(
-                "WARN: mem_used_kb {} not in range (0, 50000)",
+                "WARN: mem_used_kb {} not in range (0, 30000)",
                 usage_stats.mem_used_kb
             ),
             result
         );
         check!(
-            usage_stats.mem_used_ratio > 0.0 && usage_stats.mem_used_ratio < 10.0,
+            usage_stats.mem_used_ratio > 0.0 && usage_stats.mem_used_ratio < 2.0,
             println!(
-                "WARN: mem_used_ratio {} not in range (0.0, 10.0)",
+                "WARN: mem_used_ratio {} not in range (0.0, 2.0)",
                 usage_stats.mem_used_ratio
             ),
             result
         );
         check!(
-            usage_stats.ebpf_allocated_mem_kb > 0 && usage_stats.ebpf_allocated_mem_kb < 20_000,
+            usage_stats.ebpf_allocated_mem_kb > 0 && usage_stats.ebpf_allocated_mem_kb < 10_000,
             println!(
-                "WARN: ebpf_allocated_mem_kb {} not in range (0, 20000)",
+                "WARN: ebpf_allocated_mem_kb {} not in range (0, 10000)",
                 usage_stats.ebpf_allocated_mem_kb
             ),
             result

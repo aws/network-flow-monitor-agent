@@ -1,0 +1,25 @@
+[package]
+name = "tcp-tester-common"
+version = "0.1.0"
+edition = "2021"
+homepage = "https://code.amazon.com/packages/NetworkSonarMonitoringAgentTools"
+repository = "ssh://git.amazon.com/pkg/NetworkSonarMonitoringAgentTools"
+publish = false
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+
+# Only include aya as a dependency when building for userspace
+aya = { package = "aya", version = "0.13", optional = true }
+serde = { version = "*", features = ["derive"], optional = true }
+
+
+[features]
+default=[]
+bpf=[]
+user=["dep:aya", "dep:serde"]
+
+[lib]
+path = "src/lib.rs"
+

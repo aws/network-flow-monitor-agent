@@ -1,0 +1,13 @@
+{
+  "selector": {
+    "data_offset_min": 0,
+    "data_offset_max": 0,
+    "flags": 0
+  },
+  "conditioner": {
+    "DropPacket": {
+      "count": 1,
+      "range": 0
+    }
+  }
+}

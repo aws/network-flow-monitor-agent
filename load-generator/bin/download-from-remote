@@ -1,0 +1,76 @@
+#!/bin/bash
+
+set -o errexit
+set -o pipefail
+set -o nounset
+
+help_msg=$(cat <<EOF
+Downloads files from instances via SSM and S3
+Usage: $0 <remote_file_path> [local_file_name]
+Examples:
+    $0 "/usr/tmp/results/100000/*"
+EOF
+)
+
+if [[ $# -lt 1 || "$1" == "--help" || "$1" == "-h" ]]; then
+    echo "$help_msg"
+    exit 0
+fi
+
+remote_file="$1"
+local_file="${2:-$(basename "$remote_file")}"
+
+# Load the developer's load-test environment variables.
+source bin/set-env-vars
+
+log "Will download $remote_file from instances to $local_file"
+
+for instance_id in $LOAD_TEST_INSTANCE_IDS
+do
+    log "Downloading $remote_file from instance $instance_id\n"
+    # Create a unique S3 key for this transfer
+    s3_key="temp-downloads/${instance_id}/$(date +%s)"
+    # Upload files to S3 from the instance (handle wildcards properly)
+    if [[ "$remote_file" == *"*"* ]]; then
+        # For wildcards, upload the parent directory
+        parent_dir=$(dirname "$remote_file")
+        command_id=$(aws ssm send-command \
+            --instance-ids "$instance_id" \
+            --document-name "AWS-RunShellScript" \
+            --parameters "commands=[\"aws s3 cp $parent_dir s3://$LOAD_TEST_S3_BUCKET/$s3_key --recursive\"]" \
+            --output text --query 'Command.CommandId')
+    else
+        # For single files
+        command_id=$(aws ssm send-command \
+            --instance-ids "$instance_id" \
+            --document-name "AWS-RunShellScript" \
+            --parameters "commands=[\"aws s3 cp $remote_file s3://$LOAD_TEST_S3_BUCKET/$s3_key/$(basename \"$remote_file\")\"]" \
+            --output text --query 'Command.CommandId')
+    fi
+
+    # Wait for upload to complete
+    if ! aws ssm wait command-executed --command-id "$command_id" --instance-id "$instance_id" --no-cli-pager; then
+        echo "Command failed. Getting error details..."
+        aws ssm get-command-invocation \
+            --command-id "$command_id" \
+            --instance-id "$instance_id" \
+            --query '{Status:Status,StdOut:StandardOutputContent,StdErr:StandardErrorContent}' \
+            --output json
+        continue
+    fi
+
+    # Download from S3 to local
+    mkdir -p "$local_file"
+    aws s3 cp "s3://$LOAD_TEST_S3_BUCKET/$s3_key" "$local_file" --recursive|| \
+        echo "Failed to download $remote_file from $instance_id"
+
+    # Clean up S3 temp files
+    log "Cleaning up S3 temp files at s3://$LOAD_TEST_S3_BUCKET/$s3_key"
+    if ! aws s3 rm "s3://$LOAD_TEST_S3_BUCKET/$s3_key" --recursive; then
+        log "Warning: Failed to clean up S3 temp files at s3://$LOAD_TEST_S3_BUCKET/$s3_key"
+    else
+        log "Successfully cleaned up S3 temp files"
+    fi
+
+    log "Downloaded to ${local_file}"
+done

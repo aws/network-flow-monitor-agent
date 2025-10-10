@@ -1,5 +1,4 @@
-ignore:
-  - "verifiers"
+ignore: ["verifiers", "load-generator"]
 coverage:
   status:
     project:
