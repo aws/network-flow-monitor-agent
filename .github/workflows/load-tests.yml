@@ -113,6 +113,9 @@ jobs:
         run: |
           cd load-generator
 
+          # Stash any local changes
+          git stash push -m "Temporary stash for graph upload"
+
           # Create or checkout gh-perf-images branch
           git fetch origin gh-perf-images:gh-perf-images 2>/dev/null || git checkout -b gh-perf-images
           git checkout gh-perf-images
@@ -128,6 +131,10 @@ jobs:
           git add perf-images/pr-${{ github.event.number }}/
           git commit -m "Add performance graphs for PR #${{ github.event.number }}"
           git push origin gh-perf-images
+
+          # Switch back to original branch and restore stash
+          git checkout ${{ github.head_ref }}
+          git stash pop || true
 
       - name: Comment PR with performance results
         if: steps.aws-creds.outcome == 'success' && github.event_name == 'pull_request'
