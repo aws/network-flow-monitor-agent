@@ -44,10 +44,6 @@ if [[ ! -d "$current_dir" ]]; then
     exit 1
 fi
 
-if [[ ! -d "$baseline_dir" ]]; then
-    log "ERROR: Baseline directory '$baseline_dir' does not exist"
-    exit 1
-fi
 
 # Function to extract metric value from JSON report
 get_metric() {

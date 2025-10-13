@@ -68,7 +68,7 @@ trap cleanup EXIT
 log "${CYAN}Uploading $test_bundle_name test artifact to S3...${NC}"
 bin/upload-to-s3 "$test_bundle_name" "scripts/$test_bundle_name"
 
-log "${CYAN}Downloading artifacts and setting up test environment...${NC}"
+log "${CYAN}Downloading and unpacking artifacts...${NC}"
 bin/run-ssm-command async "
 sudo rm -rf /usr/tmp/results &&
 sudo rm -rf /usr/tmp/*.tgz &&
@@ -79,13 +79,15 @@ tar -xzf $test_bundle_name --directory bin &&
 sudo mv bin/bpftop /usr/local/sbin 2>/dev/null || true &&
 sudo mv bin/network-flow-monitor-agent /usr/local/sbin &&
 sudo mv bin/tcp-tester /usr/local/sbin &&
-rm $test_bundle_name &&
-sudo --preserve-env bin/prepare-environment"
+rm $test_bundle_name"
+
+log "${CYAN}Setting up environment and Installing test dependencies...${NC}"
+bin/run-ssm-command async "cd /usr/tmp && sudo --preserve-env bin/prepare-environment"
 
 log "${CYAN}Running load test suite...${NC}"
 bin/run-load-test-suite \
     --region $region \
-    --duration_sec 30
+    --duration_sec 240
 
 log "${CYAN}Fetching and generating results...${NC}"
 bin/fetch-and-graph-results --graph-title $graph_identifier
