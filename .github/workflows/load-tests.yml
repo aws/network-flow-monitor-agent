@@ -12,6 +12,7 @@ jobs:
     permissions:
       id-token: write   # This is required for requesting the JWT
       contents: read    # This is required for actions/checkout
+      pull-requests: write  # This is required for commenting on PRs
     env:
       GRAPH_ID: pr-${{ github.event.number || github.run_id }}
 
@@ -139,7 +140,7 @@ jobs:
               body: comment
             });
 
-      - name: Store baseline reports (main branch only)
+      - name: Store baseline reports
         if: steps.aws-creds.outcome == 'success' && github.ref == 'refs/heads/main'
         run: |
           cd load-generator
