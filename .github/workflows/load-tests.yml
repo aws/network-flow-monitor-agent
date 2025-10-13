@@ -27,10 +27,9 @@ jobs:
       - name: Install Python dependencies
         run: |
           python3 -m pip install --upgrade pip
-          python3 -m pip install sh plotly kaleido
+          python3 -m pip install sh matplotlib
           python3 -c "import sh; print('sh module installed successfully')"
-          python3 -c "import plotly; print('plotly module installed successfully')"
-          python3 -c "import kaleido; print('kaleido module installed successfully')"
+          python3 -c "import matplotlib; print('matplotlib module installed successfully')"
 
       - name: Install Rust
         uses: actions-rs/toolchain@v1
@@ -72,7 +71,7 @@ jobs:
         run: |
           cd load-generator
           chmod +x bin/*
-          bin/create-instances --region ${{ secrets.PR_PERF_TEST_AWS_REGION }}
+          bin/create-instances --region ${{ secrets.PR_PERF_TEST_AWS_REGION }} --instance-role ${{ secrets.PR_PERF_TEST_INSTANCE_ROLE }}
 
       - name: Run Performance tests on EC2 instances
         if: steps.aws-creds.outcome == 'success'

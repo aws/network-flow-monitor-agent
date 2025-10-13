@@ -13,12 +13,15 @@ EOF
 )
 
 instance_types=""
+instance_role=""
 region=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --instance-types=*) instance_types="${1#*=}" ;;
         --instance-types) instance_types="$2"; shift ;;
+        --instance-role=*) instance_role="${1#*=}" ;;
+        --instance-role) instance_role="$2"; shift ;;
         --region=*) region="${1#*=}" ;;
         --region) region="$2"; shift ;;
         --help|-h) echo "$help_msg"; exit 0 ;;
@@ -29,6 +32,11 @@ done
 
 if [[ -z $region ]]; then
     echo "ERROR: region is required as tests are regional"
+    exit 1
+fi
+
+if [[ -z $instance_role ]]; then
+    echo "ERROR: instance_role is required as instances require permissions for SSM"
     exit 1
 fi
 
@@ -71,7 +79,7 @@ do
         --image-id "$ami_id" \
         --count 1 \
         --instance-type "$instance_type" \
-        --iam-instance-profile Name=EC2-SSM-Role \
+        --iam-instance-profile Name=$instance_role \
         --user-data "$user_data" \
         --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=network-flow-monitor-perf-test},{Key=Purpose,Value=performance-testing}]" \
         --query 'Instances[0].InstanceId' \

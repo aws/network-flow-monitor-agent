@@ -22,12 +22,10 @@ uname -r | cut -d. -f1,2 | tr '.' ' ' | awk '{
     } \
 }'
 
-# Setup tc/qdisc for traffic manipulation
-sudo yum install -y iproute-tc
+# Install dependencies.
+log "${BLUE}Installing dependencies iproute-tc bpftool tree sysstat gcc make perf${NC}"
+sudo yum install -y iproute-tc bpftool tree sysstat gcc make perf
 
-# Validate the BPF setup.
-yum install -y bpftool tree
-yum install -y sysstat
 # Explicitly set PATH to include common binary locations
 export PATH=/usr/sbin:/sbin:/usr/local/sbin:$PATH
 log "PATH is set to: $PATH"
@@ -42,15 +40,23 @@ mount | grep cgroup2 | \
     awk '{if ($3 != "/sys/fs/cgroup") {printf "[WARN] Note the atypical cgroup mount point: "$3"\n"}}' \
     || handle_error 'Mounted cgroup2 not found'
 log "✅ Cgroup v2 is OK"
-# Install flamegraph dependencies.
-yum install -y gcc make # Install GCC cause c compiler is required for flamegraph
-log "✅ GCC is installed"
+
+log "Installing Rust"
 curl https://sh.rustup.rs -sSf | sh -s -- -y # Cargo
 source $HOME/.cargo/env # Source the cargo environment
-log "✅ Rust is installed. Installing Perf"
-yum install -y perf
-log "✅ Perf is installed. Installing Flamegraph"
-cargo install flamegraph
+
+# Check available memory before compilation
+available_mem=$(free -m | awk 'NR==2{printf "%.0f", $7}')
+log "Available memory: ${available_mem}MB"
+if [[ $available_mem -lt 1000 ]]; then
+    log "${YELLOW}Low memory detected, using minimal compilation settings${NC}"
+    export CARGO_BUILD_JOBS=1
+    export RUSTFLAGS="-C opt-level=0 -C debuginfo=0"
+    # Clear package cache to free space
+    cargo cache --autoclean 2>/dev/null || true
+fi
+
+cargo install flamegraph --locked
 log "✅ Flamegraph is installed"
 sudo ln -sf $HOME/.cargo/bin/* /usr/local/bin/
 
