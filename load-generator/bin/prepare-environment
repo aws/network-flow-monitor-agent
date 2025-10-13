@@ -22,9 +22,34 @@ uname -r | cut -d. -f1,2 | tr '.' ' ' | awk '{
     } \
 }'
 
-# Install dependencies.
+# Install dependencies with retry logic
 log "${BLUE}Installing dependencies iproute-tc bpftool tree sysstat gcc make perf${NC}"
-sudo yum install -y iproute-tc bpftool tree sysstat gcc make perf
+
+# Wait for any existing yum processes to complete up to 3 minutes
+log "Waiting for yum lock to be available..."
+for i in {1..60}; do
+    if sudo fuser /var/lib/rpm/.rpm.lock 2>/dev/null; then
+        log "Yum lock detected, waiting... (attempt $i/50)"
+        sleep 3
+    else
+        break
+    fi
+done
+
+# Retry yum install with backoff
+for attempt in {1..5}; do
+    log "Installing packages (attempt $attempt/5)..."
+    if sudo yum install -y iproute-tc bpftool tree sysstat gcc make perf; then
+        log "✅ Package installation successful"
+        break
+    else
+        if [[ $attempt -eq 5 ]]; then
+            handle_error "Failed to install packages after 5 attempts"
+        fi
+        log "${YELLOW}Package installation failed, retrying in 3 seconds...${NC}"
+        sleep 3
+    fi
+done
 
 # Explicitly set PATH to include common binary locations
 export PATH=/usr/sbin:/sbin:/usr/local/sbin:$PATH

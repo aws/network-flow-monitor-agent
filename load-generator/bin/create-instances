@@ -52,7 +52,7 @@ source bin/set-env-vars
 user_data=$(cat <<'EOF'
 #!/bin/bash
 yum update -y
-yum install -y amazon-ssm-agent awscli sysstat
+yum install -y amazon-ssm-agent awscli sysstat iproute-tc bpftool tree sysstat gcc make perf
 systemctl enable amazon-ssm-agent
 systemctl start amazon-ssm-agent
 mkdir -p /usr/tmp

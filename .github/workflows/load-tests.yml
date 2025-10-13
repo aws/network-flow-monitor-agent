@@ -108,23 +108,7 @@ jobs:
           bin/compare-performance --current-dir results-${{ env.GRAPH_ID }} --baseline-dir baseline-reports > performance-comparison.md || \
             echo "# Performance Comparison\n\nNo baseline reports available for comparison." > performance-comparison.md
 
-      - name: Commit graphs to PR branch to embed them as comment
-        if: steps.aws-creds.outcome == 'success' && github.event_name == 'pull_request'
-        run: |
-          cd load-generator
-          mkdir -p performance-graphs
-          cp results-${{ env.GRAPH_ID }}/graphs/*.png performance-graphs/
-
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          git add performance-graphs/
-          if git commit -m "Add performance graphs for PR visualization"; then
-            git pull origin ${{ github.head_ref }} --rebase || true
-            git push origin HEAD:${{ github.head_ref }}
-          fi
-
-      - name: Comment PR with performance results
+      - name: Upload graphs and comment PR
         if: steps.aws-creds.outcome == 'success' && github.event_name == 'pull_request'
         uses: actions/github-script@v7
         with:
@@ -144,22 +128,40 @@ jobs:
             let comment = '## 📊 Performance Test Results\n\n';
             comment += `Performance tests completed successfully! Generated ${graphs.length} performance graphs.\n\n`;
 
-            graphs.forEach(graph => {
-              const graphPath = `load-generator/performance-graphs/${graph}`;
-              const graphUrl = `https://github.com/${{ github.repository }}/blob/${{ github.head_ref }}/${graphPath}?raw=true`;
-              const name = graph.replace('.png', '').replace(/-/g, ' ');
-              comment += `### ${name}\n![${name}](${graphUrl})\n\n`;
-            });
-            comment += `\n📎 Download the [performance-results-${{ env.GRAPH_ID }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) artifact for reports.\n\n`;
+            // Upload each graph to GitHub and embed in comment
+            for (const graph of graphs) {
+              const graphPath = `load-generator/results-${graphId}/graphs/${graph}`;
+              const imageBuffer = fs.readFileSync(graphPath);
+              const imageBase64 = imageBuffer.toString('base64');
+
+              try {
+                const response = await github.rest.repos.createOrUpdateFileContents({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  path: `perf-images/pr-${{ github.event.number }}/${graph}`,
+                  message: `Add performance graph: ${graph}`,
+                  content: imageBase64,
+                  branch: 'gh-perf-images'
+                });
+
+                const name = graph.replace('.png', '').replace(/-/g, ' ');
+                comment += `### ${name}\n![${name}](${response.data.content.download_url})\n\n`;
+              } catch (error) {
+                console.log(`Failed to upload ${graph}: ${error.message}`);
+                const name = graph.replace('.png', '').replace(/-/g, ' ');
+                comment += `### ${name}\n_Graph upload failed_\n\n`;
+              }
+            }
+
+            comment += `\n📎 Download the [performance-results-${graphId}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) artifact for reports.\n\n`;
             comment += comparison;
 
-            github.rest.issues.createComment({
+            await github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
               body: comment
             });
-
 
       - name: Cleanup EC2 instances
         if: steps.aws-creds.outcome == 'success' && always()
