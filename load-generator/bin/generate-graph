@@ -79,7 +79,7 @@ if args.y_axis_suffix:
             return f'0{args.y_axis_suffix}'
         elif x < 1:
             return f'{x:.2f}{args.y_axis_suffix}'
-        else
+        else:
             return f'{x:.1f}{args.y_axis_suffix}'
     ax.yaxis.set_major_formatter(plt.FuncFormatter(format_with_suffix))
 
