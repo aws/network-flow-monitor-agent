@@ -80,13 +80,15 @@ jobs:
           cd load-generator
           bin/invoke_test --bucket ${{ secrets.PR_PERF_TEST_BUCKET }} --region ${{ secrets.PR_PERF_TEST_AWS_REGION }} --graph_identifier $GRAPH_ID
 
-      - name: Upload performance graphs
+      - name: Upload performance results
         if: steps.aws-creds.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
-          name: performance-graphs-${{ env.GRAPH_ID }}
-          path: load-generator/results-${{ env.GRAPH_ID }}/graphs/*.png
-          retention-days: 30
+          name: performance-results-${{ env.GRAPH_ID }}
+          path: |
+            load-generator/results-${{ env.GRAPH_ID }}/graphs/*.png
+            load-generator/results-${{ env.GRAPH_ID }}/*_tps-report.json
+          retention-days: 90
 
       - name: Download baseline performance reports
         if: steps.aws-creds.outcome == 'success' && github.event_name == 'pull_request'
@@ -105,13 +107,6 @@ jobs:
           chmod +x bin/compare-performance
           bin/compare-performance --current-dir results-${{ env.GRAPH_ID }} --baseline-dir baseline-reports > performance-comparison.md || \
             echo "# Performance Comparison\n\nNo baseline reports available for comparison." > performance-comparison.md
-
-      - name: Commit performance results to PR branch
-        if: steps.aws-creds.outcome == 'success' && github.event_name == 'pull_request'
-        run: |
-          cd load-generator
-          chmod +x bin/commit-performance-results
-          bin/commit-performance-results --graph-id ${{ env.GRAPH_ID }} --base-ref ${{ github.event.pull_request.base.ref }}
 
       - name: Comment PR with performance results
         if: steps.aws-creds.outcome == 'success' && github.event_name == 'pull_request'
@@ -134,12 +129,13 @@ jobs:
             comment += `Performance tests completed successfully! Generated ${graphs.length} performance graphs.\n\n`;
 
             graphs.forEach(graph => {
-              const graphPath = `load-generator/performance-graphs/${graph}`;
-              const graphUrl = `https://github.com/${{ github.repository }}/blob/${{ github.head_ref }}/${graphPath}?raw=true`;
+              const graphPath = `load-generator/results-${graphId}/graphs/${graph}`;
+              const imageData = fs.readFileSync(graphPath);
+              const base64Image = imageData.toString('base64');
               const name = graph.replace('.png', '').replace(/-/g, ' ');
-              comment += `### ${name}\n![${name}](${graphUrl})\n\n`;
+              comment += `### ${name}\n![${name}](data:image/png;base64,${base64Image})\n\n`;
             });
-            comment += `\n📎 Download the [performance-graphs-${{ env.GRAPH_ID }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) artifact to view the charts.\n\n`;
+            comment += `\n📎 Download the [performance-results-${{ env.GRAPH_ID }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) artifact for reports.\n\n`;
             comment += comparison;
 
             github.rest.issues.createComment({
