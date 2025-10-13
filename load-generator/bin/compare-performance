@@ -117,9 +117,10 @@ for current_report in "$current_dir"/*_tps-report.json; do
     filename=$(basename "$current_report")
     baseline_report="$baseline_dir/$filename"
 
+    # Check if baseline exists, compare against that too if it exists
+    has_baseline=true
     if [[ ! -f "$baseline_report" ]]; then
-        echo "⚠️ No baseline found for $filename"
-        continue
+        has_baseline=false
     fi
 
     # Extract instance type and TPS from filename
@@ -139,13 +140,23 @@ for current_report in "$current_dir"/*_tps-report.json; do
         metric_name=$(echo "$metric_def" | cut -d'|' -f1)
         metric_path=$(echo "$metric_def" | cut -d'|' -f2)
 
-        baseline_val=$(get_metric "$baseline_report" "$metric_path")
         current_val=$(get_metric "$current_report" "$metric_path")
-        change=$(calc_change "$baseline_val" "$current_val")
+
+        if [[ "$has_baseline" == "true" ]]; then
+            baseline_val=$(get_metric "$baseline_report" "$metric_path")
+            change=$(calc_change "$baseline_val" "$current_val")
+        else
+            baseline_val="N/A"
+            change="N/A"
+        fi
 
         # Format values
         if [[ "$metric_name" == *"Memory"* ]]; then
-            baseline_fmt="${baseline_val}KB"
+            if [[ "$baseline_val" == "N/A" ]]; then
+                baseline_fmt="N/A"
+            else
+                baseline_fmt="${baseline_val}KB"
+            fi
             current_fmt="${current_val}KB"
         else
             baseline_fmt=$baseline_val
@@ -206,6 +217,8 @@ else
     log "No matching reports found for comparison."
 fi
 rm -f "$tmp_file"
+
+echo "-----"
 
 log "🔴 = Significant increase (>10%)  🟢 = Significant improvement (>10% decrease)  ⚠️ = Exceeds performance limit"
 
