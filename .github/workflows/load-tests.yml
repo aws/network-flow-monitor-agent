@@ -88,7 +88,7 @@ jobs:
           path: |
             load-generator/results-${{ env.GRAPH_ID }}/graphs/*.png
             load-generator/results-${{ env.GRAPH_ID }}/*_tps-report.json
-          retention-days: 90
+          retention-days: 180
 
       - name: Download baseline performance reports
         if: steps.aws-creds.outcome == 'success' && github.event_name == 'pull_request'
@@ -108,13 +108,33 @@ jobs:
           bin/compare-performance --current-dir results-${{ env.GRAPH_ID }} --baseline-dir baseline-reports > performance-comparison.md || \
             echo "# Performance Comparison\n\nNo baseline reports available for comparison." > performance-comparison.md
 
-      - name: Upload graphs and comment PR
+      - name: Upload graphs to gh-perf-images branch
+        if: steps.aws-creds.outcome == 'success' && github.event_name == 'pull_request'
+        run: |
+          cd load-generator
+
+          # Create or checkout gh-perf-images branch
+          git fetch origin gh-perf-images:gh-perf-images 2>/dev/null || git checkout -b gh-perf-images
+          git checkout gh-perf-images
+
+          # Create directory and copy graphs
+          mkdir -p perf-images/pr-${{ github.event.number }}
+          cp results-${{ env.GRAPH_ID }}/graphs/*.png perf-images/pr-${{ github.event.number }}/
+
+          # Configure git and commit
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add perf-images/pr-${{ github.event.number }}/
+          git commit -m "Add performance graphs for PR #${{ github.event.number }}"
+          git push origin gh-perf-images
+
+      - name: Comment PR with performance results
         if: steps.aws-creds.outcome == 'success' && github.event_name == 'pull_request'
         uses: actions/github-script@v7
         with:
           script: |
             const fs = require('fs');
-            const path = require('path');
 
             // Get list of generated graphs
             const graphId = '${{ env.GRAPH_ID }}';
@@ -126,61 +146,33 @@ jobs:
 
             // Create comment with embedded graph images
             let comment = '## 📊 Performance Test Results\n\n';
+            comment += comparison;
             comment += `Performance tests completed successfully! Generated ${graphs.length} performance graphs.\n\n`;
 
-            // Create gh-perf-images branch if it doesn't exist
-            let branchExists = true;
+            // Embed each graph using GitHub raw URLs
+            graphs.forEach(graph => {
+              const graphUrl = `https://raw.githubusercontent.com/${{ github.repository }}/gh-perf-images/perf-images/pr-${{ github.event.number }}/${graph}`;
+              const name = graph.replace('.png', '').replace(/-/g, ' ');
+              comment += `### ${name}\n![${name}](${graphUrl})\n\n`;
+            });
+
+            // Get artifact download link
             try {
-              await github.rest.repos.getBranch({
+              const artifacts = await github.rest.actions.listWorkflowRunArtifacts({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                branch: 'gh-perf-images'
+                run_id: context.runId
               });
+
+              const perfArtifact = artifacts.data.artifacts.find(a => a.name === `performance-results-${graphId}`);
+              if (perfArtifact) {
+                comment += `\n📎 [Download Performance Reports](https://github.com/${{ github.repository }}/suites/${{ github.run_id }}/artifacts/${perfArtifact.id}) (JSON files with detailed metrics)\n\n`;
+              } else {
+                comment += `\n📎 [Download Performance Reports](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) - look for performance-results-${graphId} artifact\n\n`;
+              }
             } catch (error) {
-              if (error.status === 404) {
-                branchExists = false;
-                console.log('Creating gh-perf-images branch...');
-                const mainRef = await github.rest.git.getRef({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  ref: 'heads/main'
-                });
-                await github.rest.git.createRef({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  ref: 'refs/heads/gh-perf-images',
-                  sha: mainRef.data.object.sha
-                });
-              }
+              comment += `\n📎 [Download Performance Reports](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) - check artifacts section\n\n`;
             }
-
-            // Upload each graph to GitHub and embed in comment
-            for (const graph of graphs) {
-              const graphPath = `load-generator/results-${graphId}/graphs/${graph}`;
-              const imageBuffer = fs.readFileSync(graphPath);
-              const imageBase64 = imageBuffer.toString('base64');
-
-              try {
-                const response = await github.rest.repos.createOrUpdateFileContents({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  path: `perf-images/pr-${{ github.event.number }}/${graph}`,
-                  message: `Add performance graph: ${graph}`,
-                  content: imageBase64,
-                  branch: 'gh-perf-images'
-                });
-
-                const name = graph.replace('.png', '').replace(/-/g, ' ');
-                comment += `### ${name}\n![${name}](${response.data.content.download_url})\n\n`;
-              } catch (error) {
-                console.log(`Failed to upload ${graph}: ${error.message}`);
-                const name = graph.replace('.png', '').replace(/-/g, ' ');
-                comment += `### ${name}\n_Graph upload failed_\n\n`;
-              }
-            }
-
-            comment += `\n📎 Download the [performance-results-${graphId}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) artifact for reports.\n\n`;
-            comment += comparison;
 
             await github.rest.issues.createComment({
               issue_number: context.issue.number,

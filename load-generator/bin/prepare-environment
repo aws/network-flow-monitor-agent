@@ -95,5 +95,3 @@ else
     bin/configure_loss --disable
 fi
 log "✅ Network config is setup"
-
-log "✅ [INFO] Success! ✅"

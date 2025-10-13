@@ -12,10 +12,10 @@ export PATH=/usr/sbin:/sbin:/usr/local/sbin:$PATH
 # Space-separated list of EC2 instance IDs (populated by create-instances script)
 LOAD_TEST_INSTANCE_IDS=''
 # S3 bucket for distributing test artifacts
-LOAD_TEST_S3_BUCKET='network-flow-monitor-agent-perf-test-artifacts'
+LOAD_TEST_S3_BUCKET=''
 
 # setup test config
-LOAD_TEST_TPS_STEPS='10000'
+LOAD_TEST_TPS_STEPS='10000,20000'
 
 # if set to anything other than empty, following will add a heavy loss & delay on the traffic
 LOAD_TEST_ENABLE_NETWORK_LOSS=''
