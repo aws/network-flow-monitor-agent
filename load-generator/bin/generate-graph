@@ -73,7 +73,15 @@ plt.tight_layout()
 # Format y-axis ticks with suffix if provided
 if args.y_axis_suffix:
     ax = plt.gca()
-    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'{x:.0f}{args.y_axis_suffix}'))
+    # Use appropriate decimal places based on value magnitude
+    def format_with_suffix(x, p):
+        if x == 0:
+            return f'0{args.y_axis_suffix}'
+        elif x < 1:
+            return f'{x:.2f}{args.y_axis_suffix}'
+        else
+            return f'{x:.1f}{args.y_axis_suffix}'
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(format_with_suffix))
 
 # Remove superfluous characters from the name
 image_name = re.sub(r'[^\w\-]', '', args.title.replace(' ', '-').lower()) + f'.{args.format}'

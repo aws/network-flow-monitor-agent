@@ -10,9 +10,9 @@ export PATH=/usr/sbin:/sbin:/usr/local/sbin:$PATH
 
 # New SSM-based configuration
 # Space-separated list of EC2 instance IDs (populated by create-instances script)
-LOAD_TEST_INSTANCE_IDS=''
+LOAD_TEST_INSTANCE_IDS=' i-09643636f7f3c0ff3 i-06836501c2379ae46 i-004026ac227864434 i-062f5bdf170b86154 i-08fd63c2e021d7c9d i-0aa24dde79b5a9887'
 # S3 bucket for distributing test artifacts
-LOAD_TEST_S3_BUCKET=''
+LOAD_TEST_S3_BUCKET='network-flow-monitor-agent-perf-test-artifacts'
 
 # setup test config
 LOAD_TEST_TPS_STEPS='10000'
