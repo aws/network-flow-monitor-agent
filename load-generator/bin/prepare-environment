@@ -3,13 +3,12 @@
 set -o errexit
 set -o pipefail
 set -o nounset
-#set -o xtrace
 
 source bin/set-env-vars
 
 handle_error() {
     msg=$1
-    echo "[ERROR] $msg"
+    log "[ERROR] $msg"
     exit 1
 }
 
@@ -28,34 +27,35 @@ sudo yum install -y iproute-tc
 
 # Validate the BPF setup.
 yum install -y bpftool tree
+yum install -y sysstat
 # Explicitly set PATH to include common binary locations
 export PATH=/usr/sbin:/sbin:/usr/local/sbin:$PATH
-echo "PATH is set to: $PATH"
+log "PATH is set to: $PATH"
 which bpftool || handle_error "bpftool not found in PATH: $PATH"
 which bpftop || handle_error "bpftop not found in PATH: $PATH"
 
 grep CONFIG_BPF_SYSCALL=y /boot/config-$(uname -r) || handle_error 'BPF syscalls not enabled'
 grep CONFIG_CGROUP_BPF=y /boot/config-$(uname -r) || handle_error 'BPF cgroups not enabled'
 /usr/sbin/bpftool feature | grep 'sock_ops is available' || handle_error 'BPF sock_ops not enabled'
-echo "✅ BPF features are OK"
+log "✅ BPF features are OK"
 mount | grep cgroup2 | \
     awk '{if ($3 != "/sys/fs/cgroup") {printf "[WARN] Note the atypical cgroup mount point: "$3"\n"}}' \
     || handle_error 'Mounted cgroup2 not found'
-echo "✅ Cgroup v2 is OK"
+log "✅ Cgroup v2 is OK"
 # Install flamegraph dependencies.
 yum install -y gcc make # Install GCC cause c compiler is required for flamegraph
-echo "✅ GCC is installed"
+log "✅ GCC is installed"
 curl https://sh.rustup.rs -sSf | sh -s -- -y # Cargo
 source $HOME/.cargo/env # Source the cargo environment
-echo "✅ Rust is installed. Installing Perf"
+log "✅ Rust is installed. Installing Perf"
 yum install -y perf
-echo "✅ Perf is installed. Installing Flamegraph"
+log "✅ Perf is installed. Installing Flamegraph"
 cargo install flamegraph
-echo "✅ Flamegraph is installed"
+log "✅ Flamegraph is installed"
 sudo ln -sf $HOME/.cargo/bin/* /usr/local/bin/
 
 # Set up network namespaces for the tcp-tester.
-echo "Setting up network config"
+log "Setting up network config"
 bin/network-setup.sh
 
 if [ -n "${LOAD_TEST_ENABLE_NETWORK_LOSS}" ]; then
@@ -63,6 +63,6 @@ if [ -n "${LOAD_TEST_ENABLE_NETWORK_LOSS}" ]; then
 else
     bin/configure_loss --disable
 fi
-echo "✅ Network config is setup"
+log "✅ Network config is setup"
 
-echo "✅ [INFO] Success! ✅"
+log "✅ [INFO] Success! ✅"

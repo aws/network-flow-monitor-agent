@@ -66,10 +66,11 @@ wait_for_command() {
 
                 # Truncate output if longer than 100 lines
                 line_count=$(echo "$output" | wc -l)
-                if [ "$line_count" -gt 100 ]; then
-                    log "$output" | head -50
-                    log "... [OUTPUT TRUNCATED - showing first and last 50 of $line_count lines] ..."
-                    log "$output" | tail -50
+                if [ "$line_count" -gt 50 ]; then
+                    log "[OUTPUT TRUNCATED - showing first and last 25 of $line_count lines] ..."
+                    log "$output" | head -25
+                    log "${PURPLE}### [$((line_count - 50)) MORE LINES HERE] ###${NC}"
+                    log "$output" | tail -25
                 else
                     log "$output"
                 fi

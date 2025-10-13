@@ -4,6 +4,8 @@ set -o errexit
 set -o pipefail
 set -o nounset
 
+source bin/set-env-vars
+
 start_port=$1
 tps=$2
 delay_ms=$3
@@ -12,19 +14,17 @@ output_dir=$tps
 num_cpus=`nproc`
 tps=$(($tps / $num_cpus))
 
-echo "Context: cpus=$num_cpus tps-per-cpu=$tps start-port=$start_port response-delay=$delay_ms"
-
 # Divide by 2, as client and server are on the same machine.
 tps=$(($tps / 2))
 
 cleanup() {
-    echo "Exiting tcp-tester"
+    log "Exiting tcp-tester"
     pkill -f "tcp-tester" 2>/dev/null || true
 }
 trap cleanup EXIT
 
 # Distribute TCP tester applications across CPUs.
-echo "Starting $num_cpus tcp-tester processes across CPUs 0-$((num_cpus-1)), ports $start_port-$((start_port+num_cpus-1)), $tps TPS each"
+log "Starting $num_cpus tcp-tester processes across CPUs 0-$((num_cpus-1)), ports $start_port-$((start_port+num_cpus-1)), $tps TPS each"
 
 for ((cpu = 0; cpu < num_cpus; cpu++))
 do
@@ -35,6 +35,6 @@ do
         2>/dev/null &
 done
 
-echo "Started tcp-tester processes."
+log "Started tcp-tester processes."
 
 wait

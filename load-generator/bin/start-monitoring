@@ -4,10 +4,12 @@ set -o errexit
 set -o pipefail
 set -o nounset
 
+source bin/set-env-vars
+
 output_dir=$1
 
 cleanup() {
-    echo "Exiting from monitoring"
+    log "Exiting from monitoring"
     pkill -f "poll-" 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -15,7 +17,7 @@ trap cleanup EXIT
 prefix=`date +%Y-%m-%dT%H:%M:%S`
 
 # Monitor all aspects of the load test.
-echo "Monitoring resource utilization"
+log "${BLUE}Starting to monitor resource utilization ${NC}"
 bin/poll-network > results/$output_dir/$prefix-network &
 bin/poll-process > results/$output_dir/$prefix-process &
 bin/poll-host-cpu > results/$output_dir/$prefix-hostcpu &

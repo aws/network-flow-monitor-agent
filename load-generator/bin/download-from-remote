@@ -27,7 +27,7 @@ log "Will download $remote_file from instances to $local_file"
 
 for instance_id in $LOAD_TEST_INSTANCE_IDS
 do
-    log "Downloading $remote_file from instance $instance_id\n"
+    log "Downloading $remote_file from instance $instance_id"
     # Create a unique S3 key for this transfer
     s3_key="temp-downloads/${instance_id}/$(date +%s)"
     # Upload files to S3 from the instance (handle wildcards properly)
