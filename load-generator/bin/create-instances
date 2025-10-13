@@ -12,8 +12,7 @@ Examples:
 EOF
 )
 
-# Default values
-instance_types="m6a.xlarge,m6a.4xlarge,m6a.8xlarge,m6a.16xlarge,m6a.24xlarge,m6a.48xlarge"
+instance_types=""
 region=""
 
 while [[ $# -gt 0 ]]; do
@@ -31,6 +30,12 @@ done
 if [[ -z $region ]]; then
     echo "ERROR: region is required as tests are regional"
     exit 1
+fi
+
+# By default infer from instance-config.json
+if [[ -z $instance_types ]]; then
+    instance_types=$(jq -r '. | keys | join(",")' instance-config.json)
+    echo "Inferred instance types from instance-config.json: $instance_types"
 fi
 
 source bin/set-env-vars

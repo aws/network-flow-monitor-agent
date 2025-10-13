@@ -29,6 +29,8 @@ jobs:
           python3 -m pip install --upgrade pip
           python3 -m pip install sh plotly kaleido
           python3 -c "import sh; print('sh module installed successfully')"
+          python3 -c "import plotly; print('plotly module installed successfully')"
+          python3 -c "import kaleido; print('kaleido module installed successfully')"
 
       - name: Install Rust
         uses: actions-rs/toolchain@v1

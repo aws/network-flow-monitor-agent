@@ -71,10 +71,10 @@ calc_change() {
 get_limit() {
     local inst_type="$1"
     local metric_name="$2"
-    local limits_file="performance-limits.json"
+    local limits_file="instance-config.json"
 
     if [[ -f "$limits_file" ]]; then
-        jq -r ".limits[\"$inst_type\"][\"$metric_name\"] // null" "$limits_file" 2>/dev/null || echo "null"
+        jq -r ".[\"$inst_type\"].limits[\"$metric_name\"] // null" "$limits_file" 2>/dev/null || echo "null"
     else
         echo "null"
     fi
@@ -129,9 +129,9 @@ for current_report in "$current_dir"/*_tps-report.json; do
 
     # Compare key metrics
     metrics=(
-        "Agent CPU|.tps_report.sonar_agent_process.cpu_util_pct.avg"
-        "Agent CPU Single Core Max|(.tps_report.sonar_bpf_program.cpu_util_pct.max + .tps_report.sonar_agent_process.cpu_util_pct.max) * .tps_report.cpu_cores"
-        "Agent Memory|.tps_report.sonar_agent_process.resident_mem_kb.avg"
+        "User CPU|.tps_report.sonar_agent_process.cpu_util_pct.avg"
+        "User CPU Single Core|(.tps_report.sonar_bpf_program.cpu_util_pct.max + .tps_report.sonar_agent_process.cpu_util_pct.max) * .tps_report.cpu_cores"
+        "Memory|.tps_report.sonar_agent_process.resident_mem_kb.avg"
         "BPF CPU|.tps_report.sonar_bpf_program.cpu_util_pct.avg"
     )
 
