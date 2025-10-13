@@ -25,9 +25,7 @@ struct SystemMetric {
 
 /// Metric key.
 struct SystemMetricKey {
-    instance: String,
     eni: String,
-    node: String,
 }
 
 /// Values provided by the metrics.
@@ -96,9 +94,7 @@ impl SystemMetricsProvider {
         for host_stat in self.host_stats_provider.get_stats().interface_stats {
             metrics.push(SystemMetric {
                 key: SystemMetricKey {
-                    instance: self.eni_metadata_provider.instance_id.clone(),
                     eni: host_stat.interface_id,
-                    node: self.node_name.clone(),
                 },
                 value: SystemMetricValues {
                     bw_in_allowance_exceeded: host_stat.stats.bw_in_allowance_exceeded,
@@ -114,16 +110,17 @@ impl SystemMetricsProvider {
 }
 
 impl SystemMetric {
-    fn label_values(&self, compute_platform: &ComputePlatform) -> Vec<&str> {
+    fn label_values<'a>(
+        &'a self,
+        compute_platform: &ComputePlatform,
+        node_name: &'a str,
+        instance_id: &'a str,
+    ) -> Vec<&'a str> {
         // The order of the elements must match the labels for the trait MetricLabel
         match compute_platform {
-            ComputePlatform::Ec2Plain => vec![&self.key.instance.as_str(), &self.key.eni.as_str()],
+            ComputePlatform::Ec2Plain => vec![instance_id, &self.key.eni.as_str()],
             ComputePlatform::Ec2K8sEks | ComputePlatform::Ec2K8sVanilla => {
-                vec![
-                    &self.key.instance.as_str(),
-                    &self.key.eni.as_str(),
-                    &self.key.node.as_str(),
-                ]
+                vec![instance_id, &self.key.eni.as_str(), node_name]
             }
         }
     }
@@ -168,7 +165,8 @@ impl OpenMetricProvider for SystemMetricsProvider {
         let metrics = self.get_metrics();
 
         for metric in &metrics {
-            let label_values = metric.label_values(&self.compute_platform);
+            let label_values =
+                metric.label_values(&self.compute_platform, &self.node_name, &self.node_name);
 
             self.bw_in_allowance_exceeded
                 .with_label_values(&label_values)
@@ -261,9 +259,7 @@ mod tests {
     fn test_system_metric_label_values_ec2_plain() {
         let metric = SystemMetric {
             key: SystemMetricKey {
-                instance: "i-1234567890abcdef0".to_string(),
                 eni: "eni-12345".to_string(),
-                node: "test-node".to_string(),
             },
             value: SystemMetricValues {
                 bw_in_allowance_exceeded: 100,
@@ -274,7 +270,11 @@ mod tests {
             },
         };
 
-        let label_values = metric.label_values(&ComputePlatform::Ec2Plain);
+        let label_values = metric.label_values(
+            &ComputePlatform::Ec2Plain,
+            "test-node",
+            "i-1234567890abcdef0",
+        );
         assert_eq!(label_values, vec!["i-1234567890abcdef0", "eni-12345"]);
     }
 
@@ -282,9 +282,7 @@ mod tests {
     fn test_system_metric_label_values_eks() {
         let metric = SystemMetric {
             key: SystemMetricKey {
-                instance: "i-1234567890abcdef0".to_string(),
                 eni: "eni-12345".to_string(),
-                node: "test-node".to_string(),
             },
             value: SystemMetricValues {
                 bw_in_allowance_exceeded: 100,
@@ -295,7 +293,11 @@ mod tests {
             },
         };
 
-        let label_values = metric.label_values(&ComputePlatform::Ec2K8sEks);
+        let label_values = metric.label_values(
+            &ComputePlatform::Ec2K8sEks,
+            "test-node",
+            "i-1234567890abcdef0",
+        );
         assert_eq!(
             label_values,
             vec!["i-1234567890abcdef0", "eni-12345", "test-node"]
@@ -306,9 +308,7 @@ mod tests {
     fn test_system_metric_label_values_vanilla_k8s() {
         let metric = SystemMetric {
             key: SystemMetricKey {
-                instance: "i-1234567890abcdef0".to_string(),
                 eni: "eni-12345".to_string(),
-                node: "test-node".to_string(),
             },
             value: SystemMetricValues {
                 bw_in_allowance_exceeded: 100,
@@ -319,7 +319,11 @@ mod tests {
             },
         };
 
-        let label_values = metric.label_values(&ComputePlatform::Ec2K8sVanilla);
+        let label_values = metric.label_values(
+            &ComputePlatform::Ec2K8sVanilla,
+            "test-node",
+            "i-1234567890abcdef0",
+        );
         assert_eq!(
             label_values,
             vec!["i-1234567890abcdef0", "eni-12345", "test-node"]
@@ -360,9 +364,7 @@ mod tests {
     #[test]
     fn test_system_metric_creation() {
         let key = SystemMetricKey {
-            instance: "i-1234567890abcdef0".to_string(),
             eni: "eni-12345".to_string(),
-            node: "test-node".to_string(),
         };
 
         let value = SystemMetricValues {
@@ -375,9 +377,7 @@ mod tests {
 
         let metric = SystemMetric { key, value };
 
-        assert_eq!(metric.key.instance, "i-1234567890abcdef0");
         assert_eq!(metric.key.eni, "eni-12345");
-        assert_eq!(metric.key.node, "test-node");
         assert_eq!(metric.value.bw_in_allowance_exceeded, 100);
         assert_eq!(metric.value.bw_out_allowance_exceeded, 200);
         assert_eq!(metric.value.pps_allowance_exceeded, 300);

@@ -4,7 +4,10 @@ use k8s_openapi::api::core::v1::Pod;
 use kube::{Api, Client};
 use log::{debug, error, info};
 
-use crate::metadata::imds_utils::get_runtime_executor;
+use crate::{
+    metadata::imds_utils::get_runtime_executor,
+    utils::crypto::ensure_default_crypto_provider_exists,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PodInfo {
@@ -61,7 +64,7 @@ impl IPPodMapping {
 
     async fn fetch_pods_async(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         // Ensure default crypto provider exists for kube client
-        Self::ensure_default_crypto_provider_exists();
+        ensure_default_crypto_provider_exists();
 
         let client = Client::try_default().await?;
         let pods: Api<Pod> = Api::all(client);
@@ -123,21 +126,6 @@ impl IPPodMapping {
         );
 
         Ok(())
-    }
-
-    /// Make sure that a default crypto provider exists as Kube Client will depend on it.
-    fn ensure_default_crypto_provider_exists() {
-        match rustls::crypto::CryptoProvider::get_default() {
-            Some(_) => {
-                debug!("A default crypto provider is already assigned to the process, skipping creation.");
-            }
-            None => {
-                debug!("No crypto provider exists for the process, creating one.");
-                let default_provider = rustls::crypto::ring::default_provider();
-                rustls::crypto::CryptoProvider::install_default(default_provider)
-                    .expect("Crypto Provider is empty");
-            }
-        }
     }
 }
 

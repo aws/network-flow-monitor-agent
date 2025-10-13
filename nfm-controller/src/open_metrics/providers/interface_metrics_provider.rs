@@ -21,6 +21,7 @@ use anyhow;
 use aws_config::imds::Client;
 use getifaddrs::{getifaddrs, InterfaceFilter, InterfaceFlags};
 use log::{debug, info, warn};
+use nfm_common::IpAddrLinkLocal;
 use procfs::net::{dev_status, DeviceStatus};
 use prometheus::{IntGaugeVec, Registry};
 use regex::Regex;
@@ -78,19 +79,24 @@ impl InterfaceMetricValues {
 }
 
 impl InterfaceMetricKey {
-    fn label_values(&self, compute_platform: &ComputePlatform) -> Vec<&str> {
+    fn label_values<'a>(
+        &'a self,
+        compute_platform: &ComputePlatform,
+        node_name: &'a str,
+        instance_id: &'a str,
+    ) -> Vec<&'a str> {
         // The order of the elements must match the labels for the trait MetricLabel
         match compute_platform {
             ComputePlatform::Ec2Plain => {
-                vec![&self.instance.as_str(), &self.iface.as_str()]
+                vec![instance_id, &self.iface]
             }
             ComputePlatform::Ec2K8sEks | ComputePlatform::Ec2K8sVanilla => {
                 vec![
-                    &self.instance.as_str(),
-                    &self.iface.as_str(),
-                    &self.pod.as_str(),
-                    &self.pod_namespace.as_str(),
-                    &self.node.as_str(),
+                    instance_id,
+                    &self.iface,
+                    &self.pod,
+                    &self.pod_namespace,
+                    node_name,
                 ]
             }
         }
@@ -159,7 +165,7 @@ impl InterfaceMetricsProvider {
             current_metrics: HashMap::new(),
         };
 
-        // This call will update the metrics for the first time bith the baseline.
+        // This call will update the metrics for the first time with the baseline.
         provider.current_metrics = provider.get_metrics();
         provider
     }
@@ -235,13 +241,13 @@ impl InterfaceMetricsProvider {
         pod_info_mapping: IPPodMapping,
     ) -> (String, String) {
         match self.get_ns_from(iface_name) {
-            Some(net_ns) => self.get_pod_info_from_ns(net_ns, ns_to_pid, pod_info_mapping),
+            Some(net_ns) => self.get_pod_info_from_netns(net_ns, ns_to_pid, pod_info_mapping),
             None => self.get_pod_info_from_real_iface(iface_name, pod_info_mapping),
         }
     }
 
     /// Get the Pod information for a namespace
-    fn get_pod_info_from_ns(
+    fn get_pod_info_from_netns(
         &self,
         net_ns: u32,
         ns_to_pid: HashMap<u32, NamespaceInfo>,
@@ -365,6 +371,7 @@ impl InterfaceMetricsProvider {
 
                             ns_info_map.insert(netns_id, namespace_info);
                         } else {
+                            debug!(line = line; "lsns output");
                             warn!(
                                 "Failed to parse PID '{}' for NETNSID '{}'",
                                 fields[3], fields[5]
@@ -425,14 +432,7 @@ impl InterfaceMetricsProvider {
 
         for interface in interfaces {
             if let Some(ip_addr) = interface.address.ip_addr() {
-                // Skip loopback addresses
-                if !ip_addr.is_loopback() {
-                    // For IPv6, also skip link-local addresses
-                    if let IpAddr::V6(ipv6) = ip_addr {
-                        if ipv6.segments()[0] == 0xfe80 {
-                            continue;
-                        }
-                    }
+                if !ip_addr.is_loopback() && !ip_addr.is_link_local() {
                     ip_addresses.push(ip_addr);
                 }
             }
@@ -452,35 +452,29 @@ impl InterfaceMetricsProvider {
         let ipv6_regex = Regex::new(r"inet6\s+(\S+)/").unwrap();
 
         for line in ip_output.lines() {
-            // Extract IPv4 addresses
-            if let Some(captures) = ipv4_regex.captures(line) {
-                if let Some(ip_match) = captures.get(1) {
-                    let ip_str = ip_match.as_str();
-                    if ip_str == "127.0.0.1" {
-                        continue;
-                    }
-                    if let Ok(ip_addr) = ip_str.parse::<IpAddr>() {
-                        ip_addresses.push(ip_addr);
-                    }
-                }
-            }
-
-            // Extract IPv6 addresses (excluding link-local)
-            if let Some(captures) = ipv6_regex.captures(line) {
-                if let Some(ip_match) = captures.get(1) {
-                    let ip_str = ip_match.as_str();
-                    // Skip link-local IPv6 addresses (fe80::) and local address
-                    if !ip_str.starts_with("fe80:") && !(ip_str == "::1") {
-                        println!("STR ip: {}", ip_str);
-                        if let Ok(ip_addr) = ip_str.parse::<IpAddr>() {
-                            ip_addresses.push(ip_addr);
-                        }
-                    }
-                }
+            if let Some(ip_addr) = self.extract_ip_from_line(line, &ipv4_regex) {
+                ip_addresses.push(ip_addr);
+            } else if let Some(ip_addr) = self.extract_ip_from_line(line, &ipv6_regex) {
+                ip_addresses.push(ip_addr);
             }
         }
 
         ip_addresses
+    }
+
+    /// Extract and validate IP address from a line using the provided regex
+    fn extract_ip_from_line(&self, line: &str, regex: &Regex) -> Option<IpAddr> {
+        if let Some(captures) = regex.captures(line) {
+            if let Some(ip_match) = captures.get(1) {
+                if let Ok(ip_addr) = ip_match.as_str().parse::<IpAddr>() {
+                    if ip_addr.is_loopback() || ip_addr.is_link_local() {
+                        return None;
+                    }
+                    return Some(ip_addr);
+                }
+            }
+        }
+        None
     }
 }
 
@@ -592,7 +586,8 @@ impl OpenMetricProvider for InterfaceMetricsProvider {
         let metrics = self.get_metrics();
 
         for (key, value) in metrics {
-            let label_values = key.label_values(&self.compute_platform);
+            let label_values =
+                key.label_values(&self.compute_platform, &self.node_name, &self.instance_id);
 
             debug!(labels = format!("{:?}", label_values), metrics = format!("{:?}", value); "Interface metrics");
 
@@ -660,7 +655,11 @@ mod tests {
             node: "test-node".to_string(),
         };
 
-        let label_values = key.label_values(&ComputePlatform::Ec2Plain);
+        let label_values = key.label_values(
+            &ComputePlatform::Ec2Plain,
+            "test-node",
+            "i-1234567890abcdef0",
+        );
         assert_eq!(label_values, vec!["i-1234567890abcdef0", "eth0"]);
     }
 
@@ -674,7 +673,11 @@ mod tests {
             node: "test-node".to_string(),
         };
 
-        let label_values = key.label_values(&ComputePlatform::Ec2K8sEks);
+        let label_values = key.label_values(
+            &ComputePlatform::Ec2K8sEks,
+            "test-node",
+            "i-1234567890abcdef0",
+        );
         assert_eq!(
             label_values,
             vec![
@@ -1209,6 +1212,53 @@ mod tests {
 
         // Should extract IPv6 address and trigger the println! statement
         assert_eq!(result, vec!["2001:db8::1".parse::<IpAddr>().unwrap()]);
+    }
+
+    #[test]
+    fn test_extract_ip_from_line_ipv4() {
+        let provider = InterfaceMetricsProvider::new(&ComputePlatform::Ec2Plain);
+        let ipv4_regex = Regex::new(r"inet\s+(\S+)/").unwrap();
+
+        // Test valid IPv4 address
+        let line = "    inet 192.168.1.10/24 brd 192.168.1.255 scope global eth0";
+        let result = provider.extract_ip_from_line(line, &ipv4_regex);
+        assert_eq!(result, Some("192.168.1.10".parse::<IpAddr>().unwrap()));
+
+        // Test loopback address (should be filtered out)
+        let line = "    inet 127.0.0.1/8 scope host lo";
+        let result = provider.extract_ip_from_line(line, &ipv4_regex);
+        assert_eq!(result, None);
+
+        // Test line without IP address
+        let line = "    link/ether 02:42:ac:11:00:02 brd ff:ff:ff:ff:ff:ff";
+        let result = provider.extract_ip_from_line(line, &ipv4_regex);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_ip_from_line_ipv6() {
+        let provider = InterfaceMetricsProvider::new(&ComputePlatform::Ec2Plain);
+        let ipv6_regex = Regex::new(r"inet6\s+(\S+)/").unwrap();
+
+        // Test valid IPv6 address
+        let line = "    inet6 2001:db8::1/64 scope global";
+        let result = provider.extract_ip_from_line(line, &ipv6_regex);
+        assert_eq!(result, Some("2001:db8::1".parse::<IpAddr>().unwrap()));
+
+        // Test link-local address (should be filtered out)
+        let line = "    inet6 fe80::42:acff:fe11:2/64 scope link";
+        let result = provider.extract_ip_from_line(line, &ipv6_regex);
+        assert_eq!(result, None);
+
+        // Test loopback address (should be filtered out)
+        let line = "    inet6 ::1/128 scope host";
+        let result = provider.extract_ip_from_line(line, &ipv6_regex);
+        assert_eq!(result, None);
+
+        // Test line without IP address
+        let line = "    link/ether 02:42:ac:11:00:02 brd ff:ff:ff:ff:ff:ff";
+        let result = provider.extract_ip_from_line(line, &ipv6_regex);
+        assert_eq!(result, None);
     }
 
     #[test]
