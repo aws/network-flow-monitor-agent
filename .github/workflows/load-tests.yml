@@ -128,6 +128,32 @@ jobs:
             let comment = '## 📊 Performance Test Results\n\n';
             comment += `Performance tests completed successfully! Generated ${graphs.length} performance graphs.\n\n`;
 
+            // Create gh-perf-images branch if it doesn't exist
+            let branchExists = true;
+            try {
+              await github.rest.repos.getBranch({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                branch: 'gh-perf-images'
+              });
+            } catch (error) {
+              if (error.status === 404) {
+                branchExists = false;
+                console.log('Creating gh-perf-images branch...');
+                const mainRef = await github.rest.git.getRef({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  ref: 'heads/main'
+                });
+                await github.rest.git.createRef({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  ref: 'refs/heads/gh-perf-images',
+                  sha: mainRef.data.object.sha
+                });
+              }
+            }
+
             // Upload each graph to GitHub and embed in comment
             for (const graph of graphs) {
               const graphPath = `load-generator/results-${graphId}/graphs/${graph}`;

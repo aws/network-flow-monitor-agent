@@ -87,14 +87,14 @@ check_limit() {
     local metric_name="$3"
 
     if [[ "$limit" == "null" || "$limit" == "0" ]]; then
-        echo ""
+        echo "-"
         return
     fi
 
     if (( $(echo "$value > $limit" | bc -l 2>/dev/null || echo 0) )); then
         echo "⚠️"
     else
-        echo ""
+        echo "✅"
     fi
 }
 
@@ -196,23 +196,13 @@ for current_report in "$current_dir"/*_tps-report.json; do
         fi
 
         # Store data for sorting: TPS|METRIC|INSTANCE|ROW
-        printf "| %s | %s | %06d | %s | %s | %s | %s | %s |\n" "$metric_name" "$inst_type" "$tps" "$baseline_fmt" "$current_fmt" "$change" "$change_icon" "$limit_display" >> "$tmp_file"
+        printf "| %s | %s | %d | %s | %s | %s | %s | %s |\n" "$metric_name" "$inst_type" "$tps" "$baseline_fmt" "$current_fmt" "$change" "$change_icon" "$limit_display" >> "$tmp_file"
     done
 done
 
 # Sort by TPS, then metric, then instance type and output
-# metric A - inst type A, tps 100
-# metric A - inst type B, tps 100
-# metric A - inst type C, tps 100
-# ...
-# metric A - inst type A, tps 1000
-# metric A - inst type B, tps 1000
-# metric A - inst type C, tps 1000
-# ...
-# metric B - inst type A, tps 100
-# ...
 if [[ -s "$tmp_file" ]]; then
-    sort -t'|' -k1,1n -k2,2 -k3,3 "$tmp_file" | cut -d'|' -f4-
+    sort -t'|' -k1,1n -k2,2 -k3,3 "$tmp_file"
 else
     log "No matching reports found for comparison."
 fi
