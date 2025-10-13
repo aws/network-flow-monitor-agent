@@ -132,8 +132,8 @@ jobs:
           git commit -m "Add performance graphs for PR #${{ github.event.number }}"
           git push origin gh-perf-images
 
-          # Switch back to original branch and restore stash
-          git checkout ${{ github.head_ref }}
+          # Return to original state
+          git checkout ${{ github.sha }}
           git stash pop || true
 
       - name: Comment PR with performance results
