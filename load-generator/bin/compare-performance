@@ -1,8 +1,9 @@
 #!/bin/bash
 
-set -o errexit
 set -o pipefail
 set -o nounset
+
+set -x
 
 source bin/set-env-vars
 
@@ -48,7 +49,10 @@ fi
 get_metric() {
     local file="$1"
     local path="$2"
-    jq -r "$path // 0" "$file" 2>/dev/null || echo "0"
+    if ! jq -r "$path // 0" "$file" 2>/dev/null; then
+        log "WARNING: Failed to extract metric from $file with path $path"
+        echo "0"
+    fi
 }
 
 # Function to calculate percentage change
@@ -58,7 +62,10 @@ calc_change() {
     if [[ "$old" == "0" || "$old" == "0.000" ]]; then
         echo "N/A"
     else
-        python3 -c "print(f'{((float('$new') - float('$old')) / float('$old') * 100):+.2f}%')"
+        if ! python3 -c "print(f'{((float('$new') - float('$old')) / float('$old') * 100):+.2f}%')" 2>/dev/null; then
+            log "WARNING: Failed to calculate percentage change for old=$old new=$new"
+            echo "N/A"
+        fi
     fi
 }
 
@@ -101,7 +108,6 @@ echo "|--------|---------------|-----|----------|---------|-------|--------|"
 
 # Collect all data first for sorting
 tmp_file=$(mktemp)
-echo "step 1"
 limit_breaches=0
 
 # Compare each report file
