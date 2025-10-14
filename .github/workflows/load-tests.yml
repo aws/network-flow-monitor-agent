@@ -113,7 +113,7 @@ jobs:
           cd load-generator
           chmod +x bin/compare-performance
           bin/compare-performance --current-dir results-${{ env.GRAPH_ID }} --baseline-dir baseline-reports > performance-comparison.md || \
-            echo "# Performance Comparison\n\nNo baseline reports available for comparison." > performance-comparison.md
+            echo -e "# Performance Comparison\nNo baseline reports available for comparison." > performance-comparison.md
 
       - name: Upload graphs to gh-perf-images branch
         if: steps.aws-creds.outcome == 'success'

@@ -1,6 +1,5 @@
 #!/bin/bash
 
-set -o errexit
 set -o pipefail
 set -o nounset
 
@@ -24,7 +23,6 @@ while [[ $# -gt 0 ]]; do
         --baseline-dir=*) baseline_dir="${1#*=}" ;;
         --baseline-dir) baseline_dir="$2"; shift ;;
         --help|-h) echo "$help_msg"; exit 0 ;;
-        *) echo "Unknown option: $1"; echo "$help_msg"; exit 1 ;;
     esac
     shift
 done
@@ -197,11 +195,11 @@ for current_report in "$current_dir"/*_tps-report.json; do
         fi
 
         # Store data for sorting: TPS|METRIC|INSTANCE|ROW
-        printf "| %s | %s | %d | %s | %s | %s | %s |\n" "$metric_name" "$inst_type" "$tps" "$baseline_fmt" "$current_fmt" "$change_fmt" "$limit_fmt" >> "$tmp_file"
+        printf "| %s | %s | %d | %s | %s | %s | %s |\n" "$metric_name" "$inst_type" "$tps" "$baseline_fmt" "$current_fmt" "$change_fmt" "$limit_display" >> "$tmp_file"
     done
 done
 
-# Sort by TPS, then metric, then instance type and output
+# Sort by TPS, then metric, then instance type
 sort -t'|' -k1,1n -k2,2 -k3,3 "$tmp_file"
 rm -f "$tmp_file"
 
