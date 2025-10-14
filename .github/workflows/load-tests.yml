@@ -111,19 +111,9 @@ jobs:
         if: steps.aws-creds.outcome == 'success'
         run: |
           cd load-generator
-          echo "DEBUG: Current directory contents:"
-          ls -la results-${{ env.GRAPH_ID }}/ || echo "Results directory not found"
-          echo "DEBUG: Baseline directory contents:"
-          ls -la baseline-reports/ || echo "Baseline directory not found"
-          echo "DEBUG: Running compare-performance with:"
-          echo "  --current-dir results-${{ env.GRAPH_ID }}"
           chmod +x bin/compare-performance
-          if bin/compare-performance --current-dir results-${{ env.GRAPH_ID }} --baseline-dir baseline-reports > performance-comparison.md; then
-            echo "DEBUG: compare-performance succeeded"
-          else
-            echo "DEBUG: compare-performance failed with exit code $?"
-            bin/compare-performance --current-dir results-${{ env.GRAPH_ID }} --baseline-dir baseline-reports
-            echo -e "# Performance Comparison\nNo baseline reports available for comparison." > performance-comparison.md
+          bin/compare-performance --current-dir results-${{ env.GRAPH_ID }} --baseline-dir baseline-reports > performance-comparison.md || \
+            echo "# Performance Comparison\n\nNo baseline reports available for comparison." > performance-comparison.md
           fi
 
       - name: Upload graphs to gh-perf-images branch
@@ -146,7 +136,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          git add load-generator/perf-images/pr-${{ github.event.number }}/
+          git add perf-images/pr-${{ github.event.number }}/
           git commit -m "Add performance graphs for PR #${{ github.event.number }}"
           git push origin gh-perf-images
 
