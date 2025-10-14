@@ -81,7 +81,7 @@ if [[ $available_mem -lt 1000 ]]; then
     cargo cache --autoclean 2>/dev/null || true
 fi
 
-cargo install flamegraph --locked
+cargo install flamegraph
 log "✅ Flamegraph is installed"
 sudo ln -sf $HOME/.cargo/bin/* /usr/local/bin/
 

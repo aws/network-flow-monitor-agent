@@ -8,14 +8,14 @@ function name {
 	echo "${prefix}-$1"
 }
 
-ip link del i1
-ip link del i2
-ip link del i3
-ip link del i4
+ip link del i1 || true
+ip link del i2 || true
+ip link del i3 || true
+ip link del i4 || true
 
-ip netns del $(name client)
-ip netns del $(name tcp-tester)
-ip netns del $(name server)
+ip netns del $(name client) || true
+ip netns del $(name tcp-tester) || true
+ip netns del $(name server) || true
 
 ip netns add $(name client)
 ip netns add $(name tcp-tester)
@@ -64,8 +64,8 @@ ip netns exec $(name tcp-tester) ip route add 1.1.1.1 via 10.0.0.1
 
 # We need to disable segmentation offload because otherwise the segments don't
 # correspond to packets.
-ip netns exec $(name client) ethtool -K i1 tx-tcp-segmentation off
-ip netns exec $(name server) ethtool -K i4 tx-tcp-segmentation off
+ip netns exec $(name client) ethtool -K i1 tx-tcp-segmentation off || true
+ip netns exec $(name server) ethtool -K i4 tx-tcp-segmentation off || true
 
 ip netns exec $(name client) sysctl -w net.ipv4.tcp_sack=1
 ip netns exec $(name server) sysctl -w net.ipv4.tcp_sack=1

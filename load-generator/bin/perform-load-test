@@ -60,6 +60,8 @@ output_dir="results/$tps"
 mkdir $output_dir || { log "❌ Intentionally failing as the output dir already exists, so as not to conflate results with a prior load test"; exit 1; }
 log "Writing results to $output_dir"
 
+sudo bin/network-setup
+
 sudo bin/start-tcp-tester 8080 $tps $delay_ms &
 sleep 1
 

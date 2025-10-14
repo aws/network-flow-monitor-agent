@@ -76,7 +76,7 @@ for i in "${!TPS_ARRAY[@]}"; do
 
     # Skip sleep for the last iteration
     if [ $i -lt $((${#TPS_ARRAY[@]} - 1)) ]; then
-        log "Force closing TCP connections in network namespaces"
+        log "${YELLOW}Force closing TCP connections in network namespaces${NC}"
         bin/run-ssm-command async "sudo ip netns exec nfm-perf-test-client ss -K state all 2>/dev/null || true && sudo ip netns exec nfm-perf-test-tcp-tester ss -K state all 2>/dev/null || true && sudo ip netns exec nfm-perf-test-server ss -K state all 2>/dev/null || true"
         log "TCP connections reset, proceeding to next iteration"
     fi
