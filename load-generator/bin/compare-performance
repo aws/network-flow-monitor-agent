@@ -1,9 +1,8 @@
 #!/bin/bash
 
+set -o errexit
 set -o pipefail
 set -o nounset
-
-set -x
 
 source bin/set-env-vars
 
@@ -25,6 +24,7 @@ while [[ $# -gt 0 ]]; do
         --baseline-dir=*) baseline_dir="${1#*=}" ;;
         --baseline-dir) baseline_dir="$2"; shift ;;
         --help|-h) echo "$help_msg"; exit 0 ;;
+        *) echo "Unknown option: $1"; echo "$help_msg"; exit 1 ;;
     esac
     shift
 done
@@ -49,10 +49,7 @@ fi
 get_metric() {
     local file="$1"
     local path="$2"
-    if ! jq -r "$path // 0" "$file" 2>/dev/null; then
-        log "WARNING: Failed to extract metric from $file with path $path"
-        echo "0"
-    fi
+    jq -r "$path // 0" "$file" 2>/dev/null || echo "0"
 }
 
 # Function to calculate percentage change
@@ -62,10 +59,7 @@ calc_change() {
     if [[ "$old" == "0" || "$old" == "0.000" ]]; then
         echo "N/A"
     else
-        if ! python3 -c "print(f'{((float('$new') - float('$old')) / float('$old') * 100):+.2f}%')" 2>/dev/null; then
-            log "WARNING: Failed to calculate percentage change for old=$old new=$new"
-            echo "N/A"
-        fi
+        python3 -c "print(f'{((float('$new') - float('$old')) / float('$old') * 100):+.1f}%')"
     fi
 }
 
@@ -102,9 +96,8 @@ check_limit() {
 
 # Generate comparison report
 echo "## 📊 Performance Comparison"
-echo ""
-echo "| Metric | Instance Type | TPS | Baseline | Current | Limit | Change |"
-echo "|--------|---------------|-----|----------|---------|-------|--------|"
+echo "| Metric | Instance Type | TPS | Baseline |  Current  |  Change  |       Limit      |"
+echo "|--------|---------------|-----|----------|-----------|----------|------------------|"
 
 # Collect all data first for sorting
 tmp_file=$(mktemp)
@@ -115,9 +108,9 @@ for current_report in "$current_dir"/*_tps-report.json; do
     if [[ ! -f "$current_report" ]]; then
         continue
     fi
+
     filename=$(basename "$current_report")
     baseline_report="$baseline_dir/$filename"
-    echo "step 2"
 
     # Check if baseline exists, compare against that too if it exists
     has_baseline=true
@@ -128,9 +121,7 @@ for current_report in "$current_dir"/*_tps-report.json; do
     # Extract instance type and TPS from filename
     # Format: results-pr-58_m6a.xlarge_10000_tps-report.json
     inst_type=$(echo "$filename" | sed 's/.*_\([^_]*\)_[0-9]*_tps-report.json/\1/')
-    echo "step 3"
     tps=$(echo "$filename" | sed 's/.*_\([0-9]*\)_tps-report.json/\1/')
-    echo "step 4"
 
     # Compare key metrics
     metrics=(
@@ -143,13 +134,12 @@ for current_report in "$current_dir"/*_tps-report.json; do
     for metric_def in "${metrics[@]}"; do
         metric_name=$(echo "$metric_def" | cut -d'|' -f1)
         metric_path=$(echo "$metric_def" | cut -d'|' -f2)
-        echo "step 5"
-        current=$(get_metric "$current_report" "$metric_path")
-        echo "step 6"
+
+        current_val=$(get_metric "$current_report" "$metric_path")
 
         if [[ "$has_baseline" == "true" ]]; then
             baseline_val=$(get_metric "$baseline_report" "$metric_path")
-            change=$(calc_change "$baseline_val" "$current")
+            change=$(calc_change "$baseline_val" "$current_val")
         else
             baseline_val="N/A"
             change="N/A"
@@ -158,13 +148,14 @@ for current_report in "$current_dir"/*_tps-report.json; do
         # Format values
         if [[ "$metric_name" == *"Memory"* ]]; then
             if [[ "$baseline_val" == "N/A" ]]; then
-                baseline="N/A"
+                baseline_fmt="N/A"
             else
-                baseline="${baseline_val}KB"
+                baseline_fmt="${baseline_val}KB"
             fi
-            current="${current}KB"
+            current_fmt="${current_val}KB"
         else
-            baseline=$baseline_val
+            baseline_fmt=$baseline_val
+            current_fmt="$current_val"
         fi
 
         # Add emoji for significant changes
@@ -178,19 +169,9 @@ for current_report in "$current_dir"/*_tps-report.json; do
             fi
         fi
 
-        if [[ -n "$change_icon" ]]; then
-            change="$change_icon $change"
-        fi
-
         # Check against performance limits
         limit=$(get_limit "$inst_type" "$metric_name")
-        echo "step 7"
-        limit_status=$(check_limit "$current" "$limit" "$metric_name")
-        echo "step 8"
-
-        if [[ -n "$limit_status" ]]; then
-            current="$limit_status $current"
-        fi
+        limit_status=$(check_limit "$current_val" "$limit" "$metric_name")
 
         # Count limit breaches
         if [[ "$limit_status" == "⚠️" ]]; then
@@ -200,12 +181,23 @@ for current_report in "$current_dir"/*_tps-report.json; do
         # Format limit for display
         if [[ "$limit" != "null" ]]; then
             if [[ "$metric_name" == *"Memory"* ]]; then
-                limit="${limit}KB"
+                limit_fmt="${limit}KB"
+            else
+                limit_fmt=$limit
             fi
+            limit_display="$limit_status $limit_fmt"
+        else
+            limit_display="$limit_status"
+        fi
+
+        if [[ -n "$change_icon" ]]; then
+            change_fmt="$change_icon $change"
+        else
+            change_fmt="$change"
         fi
 
         # Store data for sorting: TPS|METRIC|INSTANCE|ROW
-        printf "| %s | %s | %d | %s | %s | %s | %s |\n" "$metric_name" "$inst_type" "$tps" "$baseline" "$current" "$limit" "$change" >> "$tmp_file"
+        printf "| %s | %s | %d | %s | %s | %s | %s |\n" "$metric_name" "$inst_type" "$tps" "$baseline_fmt" "$current_fmt" "$change_fmt" "$limit_fmt" >> "$tmp_file"
     done
 done
 
