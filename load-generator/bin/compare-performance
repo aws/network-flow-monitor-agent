@@ -101,6 +101,7 @@ echo "|--------|---------------|-----|----------|---------|-------|--------|"
 
 # Collect all data first for sorting
 tmp_file=$(mktemp)
+echo "step 1"
 limit_breaches=0
 
 # Compare each report file
@@ -108,9 +109,9 @@ for current_report in "$current_dir"/*_tps-report.json; do
     if [[ ! -f "$current_report" ]]; then
         continue
     fi
-
     filename=$(basename "$current_report")
     baseline_report="$baseline_dir/$filename"
+    echo "step 2"
 
     # Check if baseline exists, compare against that too if it exists
     has_baseline=true
@@ -121,7 +122,9 @@ for current_report in "$current_dir"/*_tps-report.json; do
     # Extract instance type and TPS from filename
     # Format: results-pr-58_m6a.xlarge_10000_tps-report.json
     inst_type=$(echo "$filename" | sed 's/.*_\([^_]*\)_[0-9]*_tps-report.json/\1/')
+    echo "step 3"
     tps=$(echo "$filename" | sed 's/.*_\([0-9]*\)_tps-report.json/\1/')
+    echo "step 4"
 
     # Compare key metrics
     metrics=(
@@ -134,8 +137,9 @@ for current_report in "$current_dir"/*_tps-report.json; do
     for metric_def in "${metrics[@]}"; do
         metric_name=$(echo "$metric_def" | cut -d'|' -f1)
         metric_path=$(echo "$metric_def" | cut -d'|' -f2)
-
+        echo "step 5"
         current=$(get_metric "$current_report" "$metric_path")
+        echo "step 6"
 
         if [[ "$has_baseline" == "true" ]]; then
             baseline_val=$(get_metric "$baseline_report" "$metric_path")
@@ -174,7 +178,9 @@ for current_report in "$current_dir"/*_tps-report.json; do
 
         # Check against performance limits
         limit=$(get_limit "$inst_type" "$metric_name")
+        echo "step 7"
         limit_status=$(check_limit "$current" "$limit" "$metric_name")
+        echo "step 8"
 
         if [[ -n "$limit_status" ]]; then
             current="$limit_status $current"
@@ -198,11 +204,7 @@ for current_report in "$current_dir"/*_tps-report.json; do
 done
 
 # Sort by TPS, then metric, then instance type and output
-if [[ -s "$tmp_file" ]]; then
-    sort -t'|' -k1,1n -k2,2 -k3,3 "$tmp_file"
-else
-    log "No matching reports found for comparison."
-fi
+sort -t'|' -k1,1n -k2,2 -k3,3 "$tmp_file"
 rm -f "$tmp_file"
 
 echo "-----"
