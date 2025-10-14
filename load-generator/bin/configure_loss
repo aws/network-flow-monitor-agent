@@ -27,7 +27,7 @@ if [[ $loss_percent -lt 0 || $loss_percent -gt 99 ]]; then
     exit 1
 fi
 
-# static, we have this configured in network-setup.sh
+# static, we have this configured in network-setup
 virtual_ips="1.1.1.1 2.2.2.2"
 
 # We have different interface names for different network namespaces, check network-setup for data

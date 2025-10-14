@@ -87,11 +87,9 @@ sudo ln -sf $HOME/.cargo/bin/* /usr/local/bin/
 
 # Set up network namespaces for the tcp-tester.
 log "Setting up network config"
-sudo bin/network-setup.sh
+sudo bin/network-setup
 
 if [ -n "${LOAD_TEST_ENABLE_NETWORK_LOSS}" ]; then
     bin/configure_loss --enable --loss_percent 10 --delay 50ms --jitter 500ms
-else
-    bin/configure_loss --disable
 fi
 log "✅ Network config is setup"

@@ -87,7 +87,7 @@ bin/run-ssm-command async "cd /usr/tmp && sudo --preserve-env bin/prepare-enviro
 log "${CYAN}Running load test suite...${NC}"
 bin/run-load-test-suite \
     --region $region \
-    --duration_sec 240
+    --duration_sec 30
 
 log "${CYAN}Fetching and generating results...${NC}"
 bin/fetch-and-graph-results --graph-title $graph_identifier

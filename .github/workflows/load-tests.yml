@@ -3,7 +3,7 @@ name: Load Tests
 on:
   workflow_dispatch:
   pull_request:
-    types: [opened, synchronize, reopened]
+    branches: [main]
 
 jobs:
   load-tests:
@@ -17,15 +17,27 @@ jobs:
       GRAPH_ID: pr-${{ github.event.number || github.run_id }}
 
     steps:
+      - name: Configure AWS credentials
+        id: aws-creds
+        continue-on-error: true
+        uses: aws-actions/configure-aws-credentials@v5.0.0
+        with:
+          role-to-assume: ${{ secrets.PR_PERF_TEST_AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.PR_PERF_TEST_AWS_REGION }}
+          mask-aws-account-id: true
+
       - name: Checkout code
+        if: steps.aws-creds.outcome == 'success'
         uses: actions/checkout@v5
 
       - name: Set up Python
+        if: steps.aws-creds.outcome == 'success'
         uses: actions/setup-python@v4
         with:
           python-version: '3.13'
 
       - name: Install Python dependencies
+        if: steps.aws-creds.outcome == 'success'
         run: |
           python3 -m pip install --upgrade pip
           python3 -m pip install sh matplotlib
@@ -33,6 +45,7 @@ jobs:
           python3 -c "import matplotlib; print('matplotlib module installed successfully')"
 
       - name: Install Rust
+        if: steps.aws-creds.outcome == 'success'
         uses: actions-rs/toolchain@v1
         with:
           profile: minimal
@@ -41,6 +54,7 @@ jobs:
           override: true
 
       - name: Cache Rust build artifacts
+        if: steps.aws-creds.outcome == 'success'
         uses: actions/cache@v4
         with:
           path: |
@@ -52,20 +66,13 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Build agent
+        if: steps.aws-creds.outcome == 'success'
         run: cargo build --release
 
       - name: Build tcp-tester
+        if: steps.aws-creds.outcome == 'success'
         run: |
           cargo build --release --package tcp-tester
-
-      - name: Configure AWS credentials
-        id: aws-creds
-        continue-on-error: true
-        uses: aws-actions/configure-aws-credentials@v5.0.0
-        with:
-          role-to-assume: ${{ secrets.PR_PERF_TEST_AWS_ROLE_ARN }}
-          aws-region: ${{ secrets.PR_PERF_TEST_AWS_REGION }}
-          mask-aws-account-id: true
 
       - name: Create EC2 instances
         if: steps.aws-creds.outcome == 'success'
@@ -91,7 +98,7 @@ jobs:
           retention-days: 180
 
       - name: Download baseline performance reports
-        if: steps.aws-creds.outcome == 'success' && github.event_name == 'pull_request'
+        if: steps.aws-creds.outcome == 'success'
         run: |
           cd load-generator
           # Try to download baseline reports from main branch
@@ -101,15 +108,25 @@ jobs:
             echo "No baseline reports found in main branch"
 
       - name: Generate performance comparison
-        if: steps.aws-creds.outcome == 'success' && github.event_name == 'pull_request'
+        if: steps.aws-creds.outcome == 'success'
         run: |
           cd load-generator
+          echo "DEBUG: Current directory contents:"
+          ls -la results-${{ env.GRAPH_ID }}/ || echo "Results directory not found"
+          echo "DEBUG: Baseline directory contents:"
+          ls -la baseline-reports/ || echo "Baseline directory not found"
+          echo "DEBUG: Running compare-performance with:"
+          echo "  --current-dir results-${{ env.GRAPH_ID }}"
           chmod +x bin/compare-performance
-          bin/compare-performance --current-dir results-${{ env.GRAPH_ID }} --baseline-dir baseline-reports > performance-comparison.md || \
+          if bin/compare-performance --current-dir results-${{ env.GRAPH_ID }} --baseline-dir baseline-reports > performance-comparison.md; then
+            echo "DEBUG: compare-performance succeeded"
+          else
+            echo "DEBUG: compare-performance failed with exit code $?"
             echo -e "# Performance Comparison\nNo baseline reports available for comparison." > performance-comparison.md
+          fi
 
       - name: Upload graphs to gh-perf-images branch
-        if: steps.aws-creds.outcome == 'success' && github.event_name == 'pull_request'
+        if: steps.aws-creds.outcome == 'success'
         run: |
           cd load-generator
 
@@ -120,9 +137,12 @@ jobs:
           git fetch origin gh-perf-images:gh-perf-images 2>/dev/null || git checkout -b gh-perf-images
           git checkout gh-perf-images
 
-          # Create directory and copy graphs
+          # Create directory and copy graphs with unique names
           mkdir -p perf-images/pr-${{ github.event.number }}
-          cp results-${{ env.GRAPH_ID }}/graphs/*.png perf-images/pr-${{ github.event.number }}/
+          for graph in results-${{ env.GRAPH_ID }}/graphs/*.png; do
+            filename=$(basename "$graph")
+            cp "$graph" "perf-images/pr-${{ github.event.number }}/${{ github.run_id }}-$filename"
+          done
 
           # Configure git and commit
           git config user.name "github-actions[bot]"
@@ -137,7 +157,7 @@ jobs:
           git stash pop || true
 
       - name: Comment PR with performance results
-        if: steps.aws-creds.outcome == 'success' && github.event_name == 'pull_request'
+        if: steps.aws-creds.outcome == 'success'
         uses: actions/github-script@v7
         with:
           script: |
@@ -156,9 +176,10 @@ jobs:
             comment += comparison;
             comment += `Performance tests completed successfully! Generated ${graphs.length} performance graphs.\n\n`;
 
-            // Embed each graph using GitHub raw URLs
+            // Embed each graph using GitHub raw URLs with unique filenames
             graphs.forEach(graph => {
-              const graphUrl = `https://raw.githubusercontent.com/${{ github.repository }}/gh-perf-images/perf-images/pr-${{ github.event.number }}/${graph}`;
+              const uniqueFilename = `${{ github.run_id }}-${graph}`;
+              const graphUrl = `https://raw.githubusercontent.com/${{ github.repository }}/gh-perf-images/perf-images/pr-${{ github.event.number }}/${uniqueFilename}`;
               const name = graph.replace('.png', '').replace(/-/g, ' ');
               comment += `### ${name}\n![${name}](${graphUrl})\n\n`;
             });
