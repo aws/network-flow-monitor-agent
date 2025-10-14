@@ -4,6 +4,9 @@
 use crate::{utils::MinNonZero, SockOpsContext};
 use bitflags::bitflags;
 
+#[cfg(not(feature = "bpf"))]
+use std::net::IpAddr;
+
 pub type SockKey = u64;
 pub type SingletonKey = u64;
 pub type Ipv6Bytes = [u8; 16];
@@ -327,6 +330,26 @@ impl EventCounters {
     }
 }
 
+/// Trait for determining if an IP address is a link-local address.
+///
+/// Link-local addresses are:
+/// - IPv4: 169.254.0.0/16 (169.254.0.0 to 169.254.255.255)
+/// - IPv6: fe80::/10 (fe80:: to febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff)
+#[cfg(not(feature = "bpf"))]
+pub trait IpAddrLinkLocal {
+    fn is_link_local(&self) -> bool;
+}
+
+#[cfg(not(feature = "bpf"))]
+impl IpAddrLinkLocal for IpAddr {
+    fn is_link_local(&self) -> bool {
+        match self {
+            IpAddr::V4(ipv4) => ipv4.is_link_local(),
+            IpAddr::V6(ipv6) => ipv6.is_unicast_link_local(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::SockOpsContext;
@@ -334,6 +357,11 @@ mod tests {
     use super::{
         EventCounters, Ipv6Bytes, SockContext, SockStateFlags, SockStats, AF_INET, AF_INET6,
     };
+
+    #[cfg(not(feature = "bpf"))]
+    use super::IpAddrLinkLocal;
+    #[cfg(not(feature = "bpf"))]
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
     #[test]
     fn test_sock_context_is_valid() {
@@ -731,5 +759,67 @@ mod tests {
         };
         let actual_diff_wrapped = stats_b.subtract(&stats_a);
         assert_eq!(actual_diff_wrapped, expected_diff_wrapped);
+    }
+
+    #[cfg(not(feature = "bpf"))]
+    #[test]
+    fn test_ipv4_link_local() {
+        // Test IPv4 link-local addresses (169.254.0.0/16)
+        let link_local_start = IpAddr::V4(Ipv4Addr::new(169, 254, 0, 0));
+        let link_local_middle = IpAddr::V4(Ipv4Addr::new(169, 254, 100, 200));
+        let link_local_end = IpAddr::V4(Ipv4Addr::new(169, 254, 255, 255));
+
+        assert!(link_local_start.is_link_local());
+        assert!(link_local_middle.is_link_local());
+        assert!(link_local_end.is_link_local());
+
+        // Test non-link-local IPv4 addresses
+        let localhost = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
+        let private_a = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let private_b = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
+        let public = IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8));
+        let almost_link_local_1 = IpAddr::V4(Ipv4Addr::new(169, 253, 255, 255));
+        let almost_link_local_2 = IpAddr::V4(Ipv4Addr::new(169, 255, 0, 0));
+
+        assert!(!localhost.is_link_local());
+        assert!(!private_a.is_link_local());
+        assert!(!private_b.is_link_local());
+        assert!(!public.is_link_local());
+        assert!(!almost_link_local_1.is_link_local());
+        assert!(!almost_link_local_2.is_link_local());
+    }
+
+    #[cfg(not(feature = "bpf"))]
+    #[test]
+    fn test_ipv6_link_local() {
+        // Test IPv6 link-local addresses (fe80::/10)
+        let link_local_start = IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0));
+        let link_local_middle = IpAddr::V6(Ipv6Addr::new(
+            0xfe80, 0, 0, 0, 0x1234, 0x5678, 0x9abc, 0xdef0,
+        ));
+        let link_local_upper = IpAddr::V6(Ipv6Addr::new(
+            0xfebf, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff,
+        ));
+
+        assert!(link_local_start.is_link_local());
+        assert!(link_local_middle.is_link_local());
+        assert!(link_local_upper.is_link_local());
+
+        // Test non-link-local IPv6 addresses
+        let localhost = IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1));
+        let global_unicast = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1));
+        let unique_local = IpAddr::V6(Ipv6Addr::new(0xfc00, 0, 0, 0, 0, 0, 0, 1));
+        let multicast = IpAddr::V6(Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1));
+        let almost_link_local_1 = IpAddr::V6(Ipv6Addr::new(
+            0xfe7f, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff,
+        ));
+        let almost_link_local_2 = IpAddr::V6(Ipv6Addr::new(0xfec0, 0, 0, 0, 0, 0, 0, 0));
+
+        assert!(!localhost.is_link_local());
+        assert!(!global_unicast.is_link_local());
+        assert!(!unique_local.is_link_local());
+        assert!(!multicast.is_link_local());
+        assert!(!almost_link_local_1.is_link_local());
+        assert!(!almost_link_local_2.is_link_local());
     }
 }

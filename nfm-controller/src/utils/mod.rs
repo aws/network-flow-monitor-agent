@@ -6,6 +6,7 @@ pub mod command_runner;
 pub mod conntrack_listener;
 pub mod cpu;
 pub mod credentials;
+pub mod crypto;
 pub mod event_timer;
 pub mod memory_inspector;
 pub mod report;
