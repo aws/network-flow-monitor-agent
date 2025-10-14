@@ -15,7 +15,7 @@ LOAD_TEST_INSTANCE_IDS=''
 LOAD_TEST_S3_BUCKET=''
 
 # setup test config
-LOAD_TEST_TPS_STEPS='10000,20000,30000,40000,60000,80000,100000'
+LOAD_TEST_TPS_STEPS='10000'
 
 # if set to anything other than empty, following will add a heavy loss & delay on the traffic
 LOAD_TEST_ENABLE_NETWORK_LOSS=''

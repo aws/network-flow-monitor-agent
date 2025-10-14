@@ -2,6 +2,7 @@
 
 set -o pipefail
 set -o nounset
+set -x
 
 source bin/set-env-vars
 
@@ -85,7 +86,7 @@ check_limit() {
         return
     fi
 
-    if (( $(echo "$value > $limit" | bc -l 2>/dev/null || echo 0) )); then
+    if (( $(awk "BEGIN {print ($value > $limit)}" 2>/dev/null || echo 0) )); then
         echo "⚠️"
     else
         echo "✅"
@@ -160,10 +161,10 @@ for current_report in "$current_dir"/*_tps-report.json; do
         change_icon=""
         if [[ "$change" != "N/A" ]]; then
             change_num=$(echo "$change" | sed 's/[+%]//g')
-            if (( $(echo "$change_num > 10" | bc -l 2>/dev/null || echo 0) )); then
-                change_icon="🔴"
-            elif (( $(echo "$change_num < -10" | bc -l 2>/dev/null || echo 0) )); then
-                change_icon="🟢"
+            if (( $(awk "BEGIN {print ($change_num > 10)}" 2>/dev/null || echo 0) )); then
+                change_icon="🔻"
+            elif (( $(awk "BEGIN {print ($change_num < -10)}" 2>/dev/null || echo 0) )); then
+                change_icon="▲"
             fi
         fi
 
