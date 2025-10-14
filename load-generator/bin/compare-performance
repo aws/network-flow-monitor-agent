@@ -2,7 +2,6 @@
 
 set -o pipefail
 set -o nounset
-set -x
 
 source bin/set-env-vars
 
