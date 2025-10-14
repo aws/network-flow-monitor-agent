@@ -11,7 +11,7 @@
     "limits": {
       "User CPU": 2.5,
       "User CPU Single Core": 30.0,
-      "Memory": 40000,
+      "Memory": 35000,
       "BPF CPU": 4.0
     }
   },
@@ -19,7 +19,7 @@
     "limits": {
       "User CPU": 2.5,
       "User CPU Single Core": 40.0,
-      "Memory": 45000,
+      "Memory": 40000,
       "BPF CPU": 3.0
     }
   },
@@ -27,7 +27,7 @@
     "limits": {
       "User CPU": 2.5,
       "User CPU Single Core": 60.0,
-      "Memory": 50000,
+      "Memory": 60000,
       "BPF CPU": 2.5
     }
   },
@@ -35,7 +35,7 @@
     "limits": {
       "User CPU": 2.5,
       "User CPU Single Core": 80.0,
-      "Memory": 55000,
+      "Memory": 75000,
       "BPF CPU": 3.0
     }
   },
@@ -43,7 +43,7 @@
     "limits": {
       "User CPU": 2.5,
       "User CPU Single Core": 100.0,
-      "Memory": 55000,
+      "Memory": 75000,
       "BPF CPU": 1.5
     }
   }
