@@ -166,7 +166,7 @@ jobs:
             // Embed each graph using GitHub raw URLs with unique filenames
             graphs.forEach(graph => {
               const graphUrl = `https://raw.githubusercontent.com/${{ github.repository }}/gh-perf-images/load-generator/perf-images/pr-${{ github.event.number }}/${graph}`;
-              comment += `###![${name}](${graphUrl})\n`;
+              comment += `###![](${graphUrl})\n`;
             });
 
             // Get artifact download link
