@@ -24,7 +24,6 @@ while [[ $# -gt 0 ]]; do
         --baseline-dir=*) baseline_dir="${1#*=}" ;;
         --baseline-dir) baseline_dir="$2"; shift ;;
         --help|-h) echo "$help_msg"; exit 0 ;;
-        *) echo "Unknown option: $1"; echo "$help_msg"; exit 1 ;;
     esac
     shift
 done

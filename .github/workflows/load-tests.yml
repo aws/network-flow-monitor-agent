@@ -122,6 +122,7 @@ jobs:
             echo "DEBUG: compare-performance succeeded"
           else
             echo "DEBUG: compare-performance failed with exit code $?"
+            bin/compare-performance --current-dir results-${{ env.GRAPH_ID }} --baseline-dir baseline-reports
             echo -e "# Performance Comparison\nNo baseline reports available for comparison." > performance-comparison.md
           fi
 
@@ -139,16 +140,13 @@ jobs:
 
           # Create directory and copy graphs with unique names
           mkdir -p perf-images/pr-${{ github.event.number }}
-          for graph in results-${{ env.GRAPH_ID }}/graphs/*.png; do
-            filename=$(basename "$graph")
-            cp "$graph" "perf-images/pr-${{ github.event.number }}/${{ github.run_id }}-$filename"
-          done
+          cp results-${{ env.GRAPH_ID }}/graphs/*.png perf-images/pr-${{ github.event.number }}/
 
           # Configure git and commit
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          git add perf-images/pr-${{ github.event.number }}/
+          git add load-generator/perf-images/pr-${{ github.event.number }}/
           git commit -m "Add performance graphs for PR #${{ github.event.number }}"
           git push origin gh-perf-images
 
@@ -178,10 +176,8 @@ jobs:
 
             // Embed each graph using GitHub raw URLs with unique filenames
             graphs.forEach(graph => {
-              const uniqueFilename = `${{ github.run_id }}-${graph}`;
-              const graphUrl = `https://raw.githubusercontent.com/${{ github.repository }}/gh-perf-images/perf-images/pr-${{ github.event.number }}/${uniqueFilename}`;
-              const name = graph.replace('.png', '').replace(/-/g, ' ');
-              comment += `### ${name}\n![${name}](${graphUrl})\n\n`;
+              const graphUrl = `https://raw.githubusercontent.com/${{ github.repository }}/gh-perf-images/load-generator/perf-images/pr-${{ github.event.number }}/${graph}`;
+              comment += `###![${name}](${graphUrl})\n`;
             });
 
             // Get artifact download link
