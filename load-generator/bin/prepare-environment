@@ -1,0 +1,95 @@
+#!/bin/bash
+
+set -o errexit
+set -o pipefail
+set -o nounset
+
+source bin/set-env-vars
+
+handle_error() {
+    msg=$1
+    log "[ERROR] $msg"
+    exit 1
+}
+
+# Confirm kernel 4.13 or later.
+uname -r | cut -d. -f1,2 | tr '.' ' ' | awk '{
+    if($1 > 4 || ($1 == 4 && $2 >= 13)) { \
+        printf "[INFO] Kernel version is good\n" \
+    } else { \
+        printf "[ERROR] Kernel version must be above 4.13, found %d.%d\n", $1, $2; \
+        exit 1;
+    } \
+}'
+
+# Install dependencies with retry logic
+log "${BLUE}Installing dependencies iproute-tc bpftool tree sysstat gcc make perf${NC}"
+
+# Wait for any existing yum processes to complete up to 3 minutes
+log "Waiting for yum lock to be available..."
+for i in {1..60}; do
+    if sudo fuser /var/lib/rpm/.rpm.lock 2>/dev/null; then
+        log "Yum lock detected, waiting... (attempt $i/50)"
+        sleep 3
+    else
+        break
+    fi
+done
+
+# Retry yum install with backoff
+for attempt in {1..5}; do
+    log "Installing packages (attempt $attempt/5)..."
+    if sudo yum install -y iproute-tc bpftool tree sysstat gcc make perf; then
+        log "✅ Package installation successful"
+        break
+    else
+        if [[ $attempt -eq 5 ]]; then
+            handle_error "Failed to install packages after 5 attempts"
+        fi
+        log "${YELLOW}Package installation failed, retrying in 3 seconds...${NC}"
+        sleep 3
+    fi
+done
+
+# Explicitly set PATH to include common binary locations
+export PATH=/usr/sbin:/sbin:/usr/local/sbin:$PATH
+log "PATH is set to: $PATH"
+which bpftool || handle_error "bpftool not found in PATH: $PATH"
+which bpftop || handle_error "bpftop not found in PATH: $PATH"
+
+grep CONFIG_BPF_SYSCALL=y /boot/config-$(uname -r) || handle_error 'BPF syscalls not enabled'
+grep CONFIG_CGROUP_BPF=y /boot/config-$(uname -r) || handle_error 'BPF cgroups not enabled'
+/usr/sbin/bpftool feature | grep 'sock_ops is available' || handle_error 'BPF sock_ops not enabled'
+log "✅ BPF features are OK"
+mount | grep cgroup2 | \
+    awk '{if ($3 != "/sys/fs/cgroup") {printf "[WARN] Note the atypical cgroup mount point: "$3"\n"}}' \
+    || handle_error 'Mounted cgroup2 not found'
+log "✅ Cgroup v2 is OK"
+
+log "Installing Rust"
+curl https://sh.rustup.rs -sSf | sh -s -- -y # Cargo
+source $HOME/.cargo/env # Source the cargo environment
+
+# Check available memory before compilation
+available_mem=$(free -m | awk 'NR==2{printf "%.0f", $7}')
+log "Available memory: ${available_mem}MB"
+if [[ $available_mem -lt 1000 ]]; then
+    log "${YELLOW}Low memory detected, using minimal compilation settings${NC}"
+    export CARGO_BUILD_JOBS=1
+    export RUSTFLAGS="-C opt-level=0 -C debuginfo=0"
+    # Clear package cache to free space
+    cargo cache --autoclean 2>/dev/null || true
+fi
+
+cargo install flamegraph
+log "✅ Flamegraph is installed"
+sudo ln -sf $HOME/.cargo/bin/* /usr/local/bin/
+
+# Set up network namespaces for the tcp-tester.
+log "Setting up network config"
+sudo bin/network-setup
+
+if [ -n "${LOAD_TEST_ENABLE_NETWORK_LOSS}" ]; then
+    bin/configure_loss --enable --loss_percent 10 --delay 50ms --jitter 500ms
+fi
+log "✅ Network config is setup"

@@ -1,0 +1,43 @@
+#!/bin/bash
+
+set -o errexit
+set -o pipefail
+set -o nounset
+
+help_msg=$(cat <<EOF
+Terminates EC2 instances and cleans up S3 bucket
+Usage: $0 [--region region]
+Examples:
+    $0 --region us-west-2
+EOF
+)
+
+region=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --region=*) region="${1#*=}" ;;
+        --region) region="$2"; shift ;;
+        --help|-h) echo "$help_msg"; exit 0 ;;
+        *) echo "Unknown option: $1"; echo "$help_msg"; exit 1 ;;
+    esac
+    shift
+done
+
+source bin/set-env-vars
+
+if [ -n "$LOAD_TEST_INSTANCE_IDS" ]; then
+    echo "Terminating instances: $LOAD_TEST_INSTANCE_IDS"
+    aws ec2 terminate-instances --instance-ids $LOAD_TEST_INSTANCE_IDS --region "$region" --output text --no-cli-pager
+
+    echo "Waiting for instances to terminate..."
+    aws ec2 wait instance-terminated --instance-ids $LOAD_TEST_INSTANCE_IDS --region "$region"
+    echo "All instances terminated"
+else
+    echo "No instances to terminate"
+fi
+
+# Clear instance IDs and bucket name from set-env-vars
+sed -i "s/^LOAD_TEST_INSTANCE_IDS=.*/LOAD_TEST_INSTANCE_IDS=''/" bin/set-env-vars
+sed -i "s/^LOAD_TEST_S3_BUCKET=.*/LOAD_TEST_S3_BUCKET=''/" bin/set-env-vars
+echo "Cleared instance IDs from set-env-vars"

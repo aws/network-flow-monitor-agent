@@ -1,0 +1,132 @@
+#!/bin/bash
+
+set -o errexit
+set -o pipefail
+set -o nounset
+
+help_msg=$(cat <<EOF
+Creates EC2 instances for performance testing
+Usage: $0 [--instance-types type1,type2] [--region region]
+Examples:
+    $0 --instance-types m6a.xlarge,m6a.4xlarge,m6a.8xlarge,m6a.16xlarge,m6a.24xlarge,m6a.48xlarge --region us-west-2
+EOF
+)
+
+instance_types=""
+instance_role=""
+region=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --instance-types=*) instance_types="${1#*=}" ;;
+        --instance-types) instance_types="$2"; shift ;;
+        --instance-role=*) instance_role="${1#*=}" ;;
+        --instance-role) instance_role="$2"; shift ;;
+        --region=*) region="${1#*=}" ;;
+        --region) region="$2"; shift ;;
+        --help|-h) echo "$help_msg"; exit 0 ;;
+        *) echo "Unknown option: $1"; echo "$help_msg"; exit 1 ;;
+    esac
+    shift
+done
+
+if [[ -z $region ]]; then
+    echo "ERROR: region is required as tests are regional"
+    exit 1
+fi
+
+if [[ -z $instance_role ]]; then
+    echo "ERROR: instance_role is required as instances require permissions for SSM"
+    exit 1
+fi
+
+# By default infer from instance-config.json
+if [[ -z $instance_types ]]; then
+    instance_types=$(jq -r '. | keys | join(",")' instance-config.json)
+    echo "Inferred instance types from instance-config.json: $instance_types"
+fi
+
+source bin/set-env-vars
+
+# User data script to install SSM agent and dependencies
+user_data=$(cat <<'EOF'
+#!/bin/bash
+yum update -y
+yum install -y amazon-ssm-agent awscli sysstat iproute-tc bpftool tree gcc make perf
+systemctl enable amazon-ssm-agent
+systemctl start amazon-ssm-agent
+mkdir -p /usr/tmp
+EOF
+)
+
+# Get the latest Amazon Linux 2023 AMI
+ami_id=$(aws ec2 describe-images \
+    --owners amazon \
+    --filters "Name=name,Values=al2023-ami-*-x86_64" "Name=state,Values=available" \
+    --query 'Images | sort_by(@, &CreationDate) | [-1].ImageId' \
+    --output text \
+    --region "$region")
+
+echo "Using AMI: $ami_id in region: $region"
+
+instance_ids=""
+IFS=',' read -ra TYPES <<< "$instance_types"
+for instance_type in "${TYPES[@]}"
+do
+    echo "Creating $instance_type instance..."
+
+    instance_id=$(aws ec2 run-instances \
+        --image-id "$ami_id" \
+        --count 1 \
+        --instance-type "$instance_type" \
+        --iam-instance-profile Name=$instance_role \
+        --user-data "$user_data" \
+        --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=network-flow-monitor-perf-test},{Key=Purpose,Value=performance-testing}]" \
+        --query 'Instances[0].InstanceId' \
+        --output text \
+        --region "$region")
+
+    echo "Created instance: $instance_id ($instance_type)"
+    instance_ids="$instance_ids $instance_id"
+done
+
+# Wait for instances to be running
+echo "Waiting for instances to be running..."
+aws ec2 wait instance-running --instance-ids $instance_ids --region "$region"
+
+# Wait for SSM connectivity (up to 5 minutes)
+echo "Waiting for SSM connectivity..."
+timeout=300
+start_time=$(date +%s)
+
+while true; do
+    current_time=$(date +%s)
+    elapsed=$((current_time - start_time))
+
+    if [ $elapsed -gt $timeout ]; then
+        echo "Timeout waiting for SSM connectivity"
+        exit 1
+    fi
+
+    ready_count=$(aws ssm describe-instance-information \
+        --filters "Key=InstanceIds,Values=$(echo $instance_ids | tr ' ' ',')" \
+        --query 'length(InstanceInformationList)' \
+        --output text \
+        --region "$region")
+
+    expected_count=$(echo $instance_ids | wc -w)
+
+    if [ "$ready_count" = "$expected_count" ]; then
+        echo "All instances are SSM-ready"
+        break
+    fi
+
+    echo "Waiting for SSM connectivity... ($ready_count/$expected_count ready)"
+    sleep 10
+done
+
+# Update set-env-vars with the new instance IDs
+sed -i "s/^LOAD_TEST_INSTANCE_IDS=.*/LOAD_TEST_INSTANCE_IDS='$instance_ids'/" bin/set-env-vars
+
+echo "Instance IDs: $instance_ids"
+echo "Updated bin/set-env-vars with new instance IDs"

@@ -1,0 +1,71 @@
+#!/bin/bash
+
+set -x
+
+enable="false"
+loss_percent="10"
+delay=50ms
+jitter=250ms
+
+while [[ $# -gt 0 ]]; do
+   case "$1" in
+        --enable) enable="true" ;;
+        --disable) enable="false" ;;
+        --loss_percent=*) loss_percent="${1#*=}" ;;
+        --loss_percent) loss_percent="$2"; shift ;;
+        --delay=*) delay="${1#*=}" ;;
+        --delay) delay="$2"; shift ;;
+        --jitter=*) jitter="${1#*=}" ;;
+        --jitter) jitter="$2"; shift ;;
+   esac
+   shift
+done
+
+# Validate loss_percent is between 0 and 50
+if [[ $loss_percent -lt 0 || $loss_percent -gt 99 ]]; then
+    echo "Error: loss_percent must be between 0 and 99, got: $loss_percent"
+    exit 1
+fi
+
+# static, we have this configured in network-setup
+virtual_ips="1.1.1.1 2.2.2.2"
+
+# We have different interface names for different network namespaces, check network-setup for data
+declare -A ns_interfaces=(
+    ["nfm-perf-test-client"]="i1"
+    ["nfm-perf-test-tcp-tester"]="i2 i3"
+    ["nfm-perf-test-server"]="i4"
+)
+
+if [[ $enable == "true" ]]; then
+    echo "Enabling synthetic network loss (${loss_percent}%, delay: ${delay}, jitter: ${jitter})"
+
+    for namespace in "${!ns_interfaces[@]}"; do
+        interfaces=${ns_interfaces[$namespace]}
+        echo "Configuring namespace: $namespace"
+
+        for interface in $interfaces; do
+            echo "  Setting up loss qdisc on $interface in $namespace"
+            sudo ip netns exec $namespace tc qdisc add dev $interface root handle 1: prio 2>/dev/null || true
+            sudo ip netns exec $namespace tc qdisc add dev $interface parent 1:2 handle 20: netem loss $loss_percent% delay $delay $jitter 2>/dev/null || true
+
+            for ip in $virtual_ips; do
+                echo "  Adding filter for $ip on $interface in $namespace"
+                sudo ip netns exec $namespace tc filter add dev $interface parent 1:0 protocol ip u32 match ip dst $ip flowid 1:2 2>/dev/null || true
+                sudo ip netns exec $namespace tc filter add dev $interface parent 1:0 protocol ip u32 match ip src $ip flowid 1:2 2>/dev/null || true
+            done
+        done
+    done
+else
+    echo "Disabling synthetic network loss for all namespace interfaces"
+
+    for namespace in "${!ns_interfaces[@]}"; do
+        interfaces=${ns_interfaces[$namespace]}
+        echo "Cleaning namespace: $namespace"
+
+        for interface in $interfaces; do
+            echo "  Removing qdisc from $interface in $namespace"
+            sudo ip netns exec $namespace tc qdisc del dev $interface root 2>/dev/null || true
+        done
+    done
+fi

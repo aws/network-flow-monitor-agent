@@ -1,0 +1,215 @@
+#!/bin/bash
+
+set -o pipefail
+set -o nounset
+set -x
+
+source bin/set-env-vars
+
+help_msg=$(cat <<EOF
+Compare performance results with baseline
+Usage: $0 --current-dir <dir> --baseline-dir <dir>
+Examples:
+    $0 --current-dir results-pr-123 --baseline-dir baseline-reports
+EOF
+)
+
+current_dir=""
+baseline_dir=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --current-dir=*) current_dir="${1#*=}" ;;
+        --current-dir) current_dir="$2"; shift ;;
+        --baseline-dir=*) baseline_dir="${1#*=}" ;;
+        --baseline-dir) baseline_dir="$2"; shift ;;
+        --help|-h) echo "$help_msg"; exit 0 ;;
+    esac
+    shift
+done
+
+if [[ -z "$current_dir" || -z "$baseline_dir" ]]; then
+    log "ERROR: Both --current-dir and --baseline-dir are required"
+    exit 1
+fi
+
+if [[ "$current_dir" == "$baseline_dir" ]]; then
+    log "ERROR: current-dir and baseline-dir cannot be the same directory"
+    exit 1
+fi
+
+if [[ ! -d "$current_dir" ]]; then
+    log "ERROR: Current directory '$current_dir' does not exist"
+    exit 1
+fi
+
+
+# Function to extract metric value from JSON report
+get_metric() {
+    local file="$1"
+    local path="$2"
+    jq -r "$path // 0" "$file" 2>/dev/null || echo "0"
+}
+
+# Function to calculate percentage change
+calc_change() {
+    local old="$1"
+    local new="$2"
+    if [[ "$old" == "0" || "$old" == "0.000" ]]; then
+        echo "N/A"
+    else
+        python3 -c "print(f'{((float('$new') - float('$old')) / float('$old') * 100):+.1f}%')"
+    fi
+}
+
+# Function to get performance limit for instance type and metric
+get_limit() {
+    local inst_type="$1"
+    local metric_name="$2"
+    local limits_file="instance-config.json"
+
+    if [[ -f "$limits_file" ]]; then
+        jq -r ".[\"$inst_type\"].limits[\"$metric_name\"] // null" "$limits_file" 2>/dev/null || echo "null"
+    else
+        echo "null"
+    fi
+}
+
+# Function to check if value exceeds limit
+check_limit() {
+    local value="$1"
+    local limit="$2"
+    local metric_name="$3"
+
+    if [[ "$limit" == "null" || "$limit" == "0" ]]; then
+        echo ""
+        return
+    fi
+
+    if (( $(awk "BEGIN {print ($value > $limit)}" 2>/dev/null || echo 0) )); then
+        echo "⚠️"
+    else
+        echo "✅"
+    fi
+}
+
+# Generate comparison report
+echo "## 📊 Performance Comparison"
+echo "| Metric | Instance Type | TPS | Baseline |  Current  |  Change  |       Limit      |"
+echo "|--------|---------------|-----|----------|-----------|----------|------------------|"
+
+# Collect all data first for sorting
+tmp_file=$(mktemp)
+limit_breaches=0
+
+# Compare each report file
+for current_report in "$current_dir"/*_tps-report.json; do
+    if [[ ! -f "$current_report" ]]; then
+        continue
+    fi
+
+    filename=$(basename "$current_report")
+    baseline_report="$baseline_dir/$filename"
+
+    # Check if baseline exists, compare against that too if it exists
+    has_baseline=true
+    if [[ ! -f "$baseline_report" ]]; then
+        has_baseline=false
+    fi
+
+    # Extract instance type and TPS from filename
+    # Format: results-pr-58_m6a.xlarge_10000_tps-report.json
+    inst_type=$(echo "$filename" | sed 's/.*_\([^_]*\)_[0-9]*_tps-report.json/\1/')
+    tps=$(echo "$filename" | sed 's/.*_\([0-9]*\)_tps-report.json/\1/')
+
+    # Compare key metrics
+    metrics=(
+        "User CPU|.tps_report.sonar_agent_process.cpu_util_pct.avg"
+        "User CPU Single Core|(.tps_report.sonar_bpf_program.cpu_util_pct.max + .tps_report.sonar_agent_process.cpu_util_pct.max) * .tps_report.cpu_cores"
+        "Memory|.tps_report.sonar_agent_process.resident_mem_kb.avg"
+        "BPF CPU|.tps_report.sonar_bpf_program.cpu_util_pct.avg"
+    )
+
+    for metric_def in "${metrics[@]}"; do
+        metric_name=$(echo "$metric_def" | cut -d'|' -f1)
+        metric_path=$(echo "$metric_def" | cut -d'|' -f2)
+
+        current_val=$(get_metric "$current_report" "$metric_path")
+
+        if [[ "$has_baseline" == "true" ]]; then
+            baseline_val=$(get_metric "$baseline_report" "$metric_path")
+            change=$(calc_change "$baseline_val" "$current_val")
+        else
+            baseline_val="N/A"
+            change="N/A"
+        fi
+
+        # Format values
+        if [[ "$metric_name" == *"Memory"* ]]; then
+            if [[ "$baseline_val" == "N/A" ]]; then
+                baseline_fmt="N/A"
+            else
+                baseline_fmt="${baseline_val}KB"
+            fi
+            current_fmt="${current_val}KB"
+        else
+            baseline_fmt=$baseline_val
+            current_fmt="$current_val"
+        fi
+
+        # Add emoji for significant changes
+        change_icon=""
+        if [[ "$change" != "N/A" ]]; then
+            change_num=$(echo "$change" | sed 's/[+%]//g')
+            if (( $(awk "BEGIN {print ($change_num > 10)}" 2>/dev/null || echo 0) )); then
+                change_icon="🔻"
+            elif (( $(awk "BEGIN {print ($change_num < -10)}" 2>/dev/null || echo 0) )); then
+                change_icon="▲"
+            fi
+        fi
+
+        # Check against performance limits
+        limit=$(get_limit "$inst_type" "$metric_name")
+        limit_status=$(check_limit "$current_val" "$limit" "$metric_name")
+
+        # Count limit breaches
+        if [[ "$limit_status" == "⚠️" ]]; then
+            ((limit_breaches++))
+        fi
+
+        # Format limit for display
+        if [[ "$limit" != "null" ]]; then
+            if [[ "$metric_name" == *"Memory"* ]]; then
+                limit_fmt="${limit}KB"
+            else
+                limit_fmt=$limit
+            fi
+            limit_display="$limit_status $limit_fmt"
+        else
+            limit_display="$limit_status"
+        fi
+
+        if [[ -n "$change_icon" ]]; then
+            change_fmt="$change_icon $change"
+        else
+            change_fmt="$change"
+        fi
+
+        # Store data for sorting: TPS|METRIC|INSTANCE|ROW
+        printf "| %s | %s | %d | %s | %s | %s | %s |\n" "$metric_name" "$inst_type" "$tps" "$baseline_fmt" "$current_fmt" "$change_fmt" "$limit_display" >> "$tmp_file"
+    done
+done
+
+# Sort by TPS, then metric, then instance type
+sort -t'|' -k1,1n -k2,2 -k3,3 "$tmp_file"
+rm -f "$tmp_file"
+
+echo "-----"
+
+log "🔴 = Significant increase (>10%)  🟢 = Significant improvement (>10% decrease)  ⚠️ = Exceeds performance limit"
+
+# Exit with error if any limits were breached
+if [[ $limit_breaches -gt 0 ]]; then
+    log "ERROR: $limit_breaches performance limit(s) exceeded. Failing tests"
+    exit 1
+fi

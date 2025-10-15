@@ -1,0 +1,40 @@
+#!/bin/bash
+
+set -o errexit
+set -o pipefail
+set -o nounset
+
+source bin/set-env-vars
+
+start_port=$1
+tps=$2
+delay_ms=$3
+
+output_dir=$tps
+num_cpus=`nproc`
+tps=$(($tps / $num_cpus))
+
+# Divide by 2, as client and server are on the same machine.
+tps=$(($tps / 2))
+
+cleanup() {
+    log "Exiting tcp-tester"
+    pkill -f "tcp-tester" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+# Distribute TCP tester applications across CPUs.
+log "Starting $num_cpus tcp-tester processes across CPUs 0-$((num_cpus-1)), ports $start_port-$((start_port+num_cpus-1)), $tps TPS each"
+
+for ((cpu = 0; cpu < num_cpus; cpu++))
+do
+    port=$(($start_port + $cpu))
+    RUST_LOG=OFF taskset -c $cpu tcp-tester --servers 1 \
+        --starting-port $port --connection-rate $tps --traffic-shaping off \
+        --response-delay-ms $delay_ms \
+        2>/dev/null &
+done
+
+log "Started tcp-tester processes."
+
+wait

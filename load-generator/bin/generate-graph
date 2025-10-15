@@ -1,0 +1,95 @@
+#!/usr/bin/env python3
+
+# This script produces a PNG/SVG image of a graph from the supplied data series.
+
+import argparse
+import math
+import os
+import matplotlib.pyplot as plt
+import matplotlib.markers as markers
+import re
+
+parser = argparse.ArgumentParser("generate-graph")
+parser.add_argument('--title', help='The chart\'s title', required=True)
+parser.add_argument('--image-name-prefix', required=False, default='')
+parser.add_argument('--x-axis-label', required=True)
+parser.add_argument('--x-values', help='Values along the x-axis, comma separated', required=True)
+parser.add_argument('--y-axis-label', required=True)
+parser.add_argument('--y-axis-suffix', required=False, default='')
+parser.add_argument('--line', help='Specify for each line plotted on the graph.  Syntax: "name:value,value,..."', required=True, action='append')
+parser.add_argument('--output-dir', help='Image output directory', required=False, default='.')
+parser.add_argument('--format', help='Output format: png or svg', required=False, default='png', choices=['png', 'svg'])
+args = parser.parse_args()
+
+# Use different markers for colorblind accessibility
+marker_styles = ['o', 'D', 's', '^', 'p', 'h']
+colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b']
+
+x_values = list(map(int, args.x_values.split(',')))
+y_max = 0
+
+plt.figure(figsize=(8, 4.5))
+plt.style.use('default')
+
+for i, line in enumerate(args.line):
+    parts = line.split(':')
+    if len(parts) != 2:
+        raise Exception('Invalid line format: ' + line)
+
+    name = parts[0]
+    y_values = list(map(float, parts[1].split(',')))
+    y_max = max(y_max, max(y_values))
+
+    marker_idx = i % len(marker_styles)
+    color_idx = i % len(colors)
+
+    plt.plot(x_values, y_values,
+             marker=marker_styles[marker_idx],
+             color=colors[color_idx],
+             linewidth=2,
+             markersize=6,
+             label=name)
+
+if y_max > 0:
+    # Calculate nice y-axis maximum
+    recent_pow_10 = 10 ** math.floor(math.log10(y_max))
+    power_10_factor = math.ceil(y_max / recent_pow_10)
+    next_y_max = recent_pow_10 * power_10_factor
+
+    y_delta = next_y_max / y_max
+    if y_delta < 1.5 and y_delta > 1.1:
+        y_max = next_y_max
+    else:
+        y_max *= 1.1
+
+plt.title(args.title, fontsize=14, pad=20)
+plt.xlabel(args.x_axis_label, fontsize=11)
+plt.ylabel(args.y_axis_label, fontsize=11)
+plt.ylim(0, y_max)
+plt.grid(True, alpha=0.3)
+plt.legend(bbox_to_anchor=(1.05, 0.5), loc='center left')
+plt.tight_layout()
+
+# Format y-axis ticks with suffix if provided
+if args.y_axis_suffix:
+    ax = plt.gca()
+    # Use appropriate decimal places based on value magnitude
+    def format_with_suffix(x, p):
+        if x == 0:
+            return f'0{args.y_axis_suffix}'
+        elif x < 0.1:
+            return f'{x:.3f}{args.y_axis_suffix}'
+        elif x < 1:
+            return f'{x:.2f}{args.y_axis_suffix}'
+        else:
+            return f'{x:.1f}{args.y_axis_suffix}'
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(format_with_suffix))
+
+# Remove superfluous characters from the name
+image_name = re.sub(r'[^\w\-]', '', args.title.replace(' ', '-').lower()) + f'.{args.format}'
+image_name = args.image_name_prefix + image_name
+image_path = os.path.join(args.output_dir, image_name)
+
+# Save the image
+plt.savefig(image_path, format=args.format, dpi=400, bbox_inches='tight')
+plt.close()

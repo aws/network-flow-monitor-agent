@@ -1,0 +1,199 @@
+name: Load Tests
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+
+jobs:
+  load-tests:
+    runs-on: ubuntu-22.04 # 24.04 has GLIBC 2.39, if agent is built with that with dynamic linking it wont run in AL2023 which do not have it
+    timeout-minutes: 90
+    permissions:
+      id-token: write   # This is required for requesting the JWT
+      contents: write   # This is required for pushing graphs to PR branch
+      pull-requests: write  # This is required for commenting on PRs
+    env:
+      GRAPH_ID: pr-${{ github.event.number || github.run_id }}
+
+    steps:
+      - name: Configure AWS credentials
+        id: aws-creds
+        continue-on-error: true
+        uses: aws-actions/configure-aws-credentials@v5.0.0
+        with:
+          role-to-assume: ${{ secrets.PR_PERF_TEST_AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.PR_PERF_TEST_AWS_REGION }}
+          mask-aws-account-id: true
+
+      - name: Checkout code
+        if: steps.aws-creds.outcome == 'success'
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        if: steps.aws-creds.outcome == 'success'
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.13'
+
+      - name: Install Python dependencies
+        if: steps.aws-creds.outcome == 'success'
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install sh matplotlib
+          python3 -c "import sh; print('sh module installed successfully')"
+          python3 -c "import matplotlib; print('matplotlib module installed successfully')"
+
+      - name: Install Rust
+        if: steps.aws-creds.outcome == 'success'
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          components: rustfmt, clippy
+          override: true
+
+      - name: Cache Rust build artifacts
+        if: steps.aws-creds.outcome == 'success'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build agent
+        if: steps.aws-creds.outcome == 'success'
+        run: cargo build --release
+
+      - name: Build tcp-tester
+        if: steps.aws-creds.outcome == 'success'
+        run: |
+          cargo build --release --package tcp-tester
+
+      - name: Create EC2 instances
+        if: steps.aws-creds.outcome == 'success'
+        run: |
+          cd load-generator
+          chmod +x bin/*
+          bin/create-instances --region ${{ secrets.PR_PERF_TEST_AWS_REGION }} --instance-role ${{ secrets.PR_PERF_TEST_INSTANCE_ROLE }}
+
+      - name: Run Performance tests on EC2 instances
+        if: steps.aws-creds.outcome == 'success'
+        run: |
+          cd load-generator
+          bin/invoke_test --bucket ${{ secrets.PR_PERF_TEST_BUCKET }} --region ${{ secrets.PR_PERF_TEST_AWS_REGION }} --graph_identifier $GRAPH_ID
+
+      - name: Upload performance results
+        if: steps.aws-creds.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-results-${{ env.GRAPH_ID }}
+          path: |
+            load-generator/results-${{ env.GRAPH_ID }}/graphs/*.png
+            load-generator/results-${{ env.GRAPH_ID }}/*_tps-report.json
+          retention-days: 180
+
+      - name: Download baseline performance reports
+        if: steps.aws-creds.outcome == 'success'
+        run: |
+          cd load-generator
+          # Try to download baseline reports from main branch
+          mkdir -p baseline-reports
+          git show main:load-generator/baseline-reports/ > /dev/null 2>&1 && \
+            git archive main:load-generator/baseline-reports | tar -x -C baseline-reports/ || \
+            echo "No baseline reports found in main branch"
+
+      - name: Generate performance comparison
+        if: steps.aws-creds.outcome == 'success'
+        run: |
+          cd load-generator
+          chmod +x bin/compare-performance
+          bin/compare-performance --current-dir results-${{ env.GRAPH_ID }} --baseline-dir baseline-reports > performance-comparison.md || \
+            echo -e "# Performance Comparison\nNo baseline reports available for comparison." > performance-comparison.md
+
+      - name: Upload graphs to gh-perf-images branch
+        if: steps.aws-creds.outcome == 'success'
+        run: |
+          cd load-generator
+
+          # Stash any local changes
+          git stash push -m "Temporary stash for graph upload"
+
+          # Create or checkout gh-perf-images branch
+          git fetch origin gh-perf-images:gh-perf-images 2>/dev/null || git checkout -b gh-perf-images
+          git checkout gh-perf-images
+
+          # Create directory and copy graphs with unique names
+          mkdir -p perf-images/pr-${{ github.event.number }}
+          cp results-${{ env.GRAPH_ID }}/graphs/*.png perf-images/pr-${{ github.event.number }}/
+
+          # Configure git and commit
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add perf-images/pr-${{ github.event.number }}/
+          git commit -m "Add performance graphs for PR #${{ github.event.number }}"
+          git push origin gh-perf-images
+
+          # Return to original state
+          git checkout ${{ github.sha }}
+          git stash pop || true
+
+      - name: Comment PR with performance results
+        if: steps.aws-creds.outcome == 'success'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+
+            // Get list of generated graphs
+            const graphId = '${{ env.GRAPH_ID }}';
+            const graphsDir = `load-generator/results-${graphId}/graphs`;
+            const graphs = fs.readdirSync(graphsDir).filter(f => f.endsWith('.png'));
+
+            // Read performance comparison
+            const comparison = fs.readFileSync('load-generator/performance-comparison.md', 'utf8');
+
+            // Create comment with embedded graph images
+            let comment = '## 📊 Performance Test Results\n\n';
+            comment += comparison;
+            comment += `Performance tests completed successfully! Generated ${graphs.length} performance graphs.\n\n`;
+
+            // Embed each graph using GitHub raw URLs with unique filenames
+            graphs.forEach(graph => {
+              const graphUrl = `https://raw.githubusercontent.com/${{ github.repository }}/gh-perf-images/load-generator/perf-images/pr-${{ github.event.number }}/${graph}`;
+              comment += `###![](${graphUrl})\n`;
+            });
+
+            // Get artifact download link
+            try {
+              const artifacts = await github.rest.actions.listWorkflowRunArtifacts({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: context.runId
+              });
+
+              const perfArtifact = artifacts.data.artifacts.find(a => a.name === `performance-results-${graphId}`);
+              if (perfArtifact) {
+                comment += `\n📎 [Download Performance Reports](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts/${perfArtifact.id}) (JSON files with detailed metrics)\n\n`;
+              }
+            } catch (error) {
+              comment += `\n📎 [Download Performance Reports](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) - check artifacts section\n\n`;
+            }
+
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+      - name: Cleanup EC2 instances
+        if: steps.aws-creds.outcome == 'success' && always()
+        run: |
+          cd load-generator
+          bin/cleanup-instances --region ${{ secrets.PR_PERF_TEST_AWS_REGION }}

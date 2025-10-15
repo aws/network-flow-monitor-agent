@@ -1,0 +1,56 @@
+#!/bin/bash
+
+set -o errexit
+set -o pipefail
+set -o nounset
+
+source bin/set-env-vars
+
+help_msg=$(cat <<EOF
+Runs the NFM agent
+Usage: $0 <TPS-dir> <region> [flamegraph]
+Example:
+    $0 5000 us-west-2
+    $0 5000 us-west-2 flamegraph
+EOF
+)
+
+if [[ $# -lt 2 || "$1" == "--help" || "$1" == "-h" ]]; then
+    log "Error: missing required arguments, you have sent" "$@" "help: $help_msg"
+    exit 0
+fi
+
+tps_dir=$1
+region=$2
+flamegraph_option="${3:-}"
+
+cmd_prefix=""
+if [[ -n "$flamegraph_option" ]]
+then
+    if [[ "$flamegraph_option" == "flamegraph" ]]
+    then
+        inst_type=`ec2-metadata -t | awk '{print $2}'`
+        cmd_prefix="flamegraph -v -o results/${tps_dir}/flamegraph-${inst_type}-${tps_dir}-`date +%Y-%m-%dT%H:%M:%S`.svg --"
+    else
+        log "Error: missing required arguments, you have sent" "$@" "help: $help_msg"
+        exit 0
+    fi
+fi
+
+[ -d nfm_agent_temp_test_cgroup ] || sudo mkdir nfm_agent_temp_test_cgroup
+mountpoint -q nfm_agent_temp_test_cgroup || sudo mount -t cgroup2 none nfm_agent_temp_test_cgroup
+
+log "${GREEN}Starting network-flow-monitor-agent ${NC}"
+log_file="results/$tps_dir/`date +%Y-%m-%dT%H:%M:%S`-agent"
+
+# Check if the binary can run (there can be a GLIBC compatibility issue depending on where the binary is built)
+if ! sudo $cmd_prefix /usr/local/sbin/network-flow-monitor-agent --cgroup ./nfm_agent_temp_test_cgroup \
+    --publish-reports on --log-reports on --aggregate-msecs 500 --endpoint-region $region \
+    --endpoint https://networkflowmonitorreports.$region.api.aws/publish \
+    --publish-secs 30 --jitter-secs 0 > "$log_file" 2>&1; then
+    log "${RED}ERROR: Failed to start network-flow-monitor-agent. Agent output:${NC}"
+    cat "$log_file"
+    exit 1
+fi
+
+log "${GREEN}Stopped network-flow-monitor-agent.${NC}"
