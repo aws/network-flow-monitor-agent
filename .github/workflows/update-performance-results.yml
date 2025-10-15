@@ -29,6 +29,16 @@ jobs:
         with:
           script: |
             const prNumber = '${{ steps.check-results.outputs.pr_number }}';
+
+            // Get the PR branch name
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber
+            });
+
+            const prBranch = pr.data.head.ref;
+
             const runs = await github.rest.actions.listWorkflowRuns({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -36,13 +46,9 @@ jobs:
               status: 'completed'
             });
 
+            // Get latest run by branch name
             const prRun = runs.data.workflow_runs.find(run => {
-              // Match exact PR number in pull request events
-              if (run.event === 'pull_request') {
-                return run.pull_requests && run.pull_requests.some(pr => pr.number == prNumber);
-              }
-              // Fallback: match exact #PR format in title
-              return run.display_title && run.display_title.match(new RegExp(`\\(#${prNumber}\\)$`));
+              return run.event === 'pull_request' && run.head_branch === prBranch;
             });
 
             if (prRun) {
@@ -53,7 +59,7 @@ jobs:
             }
 
       - name: Download Latest PR performance results
-        if: steps.check-results.outputs.pr_number != '' && steps.find-run.outputs.found == 'true'
+        if: steps.find-run.outputs.found == 'true'
         uses: actions/download-artifact@v4
         with:
           name: performance-results-pr-${{ steps.check-results.outputs.pr_number }}
@@ -62,7 +68,7 @@ jobs:
           run-id: ${{ steps.find-run.outputs.run_id }}
 
       - name: Update baseline reports
-        if: steps.check-results.outputs.pr_number != '' && steps.find-run.outputs.found == 'true'
+        if: steps.find-run.outputs.found == 'true'
         run: |
           PR_NUM=${{ steps.check-results.outputs.pr_number }}
 
