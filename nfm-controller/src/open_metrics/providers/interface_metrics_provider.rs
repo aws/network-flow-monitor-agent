@@ -33,6 +33,25 @@ pub struct NamespaceInfo {
     pub ip_addresses: Vec<IpAddr>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+struct HostInterface {
+    name: String,
+    virt: bool,
+}
+
+impl HostInterface {
+    fn new(name: String) -> Self {
+        HostInterface {
+            name: name.clone(),
+            virt: check_virtual_iface(&name),
+        }
+    }
+
+    fn is_virtual(&self) -> bool {
+        self.virt
+    }
+}
+
 /// Metric key.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct InterfaceMetricKey {
@@ -43,18 +62,33 @@ struct InterfaceMetricKey {
     node: String,
 }
 
-/// Values provided by the metrics.
 #[derive(Debug, Clone, Default)]
 struct InterfaceMetricValues {
+    host: HostInterfaceMetricValues,
+    netns: NetNsInterfaceMetricValues,
+}
+
+impl InterfaceMetricValues {
+    fn delta(&self, other: &Self) -> Self {
+        InterfaceMetricValues {
+            host: self.host.delta(&other.host),
+            netns: self.netns.delta(&other.netns),
+        }
+    }
+}
+
+/// Interface statistics calculated at node interface levels
+#[derive(Debug, Clone, Default)]
+struct HostInterfaceMetricValues {
     ingress_pkt_count: u64,
     ingress_bytes_count: u64,
     egress_pkt_count: u64,
     egress_bytes_count: u64,
 }
 
-impl InterfaceMetricValues {
-    fn swap_tx_rx(self) -> InterfaceMetricValues {
-        InterfaceMetricValues {
+impl HostInterfaceMetricValues {
+    fn swap_tx_rx(self) -> Self {
+        HostInterfaceMetricValues {
             ingress_pkt_count: self.egress_pkt_count,
             ingress_bytes_count: self.egress_bytes_count,
             egress_pkt_count: self.ingress_pkt_count,
@@ -62,8 +96,8 @@ impl InterfaceMetricValues {
         }
     }
 
-    fn delta(&self, other: &Self) -> InterfaceMetricValues {
-        InterfaceMetricValues {
+    fn delta(&self, other: &Self) -> Self {
+        HostInterfaceMetricValues {
             ingress_pkt_count: self
                 .ingress_pkt_count
                 .saturating_sub(other.ingress_pkt_count),
@@ -74,6 +108,26 @@ impl InterfaceMetricValues {
             egress_bytes_count: self
                 .egress_bytes_count
                 .saturating_sub(other.egress_bytes_count),
+        }
+    }
+}
+
+/// Interface statistics calculated inside the network namespace
+#[derive(Debug, Clone, Default)]
+struct NetNsInterfaceMetricValues {
+    ingress_flow_count: u64,
+    egress_flow_count: u64,
+}
+
+impl NetNsInterfaceMetricValues {
+    fn delta(&self, other: &Self) -> Self {
+        NetNsInterfaceMetricValues {
+            ingress_flow_count: self
+                .ingress_flow_count
+                .saturating_sub(other.ingress_flow_count),
+            egress_flow_count: self
+                .egress_flow_count
+                .saturating_sub(other.egress_flow_count),
         }
     }
 }
@@ -125,6 +179,9 @@ pub struct InterfaceMetricsProvider {
     egress_pkt_count: IntGaugeVec,
     egress_bytes_count: IntGaugeVec,
 
+    ingress_flow_count: IntGaugeVec,
+    egress_flow_count: IntGaugeVec,
+
     // Current metrics to calculate the delta from previous reports
     current_metrics: HashMap<InterfaceMetricKey, InterfaceMetricValues>,
 }
@@ -162,6 +219,16 @@ impl InterfaceMetricsProvider {
                 "egress_bytes",
                 "Egress bytes count",
             ),
+            ingress_flow_count: build_gauge_metric::<InterfaceMetricKey>(
+                &compute_platform,
+                "ingress_flow",
+                "Ingress TCP flow count",
+            ),
+            egress_flow_count: build_gauge_metric::<InterfaceMetricKey>(
+                &compute_platform,
+                "egress_flow",
+                "Egress TCP flow count",
+            ),
             current_metrics: HashMap::new(),
         };
 
@@ -179,35 +246,59 @@ impl InterfaceMetricsProvider {
         };
 
         let mut new_current_metrics = HashMap::new();
-        let result = get_device_status()
-            .iter()
-            .map(|(interface, interface_stats)| {
-                let key =
-                    self.build_metric_key(&interface.name, ns_to_pid.clone(), pod_info.clone());
-                let mut current_value = InterfaceMetricValues {
-                    ingress_pkt_count: interface_stats.recv_packets,
-                    ingress_bytes_count: interface_stats.recv_bytes,
-                    egress_pkt_count: interface_stats.sent_packets,
-                    egress_bytes_count: interface_stats.sent_bytes,
-                };
 
-                // If the interface is veth, we need to swap the values because the pod is on the other end
-                // of the link
-                if interface.is_virtual() {
-                    current_value = current_value.swap_tx_rx();
-                }
+        let mut result = HashMap::new();
+        for (iface, device_status) in get_device_status() {
+            // Get the namespace ID once per interface to avoid duplicate calls
+            let netns = if iface.is_virtual() {
+                self.get_ns_from(&iface.name)
+            } else {
+                None
+            };
 
-                // Calculate deltas before inserting into new_current_metrics
-                let delta_metric = current_value.delta(
-                    self.current_metrics
-                        .get(&key)
-                        .unwrap_or(&InterfaceMetricValues::default()),
-                );
+            let key = self.build_metric_key(&iface.name, &ns_to_pid, &pod_info, netns);
 
-                new_current_metrics.insert(key.clone(), current_value);
-                (key, delta_metric)
-            })
-            .collect();
+            if iface.is_virtual() && key.pod.is_empty() {
+                continue;
+            }
+
+            let mut host_metrics = HostInterfaceMetricValues {
+                ingress_pkt_count: device_status.recv_packets,
+                ingress_bytes_count: device_status.recv_bytes,
+                egress_pkt_count: device_status.sent_packets,
+                egress_bytes_count: device_status.sent_bytes,
+            };
+
+            let mut netns_metrics = NetNsInterfaceMetricValues::default();
+            // If the interface is veth, we need to swap the values because the pod is on the other end
+            // of the link
+            if iface.is_virtual() {
+                host_metrics = host_metrics.swap_tx_rx();
+
+                // Use the already retrieved netns value
+                netns_metrics =
+                    match netns.and_then(|ns| ns_to_pid.as_ref().and_then(|map| map.get(&ns))) {
+                        None => NetNsInterfaceMetricValues::default(),
+                        Some(ns_info) => self.get_netns_metric(ns_info.pid),
+                    };
+            }
+
+            let iface_metrics = InterfaceMetricValues {
+                host: host_metrics,
+                netns: netns_metrics,
+            };
+
+            // Calculate deltas before inserting into new_current_metrics
+            let delta_metric = iface_metrics.delta(
+                self.current_metrics
+                    .get(&key)
+                    .unwrap_or(&InterfaceMetricValues::default()),
+            );
+
+            // We return the delta but keep the real value to calculate the next iteration's delta.
+            new_current_metrics.insert(key.clone(), iface_metrics);
+            result.insert(key, delta_metric);
+        }
 
         self.current_metrics = new_current_metrics;
         result
@@ -216,14 +307,18 @@ impl InterfaceMetricsProvider {
     fn build_metric_key(
         &self,
         iface_name: &String,
-        ns_to_pid: Option<HashMap<u32, NamespaceInfo>>,
-        pod_info: Option<IPPodMapping>,
+        ns_to_pid: &Option<HashMap<u32, NamespaceInfo>>,
+        pod_info: &Option<IPPodMapping>,
+        netns: Option<u32>,
     ) -> InterfaceMetricKey {
         let (pod, pod_namespace) = match self.compute_platform {
             ComputePlatform::Ec2Plain => ("".to_string(), "".to_string()),
-            ComputePlatform::Ec2K8sEks | ComputePlatform::Ec2K8sVanilla => {
-                self.get_pod_info_from_iface(iface_name, ns_to_pid.unwrap(), pod_info.unwrap())
-            }
+            ComputePlatform::Ec2K8sEks | ComputePlatform::Ec2K8sVanilla => get_pod_info_from_iface(
+                iface_name,
+                ns_to_pid.as_ref().unwrap(),
+                pod_info.as_ref().unwrap(),
+                netns,
+            ),
         };
         InterfaceMetricKey {
             instance: self.instance_id.clone(),
@@ -231,62 +326,6 @@ impl InterfaceMetricsProvider {
             pod,
             pod_namespace,
             node: self.node_name.clone(),
-        }
-    }
-
-    fn get_pod_info_from_iface(
-        &self,
-        iface_name: &String,
-        ns_to_pid: HashMap<u32, NamespaceInfo>,
-        pod_info_mapping: IPPodMapping,
-    ) -> (String, String) {
-        match self.get_ns_from(iface_name) {
-            Some(net_ns) => self.get_pod_info_from_netns(net_ns, ns_to_pid, pod_info_mapping),
-            None => self.get_pod_info_from_real_iface(iface_name, pod_info_mapping),
-        }
-    }
-
-    /// Get the Pod information for a namespace
-    fn get_pod_info_from_netns(
-        &self,
-        net_ns: u32,
-        ns_to_pid: HashMap<u32, NamespaceInfo>,
-        pod_info_mapping: IPPodMapping,
-    ) -> (String, String) {
-        match ns_to_pid.get(&net_ns) {
-            Some(ns_info) => {
-                for ip_addr in ns_info.ip_addresses.iter() {
-                    match pod_info_mapping.get_first(*ip_addr) {
-                        Some(pod_info) => {
-                            return (pod_info.pod.clone(), pod_info.namespace.clone())
-                        }
-                        None => continue,
-                    }
-                }
-                ("".into(), "".into())
-            }
-            _ => ("".into(), "".into()),
-        }
-    }
-
-    /// Get the Pod information for a interface that has no network namespace associated.
-    fn get_pod_info_from_real_iface(
-        &self,
-        iface_name: &String,
-        pod_info_mapping: IPPodMapping,
-    ) -> (String, String) {
-        // Get IP addresses from the interface
-        match self.get_interface_ips(iface_name) {
-            Ok(ip_addresses) => {
-                // Find the first occurrence of any IP in the IPPodMapping. TODO: Confirm what to do here.
-                for ip_addr in ip_addresses {
-                    if let Some(pod_info) = pod_info_mapping.get_first(ip_addr) {
-                        return (pod_info.pod.clone(), pod_info.namespace.clone());
-                    }
-                }
-                ("".into(), "".into())
-            }
-            Err(_) => ("".into(), "".into()),
         }
     }
 
@@ -407,7 +446,7 @@ impl InterfaceMetricsProvider {
                 }
 
                 let stdout = String::from_utf8_lossy(&output.stdout);
-                self.parse_ip_addresses(&stdout)
+                parse_ip_addresses(&stdout)
             }
             Err(e) => {
                 warn!(
@@ -420,81 +459,206 @@ impl InterfaceMetricsProvider {
         }
     }
 
-    /// Get IP addresses for a specific interface using getifaddrs with InterfaceFilter
-    fn get_interface_ips(
+    /// Parse IP addresses from 'ip a' output - public method for testing
+    pub fn parse_ip_addresses(&self, ip_output: &str) -> Vec<IpAddr> {
+        parse_ip_addresses(ip_output)
+    }
+
+    /// Get pod info from interface - public method for testing
+    pub fn get_pod_info_from_iface(
+        &self,
+        iface_name: &String,
+        ns_to_pid: &HashMap<u32, NamespaceInfo>,
+        pod_info_mapping: &IPPodMapping,
+    ) -> (String, String) {
+        get_pod_info_from_iface(iface_name, ns_to_pid, pod_info_mapping, None)
+    }
+
+    /// Get interface IPs - public method for testing
+    pub fn get_interface_ips(
         &self,
         iface_name: &str,
     ) -> Result<Vec<IpAddr>, Box<dyn std::error::Error>> {
-        let mut ip_addresses = Vec::new();
+        get_interface_ips(iface_name)
+    }
 
-        // Use InterfaceFilter to efficiently filter by interface name and get only IP addresses
-        let interfaces = InterfaceFilter::new().name(iface_name).v4().v6().get()?;
+    /// Get pod info from real interface - public method for testing
+    pub fn get_pod_info_from_real_iface(
+        &self,
+        iface_name: &String,
+        pod_info_mapping: &IPPodMapping,
+    ) -> (String, String) {
+        get_pod_info_from_real_iface(iface_name, pod_info_mapping)
+    }
 
-        for interface in interfaces {
-            if let Some(ip_addr) = interface.address.ip_addr() {
-                if !ip_addr.is_loopback() && !ip_addr.is_link_local() {
-                    ip_addresses.push(ip_addr);
+    fn get_netns_metric(&self, pid: u32) -> NetNsInterfaceMetricValues {
+        let output = self
+            .command_runner
+            .run("nsenter", &["-t", &pid.to_string(), "-n", "nstat", "-a"]);
+
+        match output {
+            Ok(output) => {
+                if !output.status.success() {
+                    warn!(
+                        "Failed to get TCP statistics for {}: {}",
+                        pid,
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                    return NetNsInterfaceMetricValues::default();
                 }
-            }
-        }
 
-        Ok(ip_addresses)
-    }
+                let stdout = String::from_utf8_lossy(&output.stdout);
 
-    /// Parse IP addresses from 'ip a' output
-    fn parse_ip_addresses(&self, ip_output: &str) -> Vec<IpAddr> {
-        let mut ip_addresses = Vec::new();
-
-        // Simplified regex patterns for IPv4 and IPv6 addresses
-        // IPv4: "inet 192.168.1.1/24" -> capture the IP part
-        let ipv4_regex = Regex::new(r"inet\s+(\S+)/").unwrap();
-        // IPv6: "inet6 2001:db8::1/64" -> capture the IP part
-        let ipv6_regex = Regex::new(r"inet6\s+(\S+)/").unwrap();
-
-        for line in ip_output.lines() {
-            if let Some(ip_addr) = self.extract_ip_from_line(line, &ipv4_regex) {
-                ip_addresses.push(ip_addr);
-            } else if let Some(ip_addr) = self.extract_ip_from_line(line, &ipv6_regex) {
-                ip_addresses.push(ip_addr);
-            }
-        }
-
-        ip_addresses
-    }
-
-    /// Extract and validate IP address from a line using the provided regex
-    fn extract_ip_from_line(&self, line: &str, regex: &Regex) -> Option<IpAddr> {
-        if let Some(captures) = regex.captures(line) {
-            if let Some(ip_match) = captures.get(1) {
-                if let Ok(ip_addr) = ip_match.as_str().parse::<IpAddr>() {
-                    if ip_addr.is_loopback() || ip_addr.is_link_local() {
-                        return None;
+                let mut tcp_active_opens = 0;
+                let mut tcp_passive_opens = 0;
+                for line in stdout.lines() {
+                    if line.starts_with("TcpActiveOpens") {
+                        tcp_active_opens = parse_nstat_value(line, "TcpActiveOpens");
+                    } else if line.starts_with("TcpPassiveOpens") {
+                        tcp_passive_opens = parse_nstat_value(line, "TcpPassiveOpens");
                     }
-                    return Some(ip_addr);
+                    if tcp_active_opens > 0 && tcp_passive_opens > 0 {
+                        break;
+                    }
+                }
+                NetNsInterfaceMetricValues {
+                    ingress_flow_count: tcp_passive_opens,
+                    egress_flow_count: tcp_active_opens,
                 }
             }
+            Err(e) => {
+                warn!(
+                    "Failed to execute 'nsenter' command for PID {}: {}",
+                    pid,
+                    e.to_string()
+                );
+                NetNsInterfaceMetricValues::default()
+            }
         }
-        None
     }
 }
 
-#[derive(PartialEq, Eq, Hash)]
-struct HostInterface {
-    name: String,
-    virt: bool,
+/// Helper function to parse TCP statistic values from nstat output lines
+fn parse_nstat_value(line: &str, stat_name: &str) -> u64 {
+    let fields: Vec<&str> = line.split_whitespace().collect();
+    if fields.len() >= 2 {
+        match fields[1].parse::<u64>() {
+            Ok(value) => value,
+            Err(_) => {
+                warn!(line = line; "Error parsing {} value", stat_name);
+                0
+            }
+        }
+    } else {
+        warn!(line = line; "Malformed {} line", stat_name);
+        0
+    }
 }
 
-impl HostInterface {
-    fn new(name: String) -> Self {
-        HostInterface {
-            name: name.clone(),
-            virt: check_virtual_iface(&name),
+fn get_pod_info_from_iface(
+    iface_name: &String,
+    ns_to_pid: &HashMap<u32, NamespaceInfo>,
+    pod_info_mapping: &IPPodMapping,
+    netns: Option<u32>,
+) -> (String, String) {
+    match netns {
+        Some(net_ns) => get_pod_info_from_netns(net_ns, ns_to_pid, pod_info_mapping),
+        None => get_pod_info_from_real_iface(iface_name, pod_info_mapping),
+    }
+}
+
+/// Get the Pod information for a namespace
+fn get_pod_info_from_netns(
+    net_ns: u32,
+    ns_to_pid: &HashMap<u32, NamespaceInfo>,
+    pod_info_mapping: &IPPodMapping,
+) -> (String, String) {
+    match ns_to_pid.get(&net_ns) {
+        Some(ns_info) => {
+            for ip_addr in ns_info.ip_addresses.iter() {
+                match pod_info_mapping.get_first(*ip_addr) {
+                    Some(pod_info) => return (pod_info.pod.clone(), pod_info.namespace.clone()),
+                    None => continue,
+                }
+            }
+            ("".into(), "".into())
+        }
+        _ => ("".into(), "".into()),
+    }
+}
+
+/// Get the Pod information for a interface that has no network namespace associated.
+fn get_pod_info_from_real_iface(
+    iface_name: &String,
+    pod_info_mapping: &IPPodMapping,
+) -> (String, String) {
+    // Get IP addresses from the interface
+    match get_interface_ips(iface_name) {
+        Ok(ip_addresses) => {
+            // Find the first occurrence of any IP in the IPPodMapping. TODO: Confirm what to do here.
+            for ip_addr in ip_addresses {
+                if let Some(pod_info) = pod_info_mapping.get_first(ip_addr) {
+                    return (pod_info.pod.clone(), pod_info.namespace.clone());
+                }
+            }
+            ("".into(), "".into())
+        }
+        Err(_) => ("".into(), "".into()),
+    }
+}
+
+/// Get IP addresses for a specific interface using getifaddrs with InterfaceFilter
+fn get_interface_ips(iface_name: &str) -> Result<Vec<IpAddr>, Box<dyn std::error::Error>> {
+    let mut ip_addresses = Vec::new();
+
+    // Use InterfaceFilter to efficiently filter by interface name and get only IP addresses
+    let interfaces = InterfaceFilter::new().name(iface_name).v4().v6().get()?;
+
+    for interface in interfaces {
+        if let Some(ip_addr) = interface.address.ip_addr() {
+            if !ip_addr.is_loopback() && !ip_addr.is_link_local() {
+                ip_addresses.push(ip_addr);
+            }
         }
     }
 
-    fn is_virtual(&self) -> bool {
-        self.virt
+    Ok(ip_addresses)
+}
+
+/// Parse IP addresses from 'ip a' output
+fn parse_ip_addresses(ip_output: &str) -> Vec<IpAddr> {
+    let mut ip_addresses = Vec::new();
+
+    // Simplified regex patterns for IPv4 and IPv6 addresses
+    // IPv4: "inet 192.168.1.1/24" -> capture the IP part
+    let ipv4_regex = Regex::new(r"inet\s+(\S+)/").unwrap();
+    // IPv6: "inet6 2001:db8::1/64" -> capture the IP part
+    let ipv6_regex = Regex::new(r"inet6\s+(\S+)/").unwrap();
+
+    for line in ip_output.lines() {
+        if let Some(ip_addr) = extract_ip_from_line(line, &ipv4_regex) {
+            ip_addresses.push(ip_addr);
+        } else if let Some(ip_addr) = extract_ip_from_line(line, &ipv6_regex) {
+            ip_addresses.push(ip_addr);
+        }
     }
+
+    ip_addresses
+}
+
+/// Extract and validate IP address from a line using the provided regex
+fn extract_ip_from_line(line: &str, regex: &Regex) -> Option<IpAddr> {
+    if let Some(captures) = regex.captures(line) {
+        if let Some(ip_match) = captures.get(1) {
+            if let Ok(ip_addr) = ip_match.as_str().parse::<IpAddr>() {
+                if ip_addr.is_loopback() || ip_addr.is_link_local() {
+                    return None;
+                }
+                return Some(ip_addr);
+            }
+        }
+    }
+    None
 }
 
 fn check_virtual_iface(name: &String) -> bool {
@@ -540,7 +704,8 @@ fn get_device_status() -> HashMap<HostInterface, DeviceStatus> {
                     return false;
                 }
             } else {
-                info!("Interface not found {}", iface_name)
+                info!("Interface not found {}", iface_name);
+                return false;
             }
 
             true
@@ -579,6 +744,12 @@ impl OpenMetricProvider for InterfaceMetricsProvider {
         registry
             .register(Box::new(self.egress_pkt_count.clone()))
             .unwrap();
+        registry
+            .register(Box::new(self.ingress_flow_count.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(self.egress_flow_count.clone()))
+            .unwrap();
     }
 
     fn update_metrics(&mut self) -> Result<(), anyhow::Error> {
@@ -593,16 +764,26 @@ impl OpenMetricProvider for InterfaceMetricsProvider {
 
             self.ingress_bytes_count
                 .with_label_values(&label_values)
-                .set(value.ingress_bytes_count as i64);
+                .set(value.host.ingress_bytes_count as i64);
             self.ingress_pkt_count
                 .with_label_values(&label_values)
-                .set(value.ingress_pkt_count as i64);
+                .set(value.host.ingress_pkt_count as i64);
             self.egress_bytes_count
                 .with_label_values(&label_values)
-                .set(value.egress_bytes_count as i64);
+                .set(value.host.egress_bytes_count as i64);
             self.egress_pkt_count
                 .with_label_values(&label_values)
-                .set(value.egress_pkt_count as i64);
+                .set(value.host.egress_pkt_count as i64);
+
+            // These metrics are not available at node level because we are using nstat.
+            if value.netns.ingress_flow_count > 0 || value.netns.egress_flow_count > 0 {
+                self.ingress_flow_count
+                    .with_label_values(&label_values)
+                    .set(value.netns.ingress_flow_count as i64);
+                self.egress_flow_count
+                    .with_label_values(&label_values)
+                    .set(value.netns.egress_flow_count as i64);
+            }
         }
 
         Ok(())
@@ -1162,7 +1343,7 @@ mod tests {
         let pod_info_mapping = IPPodMapping::new();
 
         let result =
-            provider.get_pod_info_from_iface(&"eth0".to_string(), ns_to_pid, pod_info_mapping);
+            provider.get_pod_info_from_iface(&"eth0".to_string(), &ns_to_pid, &pod_info_mapping);
 
         // Should return empty strings when no namespace is found
         assert_eq!(result, ("".to_string(), "".to_string()));
@@ -1183,7 +1364,7 @@ mod tests {
         let pod_info_mapping = IPPodMapping::new(); // Empty pod mapping
 
         let result =
-            provider.get_pod_info_from_iface(&"eth0".to_string(), ns_to_pid, pod_info_mapping);
+            provider.get_pod_info_from_iface(&"eth0".to_string(), &ns_to_pid, &pod_info_mapping);
 
         // Should return empty strings when no pod info is found for the IP
         assert_eq!(result, ("".to_string(), "".to_string()));
@@ -1193,7 +1374,7 @@ mod tests {
     fn test_build_metric_key_ec2_plain() {
         let provider = InterfaceMetricsProvider::new(&ComputePlatform::Ec2Plain);
 
-        let key = provider.build_metric_key(&"eth0".to_string(), None, None);
+        let key = provider.build_metric_key(&"eth0".to_string(), &None, &None, None);
 
         assert_eq!(key.iface, "eth0");
         assert_eq!(key.pod, "");
@@ -1216,48 +1397,46 @@ mod tests {
 
     #[test]
     fn test_extract_ip_from_line_ipv4() {
-        let provider = InterfaceMetricsProvider::new(&ComputePlatform::Ec2Plain);
         let ipv4_regex = Regex::new(r"inet\s+(\S+)/").unwrap();
 
         // Test valid IPv4 address
         let line = "    inet 192.168.1.10/24 brd 192.168.1.255 scope global eth0";
-        let result = provider.extract_ip_from_line(line, &ipv4_regex);
+        let result = extract_ip_from_line(line, &ipv4_regex);
         assert_eq!(result, Some("192.168.1.10".parse::<IpAddr>().unwrap()));
 
         // Test loopback address (should be filtered out)
         let line = "    inet 127.0.0.1/8 scope host lo";
-        let result = provider.extract_ip_from_line(line, &ipv4_regex);
+        let result = extract_ip_from_line(line, &ipv4_regex);
         assert_eq!(result, None);
 
         // Test line without IP address
         let line = "    link/ether 02:42:ac:11:00:02 brd ff:ff:ff:ff:ff:ff";
-        let result = provider.extract_ip_from_line(line, &ipv4_regex);
+        let result = extract_ip_from_line(line, &ipv4_regex);
         assert_eq!(result, None);
     }
 
     #[test]
     fn test_extract_ip_from_line_ipv6() {
-        let provider = InterfaceMetricsProvider::new(&ComputePlatform::Ec2Plain);
         let ipv6_regex = Regex::new(r"inet6\s+(\S+)/").unwrap();
 
         // Test valid IPv6 address
         let line = "    inet6 2001:db8::1/64 scope global";
-        let result = provider.extract_ip_from_line(line, &ipv6_regex);
+        let result = extract_ip_from_line(line, &ipv6_regex);
         assert_eq!(result, Some("2001:db8::1".parse::<IpAddr>().unwrap()));
 
         // Test link-local address (should be filtered out)
         let line = "    inet6 fe80::42:acff:fe11:2/64 scope link";
-        let result = provider.extract_ip_from_line(line, &ipv6_regex);
+        let result = extract_ip_from_line(line, &ipv6_regex);
         assert_eq!(result, None);
 
         // Test loopback address (should be filtered out)
         let line = "    inet6 ::1/128 scope host";
-        let result = provider.extract_ip_from_line(line, &ipv6_regex);
+        let result = extract_ip_from_line(line, &ipv6_regex);
         assert_eq!(result, None);
 
         // Test line without IP address
         let line = "    link/ether 02:42:ac:11:00:02 brd ff:ff:ff:ff:ff:ff";
-        let result = provider.extract_ip_from_line(line, &ipv6_regex);
+        let result = extract_ip_from_line(line, &ipv6_regex);
         assert_eq!(result, None);
     }
 
@@ -1399,7 +1578,8 @@ mod tests {
         let pod_mapping = IPPodMapping::new();
 
         // Test with a non-existent interface (should return empty strings)
-        let result = provider.get_pod_info_from_real_iface(&"nonexistent".to_string(), pod_mapping);
+        let result =
+            provider.get_pod_info_from_real_iface(&"nonexistent".to_string(), &pod_mapping);
 
         // Should return empty strings since the interface doesn't exist or has no matching IPs
         assert_eq!(result, ("".to_string(), "".to_string()));
@@ -1415,7 +1595,7 @@ mod tests {
         let pod_mapping = IPPodMapping::new();
 
         // Test with any interface name
-        let result = provider.get_pod_info_from_real_iface(&"eth0".to_string(), pod_mapping);
+        let result = provider.get_pod_info_from_real_iface(&"eth0".to_string(), &pod_mapping);
 
         // Should return empty strings since there are no pod mappings
         assert_eq!(result, ("".to_string(), "".to_string()));
@@ -1424,59 +1604,93 @@ mod tests {
     #[test]
     fn test_interface_metric_values_sub_normal_case() {
         let current = InterfaceMetricValues {
-            ingress_pkt_count: 1000,
-            ingress_bytes_count: 50000,
-            egress_pkt_count: 800,
-            egress_bytes_count: 40000,
+            host: HostInterfaceMetricValues {
+                ingress_pkt_count: 1000,
+                ingress_bytes_count: 50000,
+                egress_pkt_count: 800,
+                egress_bytes_count: 40000,
+            },
+            netns: NetNsInterfaceMetricValues {
+                ingress_flow_count: 50,
+                egress_flow_count: 40,
+            },
         };
 
         let previous = InterfaceMetricValues {
-            ingress_pkt_count: 900,
-            ingress_bytes_count: 45000,
-            egress_pkt_count: 700,
-            egress_bytes_count: 35000,
+            host: HostInterfaceMetricValues {
+                ingress_pkt_count: 900,
+                ingress_bytes_count: 45000,
+                egress_pkt_count: 700,
+                egress_bytes_count: 35000,
+            },
+            netns: NetNsInterfaceMetricValues {
+                ingress_flow_count: 40,
+                egress_flow_count: 30,
+            },
         };
 
         let delta = current.delta(&previous);
 
-        assert_eq!(delta.ingress_pkt_count, 100);
-        assert_eq!(delta.ingress_bytes_count, 5000);
-        assert_eq!(delta.egress_pkt_count, 100);
-        assert_eq!(delta.egress_bytes_count, 5000);
+        assert_eq!(delta.host.ingress_pkt_count, 100);
+        assert_eq!(delta.host.ingress_bytes_count, 5000);
+        assert_eq!(delta.host.egress_pkt_count, 100);
+        assert_eq!(delta.host.egress_bytes_count, 5000);
+        assert_eq!(delta.netns.ingress_flow_count, 10);
+        assert_eq!(delta.netns.egress_flow_count, 10);
     }
 
     #[test]
     fn test_interface_metric_values_sub_saturating_subtraction() {
         let current = InterfaceMetricValues {
-            ingress_pkt_count: 500,
-            ingress_bytes_count: 25000,
-            egress_pkt_count: 300,
-            egress_bytes_count: 15000,
+            host: HostInterfaceMetricValues {
+                ingress_pkt_count: 500,
+                ingress_bytes_count: 25000,
+                egress_pkt_count: 300,
+                egress_bytes_count: 15000,
+            },
+            netns: NetNsInterfaceMetricValues {
+                ingress_flow_count: 20,
+                egress_flow_count: 15,
+            },
         };
 
         let previous = InterfaceMetricValues {
-            ingress_pkt_count: 600,     // Higher than current - should saturate to 0
-            ingress_bytes_count: 30000, // Higher than current - should saturate to 0
-            egress_pkt_count: 400,      // Higher than current - should saturate to 0
-            egress_bytes_count: 20000,  // Higher than current - should saturate to 0
+            host: HostInterfaceMetricValues {
+                ingress_pkt_count: 600,     // Higher than current - should saturate to 0
+                ingress_bytes_count: 30000, // Higher than current - should saturate to 0
+                egress_pkt_count: 400,      // Higher than current - should saturate to 0
+                egress_bytes_count: 20000,  // Higher than current - should saturate to 0
+            },
+            netns: NetNsInterfaceMetricValues {
+                ingress_flow_count: 30, // Higher than current - should saturate to 0
+                egress_flow_count: 25,  // Higher than current - should saturate to 0
+            },
         };
 
         let delta = current.delta(&previous);
 
         // All values should be 0 due to saturating subtraction
-        assert_eq!(delta.ingress_pkt_count, 0);
-        assert_eq!(delta.ingress_bytes_count, 0);
-        assert_eq!(delta.egress_pkt_count, 0);
-        assert_eq!(delta.egress_bytes_count, 0);
+        assert_eq!(delta.host.ingress_pkt_count, 0);
+        assert_eq!(delta.host.ingress_bytes_count, 0);
+        assert_eq!(delta.host.egress_pkt_count, 0);
+        assert_eq!(delta.host.egress_bytes_count, 0);
+        assert_eq!(delta.netns.ingress_flow_count, 0);
+        assert_eq!(delta.netns.egress_flow_count, 0);
     }
 
     #[test]
     fn test_interface_metric_values_sub_zero_previous() {
         let current = InterfaceMetricValues {
-            ingress_pkt_count: 1000,
-            ingress_bytes_count: 50000,
-            egress_pkt_count: 800,
-            egress_bytes_count: 40000,
+            host: HostInterfaceMetricValues {
+                ingress_pkt_count: 1000,
+                ingress_bytes_count: 50000,
+                egress_pkt_count: 800,
+                egress_bytes_count: 40000,
+            },
+            netns: NetNsInterfaceMetricValues {
+                ingress_flow_count: 60,
+                egress_flow_count: 50,
+            },
         };
 
         let previous = InterfaceMetricValues::default(); // All zeros
@@ -1484,19 +1698,27 @@ mod tests {
         let delta = current.delta(&previous);
 
         // Delta should equal current values when previous is zero
-        assert_eq!(delta.ingress_pkt_count, 1000);
-        assert_eq!(delta.ingress_bytes_count, 50000);
-        assert_eq!(delta.egress_pkt_count, 800);
-        assert_eq!(delta.egress_bytes_count, 40000);
+        assert_eq!(delta.host.ingress_pkt_count, 1000);
+        assert_eq!(delta.host.ingress_bytes_count, 50000);
+        assert_eq!(delta.host.egress_pkt_count, 800);
+        assert_eq!(delta.host.egress_bytes_count, 40000);
+        assert_eq!(delta.netns.ingress_flow_count, 60);
+        assert_eq!(delta.netns.egress_flow_count, 50);
     }
 
     #[test]
     fn test_interface_metric_values_sub_equal_values() {
         let current = InterfaceMetricValues {
-            ingress_pkt_count: 1000,
-            ingress_bytes_count: 50000,
-            egress_pkt_count: 800,
-            egress_bytes_count: 40000,
+            host: HostInterfaceMetricValues {
+                ingress_pkt_count: 1000,
+                ingress_bytes_count: 50000,
+                egress_pkt_count: 800,
+                egress_bytes_count: 40000,
+            },
+            netns: NetNsInterfaceMetricValues {
+                ingress_flow_count: 70,
+                egress_flow_count: 60,
+            },
         };
 
         let previous = current.clone();
@@ -1504,15 +1726,17 @@ mod tests {
         let delta = current.delta(&previous);
 
         // Delta should be zero when values are equal
-        assert_eq!(delta.ingress_pkt_count, 0);
-        assert_eq!(delta.ingress_bytes_count, 0);
-        assert_eq!(delta.egress_pkt_count, 0);
-        assert_eq!(delta.egress_bytes_count, 0);
+        assert_eq!(delta.host.ingress_pkt_count, 0);
+        assert_eq!(delta.host.ingress_bytes_count, 0);
+        assert_eq!(delta.host.egress_pkt_count, 0);
+        assert_eq!(delta.host.egress_bytes_count, 0);
+        assert_eq!(delta.netns.ingress_flow_count, 0);
+        assert_eq!(delta.netns.egress_flow_count, 0);
     }
 
     #[test]
     fn test_interface_metric_values_default() {
-        let default_values = InterfaceMetricValues::default();
+        let default_values = HostInterfaceMetricValues::default();
 
         assert_eq!(default_values.ingress_pkt_count, 0);
         assert_eq!(default_values.ingress_bytes_count, 0);
@@ -1522,7 +1746,7 @@ mod tests {
 
     #[test]
     fn test_interface_metric_values_clone() {
-        let original = InterfaceMetricValues {
+        let original = HostInterfaceMetricValues {
             ingress_pkt_count: 1000,
             ingress_bytes_count: 50000,
             egress_pkt_count: 800,
@@ -1551,7 +1775,7 @@ mod tests {
             node: "test-node".to_string(),
         };
 
-        let initial_values = InterfaceMetricValues {
+        let initial_values = HostInterfaceMetricValues {
             ingress_pkt_count: 1000,
             ingress_bytes_count: 50000,
             egress_pkt_count: 800,
@@ -1559,30 +1783,34 @@ mod tests {
         };
 
         // Manually set initial metrics to simulate first reading
+        let initial_interface_values = InterfaceMetricValues {
+            host: initial_values.clone(),
+            netns: NetNsInterfaceMetricValues::default(),
+        };
         provider
             .current_metrics
-            .insert(initial_key.clone(), initial_values.clone());
+            .insert(initial_key.clone(), initial_interface_values);
 
         // Verify initial state
         assert_eq!(provider.current_metrics.len(), 1);
         let stored_values = provider.current_metrics.get(&initial_key).unwrap();
-        assert_eq!(stored_values.ingress_pkt_count, 1000);
-        assert_eq!(stored_values.ingress_bytes_count, 50000);
-        assert_eq!(stored_values.egress_pkt_count, 800);
-        assert_eq!(stored_values.egress_bytes_count, 40000);
+        assert_eq!(stored_values.host.ingress_pkt_count, 1000);
+        assert_eq!(stored_values.host.ingress_bytes_count, 50000);
+        assert_eq!(stored_values.host.egress_pkt_count, 800);
+        assert_eq!(stored_values.host.egress_bytes_count, 40000);
     }
 
     #[test]
     fn test_delta_calculation_with_counter_reset() {
         // Test case where network counters reset (e.g., interface restart)
-        let current = InterfaceMetricValues {
+        let current = HostInterfaceMetricValues {
             ingress_pkt_count: 100, // Lower than previous (counter reset)
             ingress_bytes_count: 5000,
             egress_pkt_count: 80,
             egress_bytes_count: 4000,
         };
 
-        let previous = InterfaceMetricValues {
+        let previous = HostInterfaceMetricValues {
             ingress_pkt_count: 1000, // Much higher than current
             ingress_bytes_count: 50000,
             egress_pkt_count: 800,
@@ -1600,14 +1828,14 @@ mod tests {
 
     #[test]
     fn test_delta_calculation_with_large_numbers() {
-        let current = InterfaceMetricValues {
+        let current = HostInterfaceMetricValues {
             ingress_pkt_count: u64::MAX,
             ingress_bytes_count: u64::MAX - 1000,
             egress_pkt_count: u64::MAX - 500,
             egress_bytes_count: u64::MAX - 2000,
         };
 
-        let previous = InterfaceMetricValues {
+        let previous = HostInterfaceMetricValues {
             ingress_pkt_count: u64::MAX - 100,
             ingress_bytes_count: u64::MAX - 2000,
             egress_pkt_count: u64::MAX - 1000,
@@ -1625,14 +1853,14 @@ mod tests {
     #[test]
     fn test_delta_calculation_mixed_scenarios() {
         // Test mixed scenario where some counters increase normally, others reset
-        let current = InterfaceMetricValues {
+        let current = HostInterfaceMetricValues {
             ingress_pkt_count: 1500,    // Normal increase
             ingress_bytes_count: 75000, // Normal increase
             egress_pkt_count: 50,       // Counter reset (lower than previous)
             egress_bytes_count: 2500,   // Counter reset (lower than previous)
         };
 
-        let previous = InterfaceMetricValues {
+        let previous = HostInterfaceMetricValues {
             ingress_pkt_count: 1000,
             ingress_bytes_count: 50000,
             egress_pkt_count: 800,     // Higher than current
@@ -1682,13 +1910,455 @@ mod tests {
 
         // Test that they can be used as HashMap keys
         let mut map = HashMap::new();
-        map.insert(key1.clone(), InterfaceMetricValues::default());
-        map.insert(key3.clone(), InterfaceMetricValues::default());
+        map.insert(key1.clone(), HostInterfaceMetricValues::default());
+        map.insert(key3.clone(), HostInterfaceMetricValues::default());
 
         assert_eq!(map.len(), 2);
         assert!(map.contains_key(&key1));
         assert!(map.contains_key(&key2)); // Should be the same as key1
         assert!(map.contains_key(&key3));
+    }
+
+    #[test]
+    fn test_netns_interface_metric_values_default() {
+        let default_values = NetNsInterfaceMetricValues::default();
+
+        assert_eq!(default_values.ingress_flow_count, 0);
+        assert_eq!(default_values.egress_flow_count, 0);
+    }
+
+    #[test]
+    fn test_netns_interface_metric_values_clone() {
+        let original = NetNsInterfaceMetricValues {
+            ingress_flow_count: 100,
+            egress_flow_count: 80,
+        };
+
+        let cloned = original.clone();
+
+        assert_eq!(original.ingress_flow_count, cloned.ingress_flow_count);
+        assert_eq!(original.egress_flow_count, cloned.egress_flow_count);
+    }
+
+    #[test]
+    fn test_netns_interface_metric_values_debug() {
+        let values = NetNsInterfaceMetricValues {
+            ingress_flow_count: 150,
+            egress_flow_count: 120,
+        };
+
+        let debug_str = format!("{:?}", values);
+        assert!(debug_str.contains("150"));
+        assert!(debug_str.contains("120"));
+    }
+
+    #[test]
+    fn test_netns_interface_metric_values_delta_normal_case() {
+        let current = NetNsInterfaceMetricValues {
+            ingress_flow_count: 100,
+            egress_flow_count: 80,
+        };
+
+        let previous = NetNsInterfaceMetricValues {
+            ingress_flow_count: 70,
+            egress_flow_count: 50,
+        };
+
+        let delta = current.delta(&previous);
+
+        assert_eq!(delta.ingress_flow_count, 30);
+        assert_eq!(delta.egress_flow_count, 30);
+    }
+
+    #[test]
+    fn test_netns_interface_metric_values_delta_saturating_subtraction() {
+        let current = NetNsInterfaceMetricValues {
+            ingress_flow_count: 50,
+            egress_flow_count: 30,
+        };
+
+        let previous = NetNsInterfaceMetricValues {
+            ingress_flow_count: 100, // Higher than current - should saturate to 0
+            egress_flow_count: 80,   // Higher than current - should saturate to 0
+        };
+
+        let delta = current.delta(&previous);
+
+        assert_eq!(delta.ingress_flow_count, 0);
+        assert_eq!(delta.egress_flow_count, 0);
+    }
+
+    #[test]
+    fn test_netns_interface_metric_values_delta_zero_previous() {
+        let current = NetNsInterfaceMetricValues {
+            ingress_flow_count: 200,
+            egress_flow_count: 150,
+        };
+
+        let previous = NetNsInterfaceMetricValues::default(); // All zeros
+
+        let delta = current.delta(&previous);
+
+        // Delta should equal current values when previous is zero
+        assert_eq!(delta.ingress_flow_count, 200);
+        assert_eq!(delta.egress_flow_count, 150);
+    }
+
+    #[test]
+    fn test_netns_interface_metric_values_delta_equal_values() {
+        let current = NetNsInterfaceMetricValues {
+            ingress_flow_count: 100,
+            egress_flow_count: 80,
+        };
+
+        let previous = current.clone();
+
+        let delta = current.delta(&previous);
+
+        // Delta should be zero when values are equal
+        assert_eq!(delta.ingress_flow_count, 0);
+        assert_eq!(delta.egress_flow_count, 0);
+    }
+
+    #[test]
+    fn test_netns_interface_metric_values_delta_with_large_numbers() {
+        let current = NetNsInterfaceMetricValues {
+            ingress_flow_count: u64::MAX,
+            egress_flow_count: u64::MAX - 1000,
+        };
+
+        let previous = NetNsInterfaceMetricValues {
+            ingress_flow_count: u64::MAX - 500,
+            egress_flow_count: u64::MAX - 2000,
+        };
+
+        let delta = current.delta(&previous);
+
+        assert_eq!(delta.ingress_flow_count, 500);
+        assert_eq!(delta.egress_flow_count, 1000);
+    }
+
+    #[test]
+    fn test_get_netns_metric_success() {
+        let mut fake_runner = FakeCommandRunner::new();
+        fake_runner.add_expectation(
+            "nsenter",
+            &["-t", "1234", "-n", "nstat", "-a"],
+            Ok(Output {
+                status: ExitStatus::from_raw(0),
+                stdout: "TcpActiveOpens                  150                0.0\nTcpPassiveOpens                 200                0.0\nTcpAttemptFails                 5                  0.0\n".as_bytes().to_vec(),
+                stderr: vec![],
+            }),
+        );
+
+        let provider = create_test_provider_with_runner(fake_runner);
+        let result = provider.get_netns_metric(1234);
+
+        assert_eq!(result.ingress_flow_count, 200); // TcpPassiveOpens
+        assert_eq!(result.egress_flow_count, 150); // TcpActiveOpens
+    }
+
+    #[test]
+    fn test_get_netns_metric_partial_data() {
+        let mut fake_runner = FakeCommandRunner::new();
+        fake_runner.add_expectation(
+            "nsenter",
+            &["-t", "1234", "-n", "nstat", "-a"],
+            Ok(Output {
+                status: ExitStatus::from_raw(0),
+                stdout: "TcpActiveOpens                  75                 0.0\nTcpAttemptFails                 3                  0.0\n".as_bytes().to_vec(),
+                stderr: vec![],
+            }),
+        );
+
+        let provider = create_test_provider_with_runner(fake_runner);
+        let result = provider.get_netns_metric(1234);
+
+        assert_eq!(result.ingress_flow_count, 0); // TcpPassiveOpens not found, defaults to 0
+        assert_eq!(result.egress_flow_count, 75); // TcpActiveOpens found
+    }
+
+    #[test]
+    fn test_get_netns_metric_only_passive_opens() {
+        let mut fake_runner = FakeCommandRunner::new();
+        fake_runner.add_expectation(
+            "nsenter",
+            &["-t", "1234", "-n", "nstat", "-a"],
+            Ok(Output {
+                status: ExitStatus::from_raw(0),
+                stdout: "TcpPassiveOpens                 300                0.0\nTcpAttemptFails                 2                  0.0\n".as_bytes().to_vec(),
+                stderr: vec![],
+            }),
+        );
+
+        let provider = create_test_provider_with_runner(fake_runner);
+        let result = provider.get_netns_metric(1234);
+
+        assert_eq!(result.ingress_flow_count, 300); // TcpPassiveOpens found
+        assert_eq!(result.egress_flow_count, 0); // TcpActiveOpens not found, defaults to 0
+    }
+
+    #[test]
+    fn test_get_netns_metric_no_tcp_stats() {
+        let mut fake_runner = FakeCommandRunner::new();
+        fake_runner.add_expectation(
+            "nsenter",
+            &["-t", "1234", "-n", "nstat", "-a"],
+            Ok(Output {
+                status: ExitStatus::from_raw(0),
+                stdout: "IpInReceives                    1000               0.0\nIpInDelivers                    950                0.0\n".as_bytes().to_vec(),
+                stderr: vec![],
+            }),
+        );
+
+        let provider = create_test_provider_with_runner(fake_runner);
+        let result = provider.get_netns_metric(1234);
+
+        assert_eq!(result.ingress_flow_count, 0);
+        assert_eq!(result.egress_flow_count, 0);
+    }
+
+    #[test]
+    fn test_get_netns_metric_empty_output() {
+        let mut fake_runner = FakeCommandRunner::new();
+        fake_runner.add_expectation(
+            "nsenter",
+            &["-t", "1234", "-n", "nstat", "-a"],
+            Ok(Output {
+                status: ExitStatus::from_raw(0),
+                stdout: vec![],
+                stderr: vec![],
+            }),
+        );
+
+        let provider = create_test_provider_with_runner(fake_runner);
+        let result = provider.get_netns_metric(1234);
+
+        assert_eq!(result.ingress_flow_count, 0);
+        assert_eq!(result.egress_flow_count, 0);
+    }
+
+    #[test]
+    fn test_get_netns_metric_command_failure() {
+        let mut fake_runner = FakeCommandRunner::new();
+        fake_runner.add_expectation(
+            "nsenter",
+            &["-t", "1234", "-n", "nstat", "-a"],
+            Ok(Output {
+                status: ExitStatus::from_raw(1),
+                stdout: vec![],
+                stderr: "nsenter: cannot open /proc/1234/ns/net: No such file or directory"
+                    .as_bytes()
+                    .to_vec(),
+            }),
+        );
+
+        let provider = create_test_provider_with_runner(fake_runner);
+        let result = provider.get_netns_metric(1234);
+
+        assert_eq!(result.ingress_flow_count, 0);
+        assert_eq!(result.egress_flow_count, 0);
+    }
+
+    #[test]
+    fn test_get_netns_metric_command_error() {
+        let mut fake_runner = FakeCommandRunner::new();
+        fake_runner.add_expectation(
+            "nsenter",
+            &["-t", "1234", "-n", "nstat", "-a"],
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "nsenter command not found",
+            )),
+        );
+
+        let provider = create_test_provider_with_runner(fake_runner);
+        let result = provider.get_netns_metric(1234);
+
+        assert_eq!(result.ingress_flow_count, 0);
+        assert_eq!(result.egress_flow_count, 0);
+    }
+
+    #[test]
+    fn test_get_netns_metric_invalid_tcp_active_opens_value() {
+        let mut fake_runner = FakeCommandRunner::new();
+        fake_runner.add_expectation(
+            "nsenter",
+            &["-t", "1234", "-n", "nstat", "-a"],
+            Ok(Output {
+                status: ExitStatus::from_raw(0),
+                stdout: "TcpActiveOpens                  invalid            0.0\nTcpPassiveOpens                 200                0.0\n".as_bytes().to_vec(),
+                stderr: vec![],
+            }),
+        );
+
+        let provider = create_test_provider_with_runner(fake_runner);
+        let result = provider.get_netns_metric(1234);
+
+        assert_eq!(result.ingress_flow_count, 200); // TcpPassiveOpens parsed successfully
+        assert_eq!(result.egress_flow_count, 0); // TcpActiveOpens failed to parse, defaults to 0
+    }
+
+    #[test]
+    fn test_get_netns_metric_invalid_tcp_passive_opens_value() {
+        let mut fake_runner = FakeCommandRunner::new();
+        fake_runner.add_expectation(
+            "nsenter",
+            &["-t", "1234", "-n", "nstat", "-a"],
+            Ok(Output {
+                status: ExitStatus::from_raw(0),
+                stdout: "TcpActiveOpens                  150                0.0\nTcpPassiveOpens                 not_a_number       0.0\n".as_bytes().to_vec(),
+                stderr: vec![],
+            }),
+        );
+
+        let provider = create_test_provider_with_runner(fake_runner);
+        let result = provider.get_netns_metric(1234);
+
+        assert_eq!(result.ingress_flow_count, 0); // TcpPassiveOpens failed to parse, defaults to 0
+        assert_eq!(result.egress_flow_count, 150); // TcpActiveOpens parsed successfully
+    }
+
+    #[test]
+    fn test_get_netns_metric_malformed_lines() {
+        let mut fake_runner = FakeCommandRunner::new();
+        fake_runner.add_expectation(
+            "nsenter",
+            &["-t", "1234", "-n", "nstat", "-a"],
+            Ok(Output {
+                status: ExitStatus::from_raw(0),
+                stdout: "TcpActiveOpens\nTcpPassiveOpens                 250                0.0\nMalformedLine\n".as_bytes().to_vec(),
+                stderr: vec![],
+            }),
+        );
+
+        let provider = create_test_provider_with_runner(fake_runner);
+        let result = provider.get_netns_metric(1234);
+
+        assert_eq!(result.ingress_flow_count, 250); // TcpPassiveOpens parsed successfully
+        assert_eq!(result.egress_flow_count, 0); // TcpActiveOpens line malformed, defaults to 0
+    }
+
+    #[test]
+    fn test_get_netns_metric_early_termination_optimization() {
+        let mut fake_runner = FakeCommandRunner::new();
+        fake_runner.add_expectation(
+            "nsenter",
+            &["-t", "1234", "-n", "nstat", "-a"],
+            Ok(Output {
+                status: ExitStatus::from_raw(0),
+                stdout: "TcpActiveOpens                  100                0.0\nTcpPassiveOpens                 200                0.0\nTcpAttemptFails                 5                  0.0\nTcpEstabResets                  3                  0.0\n".as_bytes().to_vec(),
+                stderr: vec![],
+            }),
+        );
+
+        let provider = create_test_provider_with_runner(fake_runner);
+        let result = provider.get_netns_metric(1234);
+
+        // Should find both values and terminate early (optimization test)
+        assert_eq!(result.ingress_flow_count, 200); // TcpPassiveOpens
+        assert_eq!(result.egress_flow_count, 100); // TcpActiveOpens
+    }
+
+    #[test]
+    fn test_get_netns_metric_zero_values() {
+        let mut fake_runner = FakeCommandRunner::new();
+        fake_runner.add_expectation(
+            "nsenter",
+            &["-t", "1234", "-n", "nstat", "-a"],
+            Ok(Output {
+                status: ExitStatus::from_raw(0),
+                stdout: "TcpActiveOpens                  0                  0.0\nTcpPassiveOpens                 0                  0.0\n".as_bytes().to_vec(),
+                stderr: vec![],
+            }),
+        );
+
+        let provider = create_test_provider_with_runner(fake_runner);
+        let result = provider.get_netns_metric(1234);
+
+        assert_eq!(result.ingress_flow_count, 0);
+        assert_eq!(result.egress_flow_count, 0);
+    }
+
+    #[test]
+    fn test_get_netns_metric_large_values() {
+        let mut fake_runner = FakeCommandRunner::new();
+        fake_runner.add_expectation(
+            "nsenter",
+            &["-t", "1234", "-n", "nstat", "-a"],
+            Ok(Output {
+                status: ExitStatus::from_raw(0),
+                stdout: format!("TcpActiveOpens                  {}             0.0\nTcpPassiveOpens                 {}             0.0\n", u64::MAX - 1000, u64::MAX - 500).as_bytes().to_vec(),
+                stderr: vec![],
+            }),
+        );
+
+        let provider = create_test_provider_with_runner(fake_runner);
+        let result = provider.get_netns_metric(1234);
+
+        assert_eq!(result.ingress_flow_count, u64::MAX - 500); // TcpPassiveOpens
+        assert_eq!(result.egress_flow_count, u64::MAX - 1000); // TcpActiveOpens
+    }
+
+    #[test]
+    fn test_get_netns_metric_different_pid() {
+        let mut fake_runner = FakeCommandRunner::new();
+        fake_runner.add_expectation(
+            "nsenter",
+            &["-t", "5678", "-n", "nstat", "-a"],
+            Ok(Output {
+                status: ExitStatus::from_raw(0),
+                stdout: "TcpActiveOpens                  42                 0.0\nTcpPassiveOpens                 84                 0.0\n".as_bytes().to_vec(),
+                stderr: vec![],
+            }),
+        );
+
+        let provider = create_test_provider_with_runner(fake_runner);
+        let result = provider.get_netns_metric(5678);
+
+        assert_eq!(result.ingress_flow_count, 84); // TcpPassiveOpens
+        assert_eq!(result.egress_flow_count, 42); // TcpActiveOpens
+    }
+
+    #[test]
+    fn test_interface_metric_values_with_netns_delta() {
+        let current = InterfaceMetricValues {
+            host: HostInterfaceMetricValues {
+                ingress_pkt_count: 1000,
+                ingress_bytes_count: 50000,
+                egress_pkt_count: 800,
+                egress_bytes_count: 40000,
+            },
+            netns: NetNsInterfaceMetricValues {
+                ingress_flow_count: 100,
+                egress_flow_count: 80,
+            },
+        };
+
+        let previous = InterfaceMetricValues {
+            host: HostInterfaceMetricValues {
+                ingress_pkt_count: 900,
+                ingress_bytes_count: 45000,
+                egress_pkt_count: 700,
+                egress_bytes_count: 35000,
+            },
+            netns: NetNsInterfaceMetricValues {
+                ingress_flow_count: 70,
+                egress_flow_count: 50,
+            },
+        };
+
+        let delta = current.delta(&previous);
+
+        // Test host metrics delta
+        assert_eq!(delta.host.ingress_pkt_count, 100);
+        assert_eq!(delta.host.ingress_bytes_count, 5000);
+        assert_eq!(delta.host.egress_pkt_count, 100);
+        assert_eq!(delta.host.egress_bytes_count, 5000);
+
+        // Test netns metrics delta
+        assert_eq!(delta.netns.ingress_flow_count, 30);
+        assert_eq!(delta.netns.egress_flow_count, 30);
     }
 
     // Helper function to create a test provider with a custom command runner
@@ -1719,6 +2389,16 @@ mod tests {
                 &ComputePlatform::Ec2Plain,
                 "test_egress_bytes_count",
                 "Test egress bytes count",
+            ),
+            ingress_flow_count: build_gauge_metric::<InterfaceMetricKey>(
+                &ComputePlatform::Ec2Plain,
+                "test_ingress_flow_count",
+                "Test ingress flow count",
+            ),
+            egress_flow_count: build_gauge_metric::<InterfaceMetricKey>(
+                &ComputePlatform::Ec2Plain,
+                "test_egress_flow_count",
+                "Test egress flow count",
             ),
             current_metrics: HashMap::new(),
         }
