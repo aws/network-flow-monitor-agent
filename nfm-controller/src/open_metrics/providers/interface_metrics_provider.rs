@@ -168,11 +168,67 @@ impl MetricLabel for InterfaceMetricKey {
     }
 }
 
+/// Trait defined to allow mocking for testing.
+trait InterfaceStatusRetriever {
+    fn dev_status(&self) -> HashMap<HostInterface, DeviceStatus>;
+}
+
+struct InterfaceStatusRetrieverImpl {}
+
+impl InterfaceStatusRetriever for InterfaceStatusRetrieverImpl {
+    fn dev_status(&self) -> HashMap<HostInterface, DeviceStatus> {
+        // Get interface statistics from procfs
+        let interfaces = match dev_status() {
+            Ok(interfaces) => interfaces,
+            Err(e) => {
+                warn!(
+                    "Failed to read network interface statistics from procfs: {}",
+                    e
+                );
+                HashMap::new()
+            }
+        };
+
+        let interface_flags = match get_interface_flags() {
+            Ok(flags) => flags,
+            Err(e) => {
+                warn!("Failed to get interface flags using getifaddrs: {}", e);
+                HashMap::new()
+            }
+        };
+
+        interfaces
+            .into_iter()
+            .map(|(iface_name, device_status)| (HostInterface::new(iface_name), device_status))
+            .filter(|(iface, _device_status)| {
+                if let Some(flags) = interface_flags.get(&iface.name) {
+                    if flags.contains(InterfaceFlags::LOOPBACK) {
+                        info!("Skipping loopback");
+                        return false;
+                    }
+
+                    if !flags.contains(InterfaceFlags::UP) {
+                        info!("Skipping non UP iface");
+                        return false;
+                    }
+                } else {
+                    info!("Interface not found {}", iface.name);
+                    return false;
+                }
+
+                // Only report Pod Network metrics, so only virtual interfaces.
+                iface.is_virtual()
+            })
+            .collect()
+    }
+}
+
 pub struct InterfaceMetricsProvider {
     compute_platform: ComputePlatform,
     instance_id: String,
     node_name: String,
     command_runner: Box<dyn CommandRunner>,
+    interface_status: Box<dyn InterfaceStatusRetriever>,
 
     ingress_pkt_count: IntGaugeVec,
     ingress_bytes_count: IntGaugeVec,
@@ -198,6 +254,7 @@ impl InterfaceMetricsProvider {
             instance_id: retrieve_instance_id(&Client::builder().build()),
             node_name,
             command_runner: Box::new(RealCommandRunner {}),
+            interface_status: Box::new(InterfaceStatusRetrieverImpl {}),
 
             ingress_pkt_count: build_gauge_metric::<InterfaceMetricKey>(
                 &compute_platform,
@@ -248,7 +305,7 @@ impl InterfaceMetricsProvider {
         let mut new_current_metrics = HashMap::new();
 
         let mut result = HashMap::new();
-        for (iface, device_status) in get_device_status() {
+        for (iface, device_status) in self.interface_status.dev_status() {
             // Get the namespace ID once per interface to avoid duplicate calls
             let netns = if iface.is_virtual() {
                 self.get_ns_from(&iface.name)
@@ -257,10 +314,6 @@ impl InterfaceMetricsProvider {
             };
 
             let key = self.build_metric_key(&iface.name, &ns_to_pid, &pod_info, netns);
-
-            if iface.is_virtual() && key.pod.is_empty() {
-                continue;
-            }
 
             let mut host_metrics = HostInterfaceMetricValues {
                 ingress_pkt_count: device_status.recv_packets,
@@ -669,51 +722,6 @@ fn check_virtual_iface(name: &String) -> bool {
     !Path::new(&device_path).exists()
 }
 
-fn get_device_status() -> HashMap<HostInterface, DeviceStatus> {
-    // Get interface statistics from procfs
-    let interfaces = match dev_status() {
-        Ok(interfaces) => interfaces,
-        Err(e) => {
-            warn!(
-                "Failed to read network interface statistics from procfs: {}",
-                e
-            );
-            HashMap::new()
-        }
-    };
-
-    let interface_flags = match get_interface_flags() {
-        Ok(flags) => flags,
-        Err(e) => {
-            warn!("Failed to get interface flags using getifaddrs: {}", e);
-            HashMap::new()
-        }
-    };
-
-    interfaces
-        .into_iter()
-        .filter(|(iface_name, _device_status)| {
-            if let Some(flags) = interface_flags.get(iface_name) {
-                if flags.contains(InterfaceFlags::LOOPBACK) {
-                    info!("Skipping loopback");
-                    return false;
-                }
-
-                if !flags.contains(InterfaceFlags::UP) {
-                    info!("Skipping non UP iface");
-                    return false;
-                }
-            } else {
-                info!("Interface not found {}", iface_name);
-                return false;
-            }
-
-            true
-        })
-        .map(|(iface_name, device_status)| (HostInterface::new(iface_name), device_status))
-        .collect()
-}
-
 /// Get interface flags using getifaddrs
 fn get_interface_flags() -> Result<HashMap<String, InterfaceFlags>, Box<dyn std::error::Error>> {
     let mut interface_flags = HashMap::new();
@@ -775,15 +783,12 @@ impl OpenMetricProvider for InterfaceMetricsProvider {
                 .with_label_values(&label_values)
                 .set(value.host.egress_pkt_count as i64);
 
-            // These metrics are not available at node level because we are using nstat.
-            if value.netns.ingress_flow_count > 0 || value.netns.egress_flow_count > 0 {
-                self.ingress_flow_count
-                    .with_label_values(&label_values)
-                    .set(value.netns.ingress_flow_count as i64);
-                self.egress_flow_count
-                    .with_label_values(&label_values)
-                    .set(value.netns.egress_flow_count as i64);
-            }
+            self.ingress_flow_count
+                .with_label_values(&label_values)
+                .set(value.netns.ingress_flow_count as i64);
+            self.egress_flow_count
+                .with_label_values(&label_values)
+                .set(value.netns.egress_flow_count as i64);
         }
 
         Ok(())
@@ -798,16 +803,55 @@ mod tests {
     use std::os::unix::process::ExitStatusExt;
     use std::process::{ExitStatus, Output};
 
+    struct FakeInterfaceStatusRetriever {
+        result: HashMap<HostInterface, DeviceStatus>,
+    }
+
+    impl InterfaceStatusRetriever for FakeInterfaceStatusRetriever {
+        fn dev_status(&self) -> HashMap<HostInterface, DeviceStatus> {
+            self.result.clone()
+        }
+    }
+
+    fn build_device_status(
+        name: String,
+        sent_bytes: u64,
+        sent_packets: u64,
+        recv_bytes: u64,
+        recv_packets: u64,
+    ) -> DeviceStatus {
+        DeviceStatus {
+            name,
+            recv_bytes,
+            recv_packets,
+            recv_errs: 0,
+            recv_drop: 0,
+            recv_fifo: 0,
+            recv_frame: 0,
+            recv_compressed: 0,
+            recv_multicast: 0,
+            sent_bytes,
+            sent_packets,
+            sent_errs: 0,
+            sent_drop: 0,
+            sent_fifo: 0,
+            sent_colls: 0,
+            sent_carrier: 0,
+            sent_compressed: 0,
+        }
+    }
+
     #[test]
     fn test_interface_metrics_provider_new() {
-        let provider = InterfaceMetricsProvider::new(&ComputePlatform::Ec2Plain);
+        let provider = create_test_provider_with_runner(FakeCommandRunner::new());
         assert_eq!(provider.compute_platform, ComputePlatform::Ec2Plain);
-        assert_eq!(provider.node_name, "unknown"); // Default when K8s metadata is not available
+        assert_eq!(provider.node_name, "test-node"); // Set by the helper function
     }
 
     #[test]
     fn test_interface_metrics_provider_new_eks() {
-        let provider = InterfaceMetricsProvider::new(&ComputePlatform::Ec2K8sEks);
+        let mut provider = create_test_provider_with_runner(FakeCommandRunner::new());
+        provider.compute_platform = ComputePlatform::Ec2K8sEks;
         assert_eq!(provider.compute_platform, ComputePlatform::Ec2K8sEks);
     }
 
@@ -1268,7 +1312,7 @@ mod tests {
 
     #[test]
     fn test_parse_ip_addresses() {
-        let provider = InterfaceMetricsProvider::new(&ComputePlatform::Ec2Plain);
+        let provider = create_test_provider_with_runner(FakeCommandRunner::new());
         let ip_output = "1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN group default qlen 1000
     link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
     inet 127.0.0.1/8 scope host lo
@@ -1338,7 +1382,8 @@ mod tests {
 
     #[test]
     fn test_get_pod_info_from_iface_no_namespace() {
-        let provider = InterfaceMetricsProvider::new(&ComputePlatform::Ec2K8sEks);
+        let mut provider = create_test_provider_with_runner(FakeCommandRunner::new());
+        provider.compute_platform = ComputePlatform::Ec2K8sEks;
         let ns_to_pid = HashMap::new(); // Empty namespace mapping
         let pod_info_mapping = IPPodMapping::new();
 
@@ -1351,7 +1396,8 @@ mod tests {
 
     #[test]
     fn test_get_pod_info_from_iface_no_pod_info() {
-        let provider = InterfaceMetricsProvider::new(&ComputePlatform::Ec2K8sEks);
+        let mut provider = create_test_provider_with_runner(FakeCommandRunner::new());
+        provider.compute_platform = ComputePlatform::Ec2K8sEks;
 
         // Create namespace mapping with IP that won't be found in pod mapping
         let mut ns_to_pid = HashMap::new();
@@ -1372,19 +1418,19 @@ mod tests {
 
     #[test]
     fn test_build_metric_key_ec2_plain() {
-        let provider = InterfaceMetricsProvider::new(&ComputePlatform::Ec2Plain);
+        let provider = create_test_provider_with_runner(FakeCommandRunner::new());
 
         let key = provider.build_metric_key(&"eth0".to_string(), &None, &None, None);
 
         assert_eq!(key.iface, "eth0");
         assert_eq!(key.pod, "");
         assert_eq!(key.pod_namespace, "");
-        assert_eq!(key.node, "unknown");
+        assert_eq!(key.node, "test-node");
     }
 
     #[test]
     fn test_parse_ip_addresses_with_ipv6_println() {
-        let provider = InterfaceMetricsProvider::new(&ComputePlatform::Ec2Plain);
+        let provider = create_test_provider_with_runner(FakeCommandRunner::new());
         let ip_output = "2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc pfifo_fast state UP group default qlen 1000
     inet6 2001:db8::1/64 scope global
        valid_lft forever preferred_lft forever";
@@ -1462,7 +1508,30 @@ mod tests {
     fn test_register_to_and_update_metrics() {
         use prometheus::Registry;
 
-        let mut provider = InterfaceMetricsProvider::new(&ComputePlatform::Ec2Plain);
+        let mut fake_runner = FakeCommandRunner::new();
+        fake_runner.add_expectation(
+            "ip",
+            &["link", "show", "test-iface"],
+            Ok(Output {
+                status: ExitStatus::from_raw(0),
+                stdout: "2: test-iface@if3: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT group default link-netnsid 0\n    link/ether 02:42:ac:11:00:02 brd ff:ff:ff:ff:ff:ff link-netnsid 0".as_bytes().to_vec(),
+                stderr: vec![],
+            }),
+        );
+
+        let mut result = HashMap::new();
+        result.insert(
+            HostInterface {
+                name: "test-iface".to_string(),
+                virt: true,
+            },
+            build_device_status("test-iface".to_string(), 1, 2, 3, 4),
+        );
+        let fake_iface_status = FakeInterfaceStatusRetriever { result };
+        let mut provider = create_test_provider_with_runner_and_interface(
+            fake_runner,
+            Box::new(fake_iface_status),
+        );
         let mut registry = Registry::new();
 
         // Test register_to
@@ -1479,10 +1548,11 @@ mod tests {
             .map(|mf| mf.get_name().to_string())
             .collect();
 
-        assert!(metric_names.contains(&"ingress_packets".to_string()));
-        assert!(metric_names.contains(&"ingress_bytes".to_string()));
-        assert!(metric_names.contains(&"egress_packets".to_string()));
-        assert!(metric_names.contains(&"egress_bytes".to_string()));
+        // Validate the test metric names
+        assert!(metric_names.contains(&"test_ingress_pkt_count".to_string()));
+        assert!(metric_names.contains(&"test_ingress_bytes_count".to_string()));
+        assert!(metric_names.contains(&"test_egress_pkt_count".to_string()));
+        assert!(metric_names.contains(&"test_egress_bytes_count".to_string()));
     }
 
     #[test]
@@ -1490,7 +1560,8 @@ mod tests {
         // This test will use the actual system interfaces, but we can verify
         // that the filtering logic works by checking the result doesn't contain
         // loopback interfaces (if any exist on the system)
-        let device_status = get_device_status();
+        let interface_status = InterfaceStatusRetrieverImpl {};
+        let device_status = interface_status.dev_status();
 
         // Verify that no interface name is "lo" (loopback should be filtered out)
         for (interface, _) in &device_status {
@@ -1550,7 +1621,7 @@ mod tests {
 
     #[test]
     fn test_get_interface_ips_success() {
-        let provider = InterfaceMetricsProvider::new(&ComputePlatform::Ec2Plain);
+        let provider = create_test_provider_with_runner(FakeCommandRunner::new());
 
         // This test will use the actual system interfaces
         // We can't easily mock getifaddrs, but we can test that the function
@@ -1572,7 +1643,8 @@ mod tests {
 
     #[test]
     fn test_get_pod_info_from_real_iface_with_ips() {
-        let provider = InterfaceMetricsProvider::new(&ComputePlatform::Ec2K8sEks);
+        let mut provider = create_test_provider_with_runner(FakeCommandRunner::new());
+        provider.compute_platform = ComputePlatform::Ec2K8sEks;
 
         // Create an empty IPPodMapping (since we can't access the private map field)
         let pod_mapping = IPPodMapping::new();
@@ -1589,7 +1661,8 @@ mod tests {
     fn test_get_pod_info_from_real_iface_no_matching_ips() {
         use crate::open_metrics::providers::eks_utils::IPPodMapping;
 
-        let provider = InterfaceMetricsProvider::new(&ComputePlatform::Ec2K8sEks);
+        let mut provider = create_test_provider_with_runner(FakeCommandRunner::new());
+        provider.compute_platform = ComputePlatform::Ec2K8sEks;
 
         // Create an empty IPPodMapping
         let pod_mapping = IPPodMapping::new();
@@ -2361,15 +2434,17 @@ mod tests {
         assert_eq!(delta.netns.egress_flow_count, 30);
     }
 
-    // Helper function to create a test provider with a custom command runner
-    fn create_test_provider_with_runner(
+    //  Helper function to create a test provider with a custom command runner and interface_status.
+    fn create_test_provider_with_runner_and_interface(
         fake_runner: FakeCommandRunner,
+        iface_status: Box<dyn InterfaceStatusRetriever>,
     ) -> InterfaceMetricsProvider {
         InterfaceMetricsProvider {
             compute_platform: ComputePlatform::Ec2Plain,
             instance_id: "test-instance".to_string(),
             node_name: "test-node".to_string(),
             command_runner: Box::new(fake_runner),
+            interface_status: iface_status,
             ingress_pkt_count: build_gauge_metric::<InterfaceMetricKey>(
                 &ComputePlatform::Ec2Plain,
                 "test_ingress_pkt_count",
@@ -2402,5 +2477,15 @@ mod tests {
             ),
             current_metrics: HashMap::new(),
         }
+    }
+
+    // Helper function to create a test provider with a custom command runner. Uses the default interface_status object.
+    fn create_test_provider_with_runner(
+        fake_runner: FakeCommandRunner,
+    ) -> InterfaceMetricsProvider {
+        create_test_provider_with_runner_and_interface(
+            fake_runner,
+            Box::new(InterfaceStatusRetrieverImpl {}),
+        )
     }
 }
