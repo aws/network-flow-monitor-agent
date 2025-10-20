@@ -7,7 +7,6 @@ use prometheus::{IntGaugeVec, Opts};
 
 use crate::metadata::runtime_environment_metadata::ComputePlatform;
 
-mod eks_utils;
 pub mod interface_metrics_provider;
 pub mod system_metrics_provider;
 

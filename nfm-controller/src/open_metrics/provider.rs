@@ -5,7 +5,10 @@
 
 use prometheus::Registry;
 
+use std::sync::Arc;
+
 use crate::{
+    kubernetes::kubernetes_metadata_collector::KubernetesMetadataCollector,
     metadata::runtime_environment_metadata::ComputePlatform,
     open_metrics::providers::{
         interface_metrics_provider::InterfaceMetricsProvider,
@@ -15,10 +18,14 @@ use crate::{
 
 pub fn get_open_metric_providers(
     compute_platform: ComputePlatform,
+    k8s_collector: Option<Arc<KubernetesMetadataCollector>>,
 ) -> Vec<Box<dyn OpenMetricProvider>> {
     vec![
         Box::new(SystemMetricsProvider::new(&compute_platform)),
-        Box::new(InterfaceMetricsProvider::new(&compute_platform)),
+        Box::new(InterfaceMetricsProvider::new(
+            &compute_platform,
+            k8s_collector.clone(),
+        )),
     ]
 }
 

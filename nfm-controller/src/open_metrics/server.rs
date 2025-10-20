@@ -22,6 +22,10 @@ use prometheus::{Encoder, Registry, TextEncoder};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
+#[cfg(test)]
+use reqwest;
+
+use crate::kubernetes::kubernetes_metadata_collector::KubernetesMetadataCollector;
 use crate::metadata::runtime_environment_metadata::RuntimeEnvironmentMetadataProvider;
 use crate::open_metrics::provider::{get_open_metric_providers, OpenMetricProvider};
 
@@ -29,23 +33,30 @@ use crate::open_metrics::provider::{get_open_metric_providers, OpenMetricProvide
 pub struct OpenMetricsServerConfig {
     /// Address to bind the server to
     pub addr: SocketAddr,
+    pub k8s_metadata: Option<Arc<KubernetesMetadataCollector>>,
 }
 
 impl Default for OpenMetricsServerConfig {
     fn default() -> Self {
         Self {
             addr: "127.0.0.1:80".parse().unwrap(),
+            k8s_metadata: None,
         }
     }
 }
 
 impl OpenMetricsServerConfig {
-    pub fn for_addr(addr: String, port: u16) -> Self {
+    pub fn from(
+        addr: String,
+        port: u16,
+        k8s_metadata: Option<Arc<KubernetesMetadataCollector>>,
+    ) -> Self {
         let socket_addr = format!("{}:{}", addr, port)
             .parse()
             .expect("Invalid server address");
         Self {
             addr: socket_addr,
+            k8s_metadata: k8s_metadata,
             ..OpenMetricsServerConfig::default()
         }
     }
@@ -81,13 +92,8 @@ impl OpenMetricsServer {
         }
     }
 
-    /// Start the metrics server on the configured address
+    /// Start the metrics server on the specified address with a Kubernetes metadata collector
     pub fn start(&mut self) -> std::io::Result<()> {
-        self.start_on_addr(self.config.addr)
-    }
-
-    /// Start the metrics server on the specified address
-    pub fn start_on_addr(&mut self, bind_addr: SocketAddr) -> std::io::Result<()> {
         // Check if server is already running
         if self.handle.is_some() {
             return Err(std::io::Error::new(
@@ -98,11 +104,13 @@ impl OpenMetricsServer {
 
         info!(
             open_metric = "starting",
-            bind_addr = bind_addr.to_string();
+            bind_addr = self.config.addr.to_string();
             "Simple Prometheus metrics server starting"
         );
 
         let cancel_token = self.cancel_token.clone();
+        let addr = self.config.addr;
+        let k8s_metadata = self.config.k8s_metadata.clone();
 
         let handle = thread::spawn(move || {
             // Runtime with 2 threads to allow usage of metadata providers, since it needs to
@@ -115,7 +123,7 @@ impl OpenMetricsServer {
                 .expect("Failed to create Tokio runtime");
 
             rt.block_on(async {
-                if let Err(e) = run_server(bind_addr, cancel_token).await {
+                if let Err(e) = run_server(addr, cancel_token, k8s_metadata).await {
                     error!(error = e.to_string(); "Metrics server error");
                 }
             });
@@ -242,10 +250,12 @@ fn generate_metrics_text(
 }
 
 /// Initialize the metrics registry and providers
-fn initialize_metrics_registry() -> (Arc<Registry>, Arc<Mutex<Vec<Box<dyn OpenMetricProvider>>>>) {
+fn initialize_metrics_registry(
+    k8s_collector: Option<Arc<KubernetesMetadataCollector>>,
+) -> (Arc<Registry>, Arc<Mutex<Vec<Box<dyn OpenMetricProvider>>>>) {
     let mut registry = Arc::new(Registry::new());
     let compute_platform = RuntimeEnvironmentMetadataProvider::get_compute_platform();
-    let providers = get_open_metric_providers(compute_platform);
+    let providers = get_open_metric_providers(compute_platform, k8s_collector);
 
     providers
         .iter()
@@ -350,7 +360,11 @@ async fn accept_connections(
 }
 
 /// Run the HTTP server - will terminate when cancellation token is triggered
-async fn run_server(bind_addr: SocketAddr, cancel_token: CancellationToken) -> std::io::Result<()> {
+async fn run_server(
+    bind_addr: SocketAddr,
+    cancel_token: CancellationToken,
+    k8s_collector: Option<Arc<KubernetesMetadataCollector>>,
+) -> std::io::Result<()> {
     let listener = TcpListener::bind(bind_addr).await?;
 
     info!(
@@ -359,7 +373,7 @@ async fn run_server(bind_addr: SocketAddr, cancel_token: CancellationToken) -> s
         "Metrics server listening"
     );
 
-    let (registry, providers) = initialize_metrics_registry();
+    let (registry, providers) = initialize_metrics_registry(k8s_collector);
     accept_connections(listener, registry, providers, cancel_token, bind_addr).await
 }
 
@@ -384,7 +398,10 @@ mod tests {
             // Get a unique port for this test instance
             let port = NEXT_PORT.fetch_add(1, Ordering::SeqCst);
             let addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), port).into();
-            let config = OpenMetricsServerConfig { addr };
+            let config = OpenMetricsServerConfig {
+                addr,
+                k8s_metadata: None,
+            };
 
             let mut server = OpenMetricsServer::with_config(config);
             server.start().expect("Failed to start test server");
@@ -509,18 +526,17 @@ mod tests {
 
     #[test]
     fn test_stop() {
-        let mut default_server = OpenMetricsServer::default();
-        default_server
-            .start_on_addr("127.0.0.1:9999".parse().unwrap())
-            .expect("cannot start server");
-        default_server.stop().expect("cannot stop server");
+        let config = OpenMetricsServerConfig::from("127.0.0.1".to_string(), 9999, None);
+        let mut server = OpenMetricsServer::with_config(config);
+        server.start().expect("cannot start server");
+        server.stop().expect("cannot stop server");
 
-        assert!(!default_server.is_running(), "server is running after stop")
+        assert!(!server.is_running(), "server is running after stop")
     }
 
     #[test]
     fn test_server_config() {
-        let config = OpenMetricsServerConfig::for_addr("1.1.1.1".to_string(), 99);
+        let config = OpenMetricsServerConfig::from("1.1.1.1".to_string(), 99, None);
         let expected_address: SocketAddr = "1.1.1.1:99".parse().unwrap();
         assert!(
             config.addr == expected_address,
@@ -530,13 +546,12 @@ mod tests {
 
     #[test]
     fn test_start_already_running() {
-        let mut server = OpenMetricsServer::default();
-        server
-            .start_on_addr("127.0.0.1:9998".parse().unwrap())
-            .expect("Failed to start server");
+        let config = OpenMetricsServerConfig::from("127.0.0.1".to_string(), 9998, None);
+        let mut server = OpenMetricsServer::with_config(config);
+        server.start().expect("Failed to start server");
 
         // Try to start again - should fail
-        let result = server.start_on_addr("127.0.0.1:9997".parse().unwrap());
+        let result = server.start();
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err().kind(),
@@ -576,10 +591,9 @@ mod tests {
 
     #[test]
     fn test_drop_running_server() {
-        let mut server = OpenMetricsServer::default();
-        server
-            .start_on_addr("127.0.0.1:9996".parse().unwrap())
-            .expect("Failed to start server");
+        let config = OpenMetricsServerConfig::from("127.0.0.1".to_string(), 9996, None);
+        let mut server = OpenMetricsServer::with_config(config);
+        server.start().expect("Failed to start server");
 
         assert!(server.is_running());
 
@@ -592,7 +606,7 @@ mod tests {
 
     #[test]
     fn test_server_with_custom_config() {
-        let config = OpenMetricsServerConfig::for_addr("127.0.0.1".to_string(), 9995);
+        let config = OpenMetricsServerConfig::from("127.0.0.1".to_string(), 9995, None);
         let mut server = OpenMetricsServer::with_config(config);
 
         server.start().expect("Failed to start server");
