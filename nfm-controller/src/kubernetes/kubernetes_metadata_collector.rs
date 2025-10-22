@@ -37,9 +37,9 @@ pub struct PodInfo {
 }
 
 pub struct KubernetesMetadataCollector {
-    enriched_flows: AtomicU64,
-    refresher_runtime: Arc<Mutex<Option<Runtime>>>,
-    pod_info_arc: Arc<Mutex<HashMap<IpAddr, HashMap<i32, PodInfo>>>>,
+    pub(crate) enriched_flows: AtomicU64,
+    pub(crate) refresher_runtime: Arc<Mutex<Option<Runtime>>>,
+    pub(crate) pod_info_arc: Arc<Mutex<HashMap<IpAddr, HashMap<i32, PodInfo>>>>,
 }
 
 impl Default for KubernetesMetadataCollector {
@@ -132,7 +132,7 @@ impl KubernetesMetadataCollector {
         if out.is_empty() {
             out.push(0);
         }
-        return out;
+        out
     }
 
     /// Purge the given pod ip and ports from pod info map.

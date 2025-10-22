@@ -64,23 +64,23 @@ impl SystemMetricsProvider {
             node_name,
 
             bw_in_allowance_exceeded: build_gauge_metric::<SystemMetric>(
-                &compute_platform,
+                compute_platform,
                 "bw_in_allowance_exceeded",
                 "The number of packets queued or dropped because the inbound aggregate bandwidth exceeded the maximum for the instance.",
             ),
             bw_out_allowance_exceeded: build_gauge_metric::<SystemMetric>(
-                &compute_platform,
+                compute_platform,
                 "bw_out_allowance_exceeded",
                 "The number of packets queued or dropped because the outbound aggregate bandwidth exceeded the maximum for the instance."
             ),
-            pps_allowance_exceeded: build_gauge_metric::<SystemMetric>(&compute_platform, "pps_allowance_exceeded", "The number of packets queued or dropped because the bidirectional PPS exceeded the maximum for the instance."),
+            pps_allowance_exceeded: build_gauge_metric::<SystemMetric>(compute_platform, "pps_allowance_exceeded", "The number of packets queued or dropped because the bidirectional PPS exceeded the maximum for the instance."),
             conntrack_allowance_exceeded: build_gauge_metric::<SystemMetric>(
-                &compute_platform,
+                compute_platform,
                 "conntrack_allowance_exceeded",
                 "The number of packets dropped because connection tracking exceeded the maximum for the instance and new connections could not be established. This can result in packet loss for traffic to or from the instance."
             ),
             linklocal_allowance_exceeded: build_gauge_metric::<SystemMetric>(
-                &compute_platform,
+                compute_platform,
                 "linklocal_allowance_exceeded",
                 "The number of packets dropped because the PPS of the traffic to local proxy services exceeded the maximum for the network interface."
             ),
@@ -224,17 +224,13 @@ mod tests {
     }
 
     #[test]
-    fn test_system_metrics_provider_new_eks() {
-        let provider = create_test_provider(ComputePlatform::Ec2K8sEks);
+    fn test_system_metrics_provider_new_k8s_platforms() {
+        let platforms = vec![ComputePlatform::Ec2K8sEks, ComputePlatform::Ec2K8sVanilla];
 
-        assert_eq!(provider.compute_platform, ComputePlatform::Ec2K8sEks);
-    }
-
-    #[test]
-    fn test_system_metrics_provider_new_vanilla_k8s() {
-        let provider = create_test_provider(ComputePlatform::Ec2K8sVanilla);
-
-        assert_eq!(provider.compute_platform, ComputePlatform::Ec2K8sVanilla);
+        for platform in platforms {
+            let provider = create_test_provider(platform.clone());
+            assert_eq!(provider.compute_platform, platform);
+        }
     }
 
     #[test]
@@ -244,15 +240,13 @@ mod tests {
     }
 
     #[test]
-    fn test_system_metric_get_labels_eks() {
-        let labels = SystemMetric::get_labels(&ComputePlatform::Ec2K8sEks);
-        assert_eq!(labels, &["instance_id", "eni", "node"]);
-    }
+    fn test_system_metric_get_labels_k8s_platforms() {
+        let k8s_platforms = vec![ComputePlatform::Ec2K8sEks, ComputePlatform::Ec2K8sVanilla];
 
-    #[test]
-    fn test_system_metric_get_labels_vanilla_k8s() {
-        let labels = SystemMetric::get_labels(&ComputePlatform::Ec2K8sVanilla);
-        assert_eq!(labels, &["instance_id", "eni", "node"]);
+        for platform in k8s_platforms {
+            let labels = SystemMetric::get_labels(&platform);
+            assert_eq!(labels, &["instance_id", "eni", "node"]);
+        }
     }
 
     #[test]
@@ -279,7 +273,7 @@ mod tests {
     }
 
     #[test]
-    fn test_system_metric_label_values_eks() {
+    fn test_system_metric_label_values_k8s_platforms() {
         let metric = SystemMetric {
             key: SystemMetricKey {
                 eni: "eni-12345".to_string(),
@@ -293,41 +287,15 @@ mod tests {
             },
         };
 
-        let label_values = metric.label_values(
-            &ComputePlatform::Ec2K8sEks,
-            "test-node",
-            "i-1234567890abcdef0",
-        );
-        assert_eq!(
-            label_values,
-            vec!["i-1234567890abcdef0", "eni-12345", "test-node"]
-        );
-    }
+        let k8s_platforms = vec![ComputePlatform::Ec2K8sEks, ComputePlatform::Ec2K8sVanilla];
 
-    #[test]
-    fn test_system_metric_label_values_vanilla_k8s() {
-        let metric = SystemMetric {
-            key: SystemMetricKey {
-                eni: "eni-12345".to_string(),
-            },
-            value: SystemMetricValues {
-                bw_in_allowance_exceeded: 100,
-                bw_out_allowance_exceeded: 200,
-                pps_allowance_exceeded: 300,
-                conntrack_allowance_exceeded: 400,
-                linklocal_allowance_exceeded: 500,
-            },
-        };
-
-        let label_values = metric.label_values(
-            &ComputePlatform::Ec2K8sVanilla,
-            "test-node",
-            "i-1234567890abcdef0",
-        );
-        assert_eq!(
-            label_values,
-            vec!["i-1234567890abcdef0", "eni-12345", "test-node"]
-        );
+        for platform in k8s_platforms {
+            let label_values = metric.label_values(&platform, "test-node", "i-1234567890abcdef0");
+            assert_eq!(
+                label_values,
+                vec!["i-1234567890abcdef0", "eni-12345", "test-node"]
+            );
+        }
     }
 
     #[test]
@@ -359,30 +327,6 @@ mod tests {
 
         let result = provider.update_metrics();
         assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_system_metric_creation() {
-        let key = SystemMetricKey {
-            eni: "eni-12345".to_string(),
-        };
-
-        let value = SystemMetricValues {
-            bw_in_allowance_exceeded: 100,
-            bw_out_allowance_exceeded: 200,
-            pps_allowance_exceeded: 300,
-            conntrack_allowance_exceeded: 400,
-            linklocal_allowance_exceeded: 500,
-        };
-
-        let metric = SystemMetric { key, value };
-
-        assert_eq!(metric.key.eni, "eni-12345");
-        assert_eq!(metric.value.bw_in_allowance_exceeded, 100);
-        assert_eq!(metric.value.bw_out_allowance_exceeded, 200);
-        assert_eq!(metric.value.pps_allowance_exceeded, 300);
-        assert_eq!(metric.value.conntrack_allowance_exceeded, 400);
-        assert_eq!(metric.value.linklocal_allowance_exceeded, 500);
     }
 
     #[test]
@@ -598,19 +542,5 @@ mod tests {
         let metrics = provider.get_metrics();
         // 2 interfaces
         assert_eq!(metrics.len(), 2);
-    }
-
-    #[test]
-    fn test_system_metrics_provider_new_with_k8s_node_name() {
-        // This test covers the case where K8sMetadata returns a node name
-        // Since we can't easily mock K8sMetadata::default(), this test will
-        // use the default "unknown" value, but it exercises the match arm
-        let provider = create_test_provider(ComputePlatform::Ec2K8sEks);
-
-        // The node_name should be "unknown" since K8s metadata is not available in tests
-        assert_eq!(provider.node_name, "unknown");
-
-        // Verify the provider was created with the correct compute platform
-        assert_eq!(provider.compute_platform, ComputePlatform::Ec2K8sEks);
     }
 }

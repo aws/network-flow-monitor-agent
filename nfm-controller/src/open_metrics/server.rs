@@ -6,8 +6,9 @@
 //! This module provides a basic HTTP server that returns a fixed dummy metric
 //! in Prometheus format on the /metrics endpoint.
 
-use std::convert::Infallible;
+use std::io::{Error, ErrorKind, Result};
 use std::net::SocketAddr;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
@@ -27,7 +28,8 @@ use reqwest;
 
 use crate::kubernetes::kubernetes_metadata_collector::KubernetesMetadataCollector;
 use crate::metadata::runtime_environment_metadata::RuntimeEnvironmentMetadataProvider;
-use crate::open_metrics::provider::{get_open_metric_providers, OpenMetricProvider};
+use crate::open_metrics::provider::get_open_metric_providers;
+use crate::open_metrics::types::MetricProviders;
 
 /// Configuration options for the OpenMetricsServer
 pub struct OpenMetricsServerConfig {
@@ -56,8 +58,7 @@ impl OpenMetricsServerConfig {
             .expect("Invalid server address");
         Self {
             addr: socket_addr,
-            k8s_metadata: k8s_metadata,
-            ..OpenMetricsServerConfig::default()
+            k8s_metadata,
         }
     }
 }
@@ -93,11 +94,11 @@ impl OpenMetricsServer {
     }
 
     /// Start the metrics server on the specified address with a Kubernetes metadata collector
-    pub fn start(&mut self) -> std::io::Result<()> {
+    pub fn start(&mut self) -> Result<()> {
         // Check if server is already running
         if self.handle.is_some() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::AlreadyExists,
+            return Err(Error::new(
+                ErrorKind::AlreadyExists,
                 "Server is already running",
             ));
         }
@@ -134,15 +135,12 @@ impl OpenMetricsServer {
     }
 
     /// Stop the metrics server gracefully
-    pub fn stop(&mut self) -> std::io::Result<()> {
+    pub fn stop(&mut self) -> Result<()> {
         // Check if server is running
         let handle = match self.handle.take() {
             Some(h) => h,
             None => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "Server is not running",
-                ));
+                return Err(Error::new(ErrorKind::NotFound, "Server is not running"));
             }
         };
 
@@ -189,8 +187,8 @@ impl Drop for OpenMetricsServer {
 async fn handle_request(
     req: Request<hyper::body::Incoming>,
     registry: Arc<Registry>,
-    providers: Arc<Mutex<Vec<Box<dyn OpenMetricProvider>>>>,
-) -> Result<Response<String>, Infallible> {
+    providers: MetricProviders,
+) -> Result<Response<String>> {
     let path = req.uri().path();
     debug!(open_metric = "incoming_request", path = path; "Received request");
 
@@ -223,18 +221,12 @@ async fn handle_request(
     Ok(response)
 }
 
-fn generate_metrics_text(
-    registry: Arc<Registry>,
-    providers: Arc<Mutex<Vec<Box<dyn OpenMetricProvider>>>>,
-) -> String {
+fn generate_metrics_text(registry: Arc<Registry>, providers: MetricProviders) -> String {
     // Update the metrics
     if let Ok(mut providers_guard) = providers.lock() {
         for provider in providers_guard.iter_mut() {
-            match provider.update_metrics() {
-                Err(e) => {
-                    error!(open_metric = "metric_updated", error = e.to_string(); "Error updating metric")
-                }
-                Ok(()) => {}
+            if let Err(e) = provider.update_metrics() {
+                error!(open_metric = "metric_updated", error = e.to_string(); "Error updating metric")
             }
         }
     } else {
@@ -252,16 +244,16 @@ fn generate_metrics_text(
 /// Initialize the metrics registry and providers
 fn initialize_metrics_registry(
     k8s_collector: Option<Arc<KubernetesMetadataCollector>>,
-) -> (Arc<Registry>, Arc<Mutex<Vec<Box<dyn OpenMetricProvider>>>>) {
+) -> (Arc<Registry>, MetricProviders) {
     let mut registry = Arc::new(Registry::new());
     let compute_platform = RuntimeEnvironmentMetadataProvider::get_compute_platform();
     let providers = get_open_metric_providers(compute_platform, k8s_collector);
 
     providers
         .iter()
-        .for_each(|provider| provider.register_to(&mut Arc::get_mut(&mut registry).unwrap()));
+        .for_each(|provider| provider.register_to(Arc::get_mut(&mut registry).unwrap()));
 
-    let providers_arc = Arc::new(Mutex::new(providers));
+    let providers_arc = Rc::new(Mutex::new(providers));
     (registry, providers_arc)
 }
 
@@ -269,7 +261,7 @@ fn initialize_metrics_registry(
 async fn handle_connection(
     stream: tokio::net::TcpStream,
     registry: Arc<Registry>,
-    providers: Arc<Mutex<Vec<Box<dyn OpenMetricProvider>>>>,
+    providers: MetricProviders,
     cancel_token: CancellationToken,
     bind_addr: SocketAddr,
 ) {
@@ -318,10 +310,10 @@ async fn handle_connection(
 async fn accept_connections(
     listener: TcpListener,
     registry: Arc<Registry>,
-    providers: Arc<Mutex<Vec<Box<dyn OpenMetricProvider>>>>,
+    providers: MetricProviders,
     cancel_token: CancellationToken,
     bind_addr: SocketAddr,
-) -> std::io::Result<()> {
+) -> Result<()> {
     loop {
         // Use tokio::select to either accept a connection or check cancellation token
         tokio::select! {
@@ -364,7 +356,7 @@ async fn run_server(
     bind_addr: SocketAddr,
     cancel_token: CancellationToken,
     k8s_collector: Option<Arc<KubernetesMetadataCollector>>,
-) -> std::io::Result<()> {
+) -> Result<()> {
     let listener = TcpListener::bind(bind_addr).await?;
 
     info!(
@@ -553,10 +545,7 @@ mod tests {
         // Try to start again - should fail
         let result = server.start();
         assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().kind(),
-            std::io::ErrorKind::AlreadyExists
-        );
+        assert_eq!(result.unwrap_err().kind(), ErrorKind::AlreadyExists);
 
         server.stop().expect("Failed to stop server");
     }
@@ -568,7 +557,7 @@ mod tests {
         // Try to stop a server that's not running
         let result = server.stop();
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::NotFound);
+        assert_eq!(result.unwrap_err().kind(), ErrorKind::NotFound);
     }
 
     #[test]
@@ -580,7 +569,7 @@ mod tests {
 
         // Create a simple test that doesn't require Send trait
         // Just test with empty providers to cover the mutex lock path
-        let providers = Arc::new(Mutex::new(Vec::new()));
+        let providers = Rc::new(Mutex::new(Vec::new()));
 
         // Test the function with empty providers
         let result = generate_metrics_text(registry, providers);
