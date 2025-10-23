@@ -31,6 +31,9 @@ use std::cmp::min;
 use std::fs::File;
 use std::mem;
 use std::mem::size_of;
+use std::{
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
+};
 
 pub struct EventProviderEbpf<C: Clock> {
     ebpf_handle: Ebpf,
@@ -97,7 +100,7 @@ fn calculate_ebpf_memory_usage(sock_props_max_entries: u64, sock_stats_max_entri
 
 impl<C: Clock> EventProvider for EventProviderEbpf<C> {
     // Aggregates results from the eBPF layer, and evicts closed sockets.
-    fn perform_aggregation_cycle(&mut self, nat_resolver: &Box<dyn NatResolver>) {
+    fn perform_aggregation_cycle(&mut self, nat_resolver: &mut Box<dyn NatResolver>) {
         info!("Aggregating across sockets");
 
         // Apply adaptive sampling if we're receiving events faster than we can process.
@@ -143,7 +146,18 @@ impl<C: Clock> EventProvider for EventProviderEbpf<C> {
             .update_stats_and_get_deltas(&mut self.sock_stream, staleness_timestamp);
 
         // Apply beyond-NAT sock properties to any NAT'd sockets.
+        nat_resolver.perform_aggregation_cycle();
         let sock_nat_result = nat_resolver.store_beyond_nat_entries(&mut self.sock_cache);
+        let mut leaks: usize = 0;
+        let mut flow_leaks: usize = 0;
+        let mut fake_leaks: usize = 0;
+
+        for entry in self.sock_cache.iter_mut() {
+            let e = entry.1;
+            if e.context_external.is_none() && Ipv4Addr::from(e.context.remote_ipv4) == Ipv4Addr::new(10, 100, 139, 110) {
+                leaks += 1;
+            }
+        }
 
         // Aggregate our delta stats into flows.
         let num_flows_before = self.flow_cache.len();
@@ -153,6 +167,19 @@ impl<C: Clock> EventProvider for EventProviderEbpf<C> {
             &mut self.flow_cache,
         );
         self.sock_stream.clear();
+        let mut leakeds: Vec<&AggregateResults> = Vec::<&AggregateResults>::new();
+        for entry in self.flow_cache.iter_mut() {
+            let e = entry.0;
+            if e.remote_address == Ipv4Addr::new(10, 100, 139, 110) {
+                flow_leaks += 1;
+                leakeds.push(entry.1);
+                if entry.1.stats.rtt_us.count == 0 {
+                    fake_leaks += 1;
+                }
+            }
+        }
+
+        println!("leaks:{} flow_leaks:{} fake_leaks:{} leakeds:{:?}", leaks, flow_leaks, fake_leaks, leakeds);
 
         // Collect some stats before evicting entries.
         self.agg_socks_handled = self.sock_cache.len().try_into().unwrap();
@@ -421,7 +448,24 @@ impl SocketQueries {
             let context_beyond_nat = sock_wrapper
                 .context_external
                 .unwrap_or(sock_wrapper.context);
-            if let Ok(flow_props) = FlowProperties::try_from(&context_beyond_nat) {
+            if let Ok(mut flow_props) = FlowProperties::try_from(&context_beyond_nat) {
+                match sock_wrapper.context_external {
+                    Some(context) => match context.address_family {
+                        nfm_common::AF_INET => {
+                            flow_props.local_address_orig = Some(IpAddr::V4(Ipv4Addr::from(sock_wrapper.context.local_ipv4)));
+                            flow_props.remote_address_orig = Some(IpAddr::V4(Ipv4Addr::from(sock_wrapper.context.remote_ipv4)));
+                            flow_props.remote_port_orig = Some(sock_wrapper.context.remote_port);
+                            flow_props.local_port_orig = Some(sock_wrapper.context.local_port);
+                        },
+                        nfm_common::AF_INET6 => {
+                            flow_props.local_address_orig = Some(IpAddr::V6(Ipv6Addr::from(sock_wrapper.context.local_ipv6)));
+                            flow_props.remote_address_orig = Some(IpAddr::V6(Ipv6Addr::from(sock_wrapper.context.remote_ipv6)));
+                        },
+                        _ => {}
+                    },
+                    None => {},
+                }
+
                 let flow_count = flow_cache.len();
                 let flow_entry = flow_cache.entry(flow_props.clone());
                 let flow_agg = match flow_entry {
@@ -880,6 +924,10 @@ mod test {
                     local_port: 22,
                     remote_port: 0,
                     kubernetes_metadata: None,
+                    local_address_orig: None,
+                    remote_address_orig: None,
+                    local_port_orig: None,
+                    remote_port_orig: None
                 }
             );
         }

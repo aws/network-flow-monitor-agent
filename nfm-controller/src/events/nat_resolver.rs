@@ -11,6 +11,21 @@ use hashbrown::HashMap;
 use log::error;
 use netlink_packet_netfilter::nfconntrack::nlas::ConnectionProperties;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::rc::Rc;
+use std::time::Instant;
+use std::collections::VecDeque;
+
+
+fn get_thread_cpu_time_ns() -> i64 {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    unsafe {
+        libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts);
+    }
+    ts.tv_sec * 1_000_000_000 + ts.tv_nsec
+}
 
 // We use a ring buffer of maps to maintain NAT mappings beyond a single aggregation cycle.  This
 // is because we're taking no reliance on which of our subsystems will be the first to see an event
@@ -48,8 +63,11 @@ impl NatResolver for NatResolverNoOp {
 
 pub struct NatResolverImpl {
     conntrack_listener: Box<dyn ConntrackProvider>,
-    conntrack_ringbuf: [HashMap<ConnectionProperties, ConnectionProperties>; RING_BUF_ENTRIES],
+    conntrack_ringbuf: [HashMap<Rc<ConnectionProperties>, Rc<ConnectionProperties>>; RING_BUF_ENTRIES],
     ringbuf_index: usize,
+    total_entries: usize,
+    total_cpu_time_ns: i64,
+    history: VecDeque<(Instant, usize)>,
 }
 
 impl NatResolver for NatResolverImpl {
@@ -58,6 +76,8 @@ impl NatResolver for NatResolverImpl {
     }
 
     fn perform_aggregation_cycle(&mut self) {
+        let cpu_start = get_thread_cpu_time_ns();
+
         let new_entries = match self.conntrack_listener.get_new_entries() {
             Ok(n) => n,
             Err(error) => {
@@ -65,19 +85,43 @@ impl NatResolver for NatResolverImpl {
                 return;
             }
         };
-
+        let mut asd: usize = 0;
         let entry_cache = &mut self.conntrack_ringbuf[self.ringbuf_index];
         for new_entry in new_entries.iter() {
-            // If the entry was not actually NAT'd, there's no need to store it.
-            if !new_entry.was_natd() {
-                continue;
-            }
-
+            asd += 1;
             // For locally-initiated connections, eBPF sock_ops sees the original flow, pre-NAT.
             // For remote-initiated connections, eBPF sees the reply flow, post-NAT.  Hence, we key
             // by both sides to allow for either lookup.
-            entry_cache.insert(new_entry.original, new_entry.reply);
-            entry_cache.insert(new_entry.reply, new_entry.original);
+            let orig_rc = Rc::new(new_entry.original);
+            let reply_rc = Rc::new(new_entry.reply);
+            entry_cache.insert(orig_rc.clone(), reply_rc.clone());
+            entry_cache.insert(reply_rc.clone(), orig_rc.clone());
+        }
+
+        let cpu_elapsed_ns = get_thread_cpu_time_ns() - cpu_start;
+
+        self.history.push_back((Instant::now(), new_entries.len()));
+        if self.history.len() > 50 {
+            self.history.pop_front();
+        }
+
+        if asd > 0 {
+            self.total_entries += asd;
+            self.total_cpu_time_ns += cpu_elapsed_ns;
+            let avg_ns_per_entry = self.total_cpu_time_ns / self.total_entries as i64;
+
+            let mut rate_str = String::new();
+            if self.history.len() >= 2 {
+                let total_events: usize = self.history.iter().map(|(_, c)| c).sum();
+                let elapsed = self.history.back().unwrap().0.duration_since(self.history.front().unwrap().0).as_secs_f64();
+                if elapsed > 0.0 {
+                    let events_per_sec = total_events as f64 / elapsed;
+                    rate_str = format!(" | {:.0} events/sec", events_per_sec);
+                }
+            }
+
+            println!("perform_aggregation_cycle: {} entries ins {} µs ({} ns/entry avg){}",
+                asd, cpu_elapsed_ns / 1000, avg_ns_per_entry, rate_str);
         }
     }
 
@@ -130,8 +174,11 @@ impl NatResolverImpl {
     pub fn initialize() -> Self {
         Self {
             conntrack_listener: Box::new(ConntrackListener::initialize()),
-            conntrack_ringbuf: std::array::from_fn(|_i| HashMap::new()),
+            conntrack_ringbuf: std::array::from_fn(|_i| HashMap::with_capacity(4096)), // (2 + 8 + 8) * 4096 * RING_BUF_ENTRIES = ~0.22 MB upfront
             ringbuf_index: 0,
+            total_entries: 0,
+            total_cpu_time_ns: 0,
+            history: VecDeque::with_capacity(50),
         }
     }
 
@@ -219,6 +266,9 @@ mod test {
             conntrack_listener: Box::new(conntrack_listener),
             conntrack_ringbuf: std::array::from_fn(|_i| HashMap::new()),
             ringbuf_index: 0,
+            total_entries: 0,
+            total_cpu_time_ns: 0,
+            history: VecDeque::with_capacity(50),
         }
     }
 

@@ -35,6 +35,10 @@ pub struct FlowProperties {
     pub protocol: InetProtocol,
     pub local_address: IpAddr,
     pub remote_address: IpAddr,
+    pub local_address_orig: Option<IpAddr>,
+    pub remote_address_orig: Option<IpAddr>,
+    pub local_port_orig: Option<u16>,
+    pub remote_port_orig: Option<u16>,
     pub local_port: u16,
     pub remote_port: u16,
     pub kubernetes_metadata: Option<FlowMetadata>,
@@ -279,6 +283,10 @@ impl TryFrom<&SockContext> for FlowProperties {
             protocol: InetProtocol::TCP,
             local_address,
             remote_address,
+            remote_address_orig: None,
+            local_address_orig: None,
+            local_port_orig: None,
+            remote_port_orig: None,
             local_port,
             remote_port,
             kubernetes_metadata: None,
@@ -291,12 +299,27 @@ impl Serialize for FlowProperties {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("FlowProperties", 5)?;
+        let mut state = serializer.serialize_struct("FlowProperties", 6)?;
         state.serialize_field("protocol", &self.protocol.to_string())?;
         state.serialize_field("local_address", &self.local_address.to_string())?;
         state.serialize_field("remote_address", &self.remote_address.to_string())?;
+        if let Some(metadata) = self.local_address_orig.as_ref() {
+            state.serialize_field("local_orig", &metadata)?;
+        }
+        if let Some(metadata) = self.remote_address_orig.as_ref() {
+            state.serialize_field("remote_orig", &metadata)?;
+        }
+        if let Some(metadata) = self.local_port_orig.as_ref() {
+            state.serialize_field("local_port_orig", &metadata)?;
+        }
+        if let Some(metadata) = self.remote_port_orig.as_ref() {
+            state.serialize_field("remote_port_orig", &metadata)?;
+        }
         state.serialize_field("local_port", &self.local_port)?;
         state.serialize_field("remote_port", &self.remote_port)?;
+        if let Some(metadata) = self.kubernetes_metadata.as_ref() {
+            state.serialize_field("kubernetes_metadata", &metadata)?;
+        }
         state.end()
     }
 }
@@ -339,8 +362,12 @@ mod tests {
                 local_address: IpAddr::V4(Ipv4Addr::from([1, 2, 3, 4])),
                 remote_address: IpAddr::V4(Ipv4Addr::from([1, 2, 3, 4])),
                 local_port: ELIDED_PORT,
+                remote_address_orig: None,
+                local_address_orig: None,
                 remote_port: 10,
                 kubernetes_metadata: None,
+                remote_port_orig: None,
+                local_port_orig: None
             }
         );
 
@@ -374,6 +401,10 @@ mod tests {
                 local_port: ELIDED_PORT,
                 remote_port: 10,
                 kubernetes_metadata: None,
+                remote_address_orig: None,
+                local_address_orig: None,
+                remote_port_orig: None,
+                local_port_orig: None
             }
         );
     }

@@ -6,7 +6,6 @@ use crate::{
     utils::{clock::RealTimeClock, credentials::get_credentials_provider},
     OnOff, Options,
 };
-use log::info;
 
 pub use super::publisher_endpoint::ReportPublisherOTLP;
 
@@ -31,7 +30,7 @@ impl Default for ReportPublisherLog {
 
 impl ReportPublisher for ReportPublisherLog {
     fn publish(&self, report: &NfmReport) -> bool {
-        info!(report:serde = report; "Publishing report");
+        log::warn!(report:serde = report; "Publishing report");
         true
     }
 }

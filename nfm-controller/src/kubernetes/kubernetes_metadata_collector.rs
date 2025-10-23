@@ -20,14 +20,14 @@ use kube::ResourceExt;
 use kube::{Api, Client};
 use log::info;
 use serde::de::DeserializeOwned;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use tokio::runtime::Runtime;
 
 use crate::events::network_event::AggregateResults;
 use crate::kubernetes::flow_metadata::FlowMetadata;
 
-#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, PartialOrd, Default)]
+#[derive(Clone, Debug, Serialize, Deserialize, Eq, Hash, PartialEq, PartialOrd, Default)]
 pub struct PodInfo {
     pub name: String,
     pub namespace: String,
@@ -37,7 +37,7 @@ pub struct PodInfo {
 pub struct KubernetesMetadataCollector {
     enriched_flows: u64,
     refresher_runtime: Option<Runtime>,
-    pod_info_arc: Arc<Mutex<HashMap<IpAddr, HashMap<i32, PodInfo>>>>,
+    pub pod_info_arc: Arc<Mutex<HashMap<IpAddr, HashMap<i32, PodInfo>>>>,
 }
 
 impl Default for KubernetesMetadataCollector {
@@ -567,6 +567,10 @@ mod tests {
                 remote_port,
                 kubernetes_metadata: None,
                 protocol: InetProtocol::TCP,
+                remote_address_orig: None,
+                local_address_orig: None,
+                remote_port_orig: None,
+                local_port_orig: None,
             },
             stats: NetworkStats {
                 ..Default::default()

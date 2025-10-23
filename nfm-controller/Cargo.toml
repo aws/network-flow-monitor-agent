@@ -26,10 +26,6 @@ dhat = ["dep:dhat"] # enable dhat only when requested
 panic = "abort"
 overflow-checks = true
 
-[profile.release]
-panic = "abort"
-overflow-checks = true
-
 [dependencies]
 aws-config = { version = "1.5", features = ["rustls"] }
 rustls = { version = "0.23.29", default-features = false }

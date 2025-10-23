@@ -5,3 +5,11 @@ default-members = ["nfm-controller", "nfm-common"]
 
 [workspace.metadata]
 bpf_target = "bpfel-unknown-none"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = false
+overflow-checks = true

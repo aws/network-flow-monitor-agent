@@ -35,6 +35,7 @@ use crate::events::{
 };
 use crate::reports::publisher::ReportPublisher;
 use crate::reports::report::{NfmReport, ProcessStats, UsageStats};
+use crate::utils::event_timer::UNKNOWN_EVENT;
 use crate::utils::{
     event_timer, CpuUsageMonitor, EventTimer, MemoryInspector, ProcessMemoryInspector,
     SystemBootClock,
@@ -233,6 +234,17 @@ fn do_work(
         Duration::from_secs(opt.jitter_secs),
     );
 
+    let resolve_nat_event = match opt.resolve_nat {
+        OnOff::On => {
+            let nat_resolution_period = 100;
+            timer.add_event_with_delay(
+            Duration::from_millis(nat_resolution_period),
+            Duration::from_millis(0),
+            Duration::from_millis(nat_resolution_period/2), // interleave with aggregate_event, to not be a relative no-op
+        )},
+        OnOff::Off => UNKNOWN_EVENT,
+    };
+
     // Register POSIX signals for which we want to exit gracefully.
     let should_exit = Arc::new(AtomicBool::new(false));
     signal_hook::flag::register(SIGINT, Arc::clone(&should_exit))
@@ -259,8 +271,7 @@ fn do_work(
         }
 
         if event_id == aggregate_event {
-            nat_resolver.perform_aggregation_cycle();
-            provider.perform_aggregation_cycle(&nat_resolver);
+            provider.perform_aggregation_cycle(&mut nat_resolver);
             nat_resolver.perform_eviction();
         } else if event_id == publish_event {
             // Add network stats to the report.
@@ -300,7 +311,10 @@ fn do_work(
             } else {
                 failed_reports_count += 1;
             }
-        } else {
+        } else if event_id == resolve_nat_event {
+            nat_resolver.perform_aggregation_cycle();
+        }
+        else {
             error!("Received unknown event ID: {event_id}");
         }
 
@@ -319,7 +333,7 @@ fn do_work(
 mod test {
     use super::*;
     use crate::events::{
-        host_stats_provider::HostStats, nat_resolver::NatResolver, SockCache, SockOperationResult,
+        host_stats_provider::HostStats, nat_resolver::{NatResolver}, SockCache, SockOperationResult,
     };
     use metadata::env_metadata_provider::{
         EnvMetadata, EnvMetadataProvider, MultiMetadataProvider, NetworkDevice,
@@ -355,7 +369,7 @@ mod test {
     }
 
     impl EventProvider for EventProviderNoOp {
-        fn perform_aggregation_cycle(&mut self, _nat_resolver: &Box<dyn NatResolver>) {
+        fn perform_aggregation_cycle(&mut self, _nat_resolver: &mut Box<dyn NatResolver>) {
             let mut calls = self.calls.lock().unwrap();
             *calls = (*calls).saturating_add(1);
         }

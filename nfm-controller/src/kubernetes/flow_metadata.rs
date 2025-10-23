@@ -1,14 +1,14 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::reports::report::ReportValue;
 
 use super::kubernetes_metadata_collector::PodInfo;
 
 // carries kubernetes metadata related to local and remote parties, when applicable
-#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Serialize, Deserialize, Eq, Hash, PartialEq, PartialOrd)]
 pub struct FlowMetadata {
     pub local: Option<PodInfo>,
     pub remote: Option<PodInfo>,
