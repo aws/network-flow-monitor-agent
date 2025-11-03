@@ -1,0 +1,146 @@
+# Orchestrates load tests to run on two different refs, then compares results
+name: Orchestrate load tests
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+
+jobs:
+  check-access:
+    runs-on: ubuntu-22.04
+    permissions:
+      id-token: write
+    outputs:
+      has-access: ${{ steps.aws-creds.outcome == 'success' }}
+    steps:
+      - name: Configure AWS credentials
+        id: aws-creds
+        continue-on-error: true
+        uses: aws-actions/configure-aws-credentials@v5.0.0
+        with:
+          role-to-assume: ${{ secrets.PR_PERF_TEST_AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.PR_PERF_TEST_AWS_REGION }}
+          mask-aws-account-id: true
+
+  # Run load tests for PR code
+  test-pr-code:
+    needs: check-access
+    if: needs.check-access.outputs.has-access == 'true'
+    permissions:
+      id-token: write
+      contents: read
+    uses: ./.github/workflows/load-tests.yml
+    with:
+      ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      test-id: pr-${{ github.event.number || github.run_id }}
+    secrets: inherit
+
+  # Run load tests for main branch code
+  test-main-code:
+    needs: check-access
+    if: needs.check-access.outputs.has-access == 'true'
+    permissions:
+      id-token: write
+      contents: read
+    uses: ./.github/workflows/load-tests.yml
+    with:
+      ref: main
+      test-id: main-${{ github.event.number || github.run_id }}
+    secrets: inherit
+
+  # Compare results after both tests complete
+  compare-results:
+    needs: [check-access, test-pr-code, test-main-code]
+    if: needs.check-access.outputs.has-access == 'true'
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.13'
+
+      - name: Install Python dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install sh matplotlib
+
+      - name: Download PR results
+        uses: actions/download-artifact@v4
+        with:
+          name: performance-results-pr-${{ github.event.number || github.run_id }}
+          path: pr-results
+
+      - name: Download main results
+        uses: actions/download-artifact@v4
+        with:
+          name: performance-results-main-${{ github.event.number || github.run_id }}
+          path: main-results
+
+      - name: Generate performance comparison
+        run: |
+          cd load-generator
+          chmod +x bin/compare-performance
+          bin/compare-performance --current-dir ../pr-results --baseline-dir ../main-results > performance-comparison.md
+
+      - name: Upload graphs to gh-perf-images branch
+        run: |
+          git stash push -m "Temporary stash for graph upload"
+          git fetch origin gh-perf-images:gh-perf-images 2>/dev/null || git checkout -b gh-perf-images
+          git checkout gh-perf-images
+
+          mkdir -p perf-images/pr-${{ github.event.number }}
+          cp pr-results/graphs/*.png perf-images/pr-${{ github.event.number }}/ 2>/dev/null || true
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add perf-images/pr-${{ github.event.number }}/
+          git commit -m "Add performance graphs for PR #${{ github.event.number }}" || true
+          git push origin gh-perf-images || true
+
+          git checkout ${{ github.sha }}
+          git stash pop || true
+
+      - name: Comment PR with performance results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            // Read performance comparison
+            const comparison = fs.readFileSync('load-generator/performance-comparison.md', 'utf8');
+
+            // Get list of graphs
+            const graphsDir = 'pr-results/graphs';
+            const graphs = fs.existsSync(graphsDir) ? fs.readdirSync(graphsDir).filter(f => f.endsWith('.png')) : [];
+
+            // Create comment
+            let comment = '## 📊 Performance Test Results\n\n';
+            comment += comparison + '\n\n';
+
+            if (graphs.length > 0) {
+              comment += `Generated ${graphs.length} performance graphs.\n\n`;
+              graphs.forEach(graph => {
+                const graphUrl = `https://raw.githubusercontent.com/${{ github.repository }}/gh-perf-images/perf-images/pr-${{ github.event.number }}/${graph}`;
+                comment += `![${graph}](${graphUrl})\n\n`;
+              });
+            }
+
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
