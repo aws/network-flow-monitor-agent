@@ -14,6 +14,7 @@ use std::collections::HashSet;
 use std::net::IpAddr;
 
 use crate::kubernetes::kubernetes_metadata_collector::PodInfo;
+use crate::open_metrics::providers::interface_metrics_provider::types::NamespaceInfo;
 
 use super::types::HostInterface;
 
@@ -37,13 +38,9 @@ impl HostInterfaceMetricValues {
     }
 
     /// Swap TX/RX for veth interfaces (pod is on the other end)
-    pub fn swap_tx_rx(self) -> Self {
-        Self {
-            ingress_pkt_count: self.egress_pkt_count,
-            ingress_bytes_count: self.egress_bytes_count,
-            egress_pkt_count: self.ingress_pkt_count,
-            egress_bytes_count: self.ingress_bytes_count,
-        }
+    pub fn swap_tx_rx(&mut self) {
+        std::mem::swap(&mut self.ingress_pkt_count, &mut self.egress_pkt_count);
+        std::mem::swap(&mut self.ingress_bytes_count, &mut self.egress_bytes_count);
     }
 
     pub fn calculate_delta(&self, previous: &Self) -> Self {
@@ -156,18 +153,17 @@ pub fn get_pod_info_from_iface(
     namespace_id: Option<super::types::NamespaceId>,
 ) -> (String, String) {
     match namespace_id {
-        Some(ns_id) => get_pod_info_from_netns(ns_id, namespace_info, pod_mappings),
+        Some(ns_id) => get_pod_info_from_netns(namespace_info.get(&ns_id), pod_mappings),
         None => get_pod_info_from_real_iface(interface_name, pod_mappings),
     }
 }
 
 /// Get the Pod information for a namespace. It returns the Pod's name and namespace
 pub fn get_pod_info_from_netns(
-    net_ns: super::types::NamespaceId,
-    ns_to_pid: &HashMap<super::types::NamespaceId, super::types::NamespaceInfo>,
+    ns_info: Option<&NamespaceInfo>,
     pod_info_mapping: &HashMap<IpAddr, HashSet<PodInfo>>,
 ) -> (String, String) {
-    match ns_to_pid.get(&net_ns) {
+    match ns_info {
         Some(ns_info) => {
             for ip_addr in ns_info.ip_addresses.iter() {
                 match pod_info_mapping.get(ip_addr) {
@@ -225,13 +221,13 @@ mod tests {
 
     #[test]
     fn test_host_interface_metric_values_swap_tx_rx() {
-        let original = HostInterfaceMetricValues::new(1000, 50000, 800, 40000);
-        let swapped = original.swap_tx_rx();
+        let mut value = HostInterfaceMetricValues::new(1000, 50000, 800, 40000);
+        value.swap_tx_rx();
 
-        assert_eq!(swapped.ingress_pkt_count, 800);
-        assert_eq!(swapped.ingress_bytes_count, 40000);
-        assert_eq!(swapped.egress_pkt_count, 1000);
-        assert_eq!(swapped.egress_bytes_count, 50000);
+        assert_eq!(value.ingress_pkt_count, 800);
+        assert_eq!(value.ingress_bytes_count, 40000);
+        assert_eq!(value.egress_pkt_count, 1000);
+        assert_eq!(value.egress_bytes_count, 50000);
     }
 
     #[test]
@@ -353,7 +349,7 @@ mod tests {
         pod_set.insert(pod_info);
         pod_mappings.insert(ip_addr, pod_set);
 
-        let result = get_pod_info_from_netns(ns_id, &namespace_info, &pod_mappings);
+        let result = get_pod_info_from_netns(namespace_info.get(&ns_id), &pod_mappings);
         assert_eq!(
             result,
             ("test-pod".to_string(), "test-namespace".to_string())
@@ -364,11 +360,11 @@ mod tests {
     fn test_get_pod_info_from_netns_not_found() {
         use super::super::types::NamespaceId;
 
-        let namespace_info = HashMap::new();
+        let namespace_info: HashMap<NamespaceId, NamespaceInfo> = HashMap::new();
         let pod_mappings = HashMap::new();
         let ns_id = NamespaceId::new(42);
 
-        let result = get_pod_info_from_netns(ns_id, &namespace_info, &pod_mappings);
+        let result = get_pod_info_from_netns(namespace_info.get(&ns_id), &pod_mappings);
         assert_eq!(result, (String::new(), String::new()));
     }
 
@@ -390,7 +386,7 @@ mod tests {
         };
         namespace_info.insert(ns_id, ns_info);
 
-        let result = get_pod_info_from_netns(ns_id, &namespace_info, &pod_mappings);
+        let result = get_pod_info_from_netns(namespace_info.get(&ns_id), &pod_mappings);
         assert_eq!(result, (String::new(), String::new()));
     }
 

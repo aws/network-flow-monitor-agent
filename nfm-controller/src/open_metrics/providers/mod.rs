@@ -10,9 +10,6 @@ use crate::metadata::runtime_environment_metadata::ComputePlatform;
 pub mod interface_metrics_provider;
 pub mod system_metrics_provider;
 
-#[cfg(test)]
-mod test_shared;
-
 pub trait MetricLabel {
     fn get_labels(compute_platform: &ComputePlatform) -> &[&str];
 }

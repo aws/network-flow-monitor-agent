@@ -128,7 +128,7 @@ impl KubernetesMetadataCollector {
             })
             .unwrap_or_default();
 
-        // If the pod doesn't have any port, add a virtual pod 0 to keep track of name and namespaces.
+        // If the pod doesn't have any port, add a virtual port 0 to keep track of name and namespaces.
         if out.is_empty() {
             out.push(0);
         }
@@ -429,7 +429,7 @@ impl KubernetesMetadataCollector {
         self.enriched_flows.load(Ordering::Relaxed)
     }
 
-    /// Returns a map from Ips to a list of Pods associated. The vector has more than one pod for the
+    /// Returns a map from Ips to a list of Pods associated. The vector can have more than one pod for the
     /// hostNetwork pods.
     /// If ip_filter is empty, returns all mappings. Otherwise, only returns mappings for the specified IP addresses.
     pub fn get_ip_to_pod_mapping(&self, ip_filter: &[IpAddr]) -> HashMap<IpAddr, HashSet<PodInfo>> {

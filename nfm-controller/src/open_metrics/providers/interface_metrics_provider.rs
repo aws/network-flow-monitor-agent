@@ -196,7 +196,7 @@ impl InterfaceMetricsProvider {
         };
 
         // Initialize baseline metrics
-        provider.current_metrics = provider.get_metrics();
+        provider.get_metrics();
         provider
     }
 
@@ -238,7 +238,7 @@ impl InterfaceMetricsProvider {
             // If the interface is virtual, we need to swap the values because the pod is on the other end
             // of the link
             if iface.is_virtual() {
-                host_metrics = host_metrics.swap_tx_rx();
+                host_metrics.swap_tx_rx();
 
                 // Use the already retrieved netns value
                 netns_metrics =
@@ -398,7 +398,7 @@ mod tests {
         sync::Mutex,
     };
 
-    use crate::open_metrics::providers::test_shared::TemporaryFile;
+    use crate::utils::test_utils::TemporaryFile;
 
     #[test]
     fn test_interface_metrics_provider_new() {
