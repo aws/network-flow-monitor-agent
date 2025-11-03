@@ -219,8 +219,11 @@ pub fn on_load(opt: Options) -> Result<(), anyhow::Error> {
     };
     let host_stats_provider = HostStatsProviderImpl::new();
 
+    // Create shared collector for both main thread and OpenMetrics server
+    let k8s_metadata_collector = Arc::new(KubernetesMetadataCollector::new());
+
     #[cfg(feature = "open-metrics")]
-    let _server = start_open_metrics_server(&opt);
+    let _server = start_open_metrics_server(&opt, Some(k8s_metadata_collector.clone()));
 
     do_work(
         event_provider,
@@ -229,6 +232,7 @@ pub fn on_load(opt: Options) -> Result<(), anyhow::Error> {
         publisher,
         metadata_provider,
         host_stats_provider,
+        k8s_metadata_collector,
         opt,
     );
 
@@ -242,6 +246,7 @@ fn do_work(
     publisher: impl ReportPublisher,
     mut metadata_provider: impl MultiMetadataProvider,
     mut host_stats_provider: impl HostStatsProvider,
+    k8s_metadata_collector: Arc<KubernetesMetadataCollector>,
     opt: Options,
 ) {
     let memory_inspector = ProcessMemoryInspector::new();
@@ -270,7 +275,6 @@ fn do_work(
     let enable_usage_data = opt.usage_data == OnOff::On;
     let mut failed_reports_count = 0;
     let mut usage_stats = UsageStats::default();
-    let mut k8s_metadata_collector = KubernetesMetadataCollector::new();
     if opt.kubernetes_metadata == OnOff::On {
         k8s_metadata_collector.setup_watchers();
     }
@@ -340,12 +344,16 @@ fn do_work(
 }
 
 #[cfg(feature = "open-metrics")]
-fn start_open_metrics_server(opt: &Options) -> Option<OpenMetricsServer> {
+fn start_open_metrics_server(
+    opt: &Options,
+    k8s_collector: Option<Arc<KubernetesMetadataCollector>>,
+) -> Option<OpenMetricsServer> {
     // Start OpenMetrics server in a separate thread before entering main loop
     if opt.open_metrics == OnOff::On {
-        let config = OpenMetricsServerConfig::for_addr(
+        let config = OpenMetricsServerConfig::from(
             opt.open_metrics_address.clone(),
             opt.open_metrics_port,
+            k8s_collector,
         );
         let mut server = OpenMetricsServer::with_config(config);
         if let Err(e) = server.start() {
@@ -552,6 +560,7 @@ mod test {
                 publisher_clone,
                 metadata_provider_clone,
                 host_stats_provider_clone,
+                Arc::new(KubernetesMetadataCollector::new()),
                 create_options(),
             );
         });

@@ -11,6 +11,9 @@ pub mod event_timer;
 pub mod memory_inspector;
 pub mod report;
 
+#[cfg(test)]
+pub mod test_utils;
+
 pub use clock::{timespec_to_nsec, timespec_to_us, Clock, FakeClock, SystemBootClock};
 pub use command_runner::{CommandRunner, FakeCommandRunner, RealCommandRunner};
 pub use conntrack_listener::ConntrackListener;

@@ -64,6 +64,7 @@ impl FakeCommandRunner {
 impl CommandRunner for FakeCommandRunner {
     fn run(&self, cmd: &str, args: &[&str]) -> std::io::Result<Output> {
         let full_cmd = Self::full_command(cmd, args);
+        println!("{}", full_cmd);
         self.expectations.lock().unwrap().remove(&full_cmd).unwrap()
     }
 }
