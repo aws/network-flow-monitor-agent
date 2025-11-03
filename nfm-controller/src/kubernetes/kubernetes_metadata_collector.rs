@@ -1,9 +1,10 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
@@ -36,9 +37,9 @@ pub struct PodInfo {
 }
 
 pub struct KubernetesMetadataCollector {
-    enriched_flows: u64,
-    refresher_runtime: Option<Runtime>,
-    pod_info_arc: Arc<Mutex<HashMap<IpAddr, HashMap<i32, PodInfo>>>>,
+    pub(crate) enriched_flows: AtomicU64,
+    pub(crate) refresher_runtime: Arc<Mutex<Option<Runtime>>>,
+    pub(crate) pod_info_arc: Arc<Mutex<HashMap<IpAddr, HashMap<i32, PodInfo>>>>,
 }
 
 impl Default for KubernetesMetadataCollector {
@@ -50,15 +51,13 @@ impl Default for KubernetesMetadataCollector {
 impl KubernetesMetadataCollector {
     pub fn new() -> Self {
         Self {
-            enriched_flows: 0,
-            refresher_runtime: None,
+            enriched_flows: AtomicU64::new(0),
+            refresher_runtime: Arc::new(Mutex::new(None)),
             pod_info_arc: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
-    /**
-     * Extract ip address from Pod object
-     */
+    /// Extract ip address from Pod object
     fn get_ip_from_pod(pod: &Pod) -> Option<IpAddr> {
         match pod.status {
             Some(ref status) => status
@@ -69,9 +68,7 @@ impl KubernetesMetadataCollector {
         }
     }
 
-    /**
-     * Extract pod name from Endpoint object
-     */
+    /// Extract pod name from Endpoint object
     fn get_pod_name_from_endpoint(endpoint: &Endpoint) -> String {
         endpoint
             .target_ref
@@ -80,10 +77,8 @@ impl KubernetesMetadataCollector {
             .unwrap_or_default()
     }
 
-    /**
-     * Extract what ports the service serves from, using endpoint slice.
-     * We only care for TCP ports right now, in future we can add others.
-     */
+    /// Extract what ports the service serves from, using endpoint slice.
+    /// We only care for TCP ports right now, in future we can add others.
     fn get_tcp_ports_from_endpoint_slice(endpoint_slice: &EndpointSlice) -> Vec<i32> {
         endpoint_slice
             .ports
@@ -101,9 +96,7 @@ impl KubernetesMetadataCollector {
             })
     }
 
-    /**
-     * Get all the TCP ports this specific container serves from
-     */
+    /// Get all the TCP ports this specific container serves from
     fn extract_ports_from_pod_container(container: &Container) -> Vec<i32> {
         container
             .ports
@@ -121,12 +114,11 @@ impl KubernetesMetadataCollector {
             })
     }
 
-    /**
-     * Extract what ports the pod serves from, using Pod data
-     * We only care for TCP ports right now, in future we can add others.
-     */
+    /// Extract what ports the pod serves from, using Pod data
+    /// We only care for TCP ports right now, in future we can add others.
     fn get_tcp_ports_from_pod(pod: &Pod) -> Vec<i32> {
-        pod.spec
+        let mut out: Vec<i32> = pod
+            .spec
             .as_ref()
             .map(|spec| {
                 spec.containers // Generally each pod contains 1 container, but can be more. They will share the same Network Namespace
@@ -134,12 +126,16 @@ impl KubernetesMetadataCollector {
                     .flat_map(Self::extract_ports_from_pod_container)
                     .collect()
             })
-            .unwrap_or_default()
+            .unwrap_or_default();
+
+        // If the pod doesn't have any port, add a virtual port 0 to keep track of name and namespaces.
+        if out.is_empty() {
+            out.push(0);
+        }
+        out
     }
 
-    /**
-     * Purge the given pod ip and ports from pod info map.
-     */
+    /// Purge the given pod ip and ports from pod info map.
     fn purge_pod_ip_ports_from_pod_info(
         pod_info: &mut MutexGuard<'_, HashMap<IpAddr, HashMap<i32, PodInfo>>>,
         pod_ip: &IpAddr,
@@ -156,11 +152,9 @@ impl KubernetesMetadataCollector {
         }
     }
 
-    /**
-     * Handle a Pod event. Pod events are sent by kubernetes api server when a new pod is added, removed or modified.
-     * On add or update events we add to or replace an entry in our internal map.
-     * On delete events we remove associated entry from our internal map.
-     */
+    /// Handle a Pod event. Pod events are sent by kubernetes api server when a new pod is added, removed or modified.
+    /// On add or update events we add to or replace an entry in our internal map.
+    /// On delete events we remove associated entry from our internal map.
     fn handle_pod_event(
         pod_event_result: Result<Event<Pod>, watcher::Error>,
         pod_info_root_map: Arc<Mutex<HashMap<IpAddr, HashMap<i32, PodInfo>>>>,
@@ -189,6 +183,7 @@ impl KubernetesMetadataCollector {
                                 // In case this pod event comes before endpoint slice event, that is alright as endpoint slice event will override it.
                                 PodInfo {
                                     name: pod.name_any(),
+                                    namespace: pod.namespace().unwrap_or_default(),
                                     ..Default::default()
                                 });
                     }
@@ -205,11 +200,9 @@ impl KubernetesMetadataCollector {
         }
     }
 
-    /**
-     * An endpoint slice represents a group of endpoints(pod), sometimes a pod might have more than one IP
-     * We associate all those IPs with the same PodInfo
-     * Since we are overriding the entry, this handles both additions and updates
-     */
+    /// An endpoint slice represents a group of endpoints(pod), sometimes a pod might have more than one IP
+    /// We associate all those IPs with the same PodInfo
+    /// Since we are overriding the entry, this handles both additions and updates
     fn handle_endpoint_update(
         slice: EndpointSlice,
         mut pod_info_root_map: MutexGuard<'_, HashMap<IpAddr, HashMap<i32, PodInfo>>>,
@@ -237,11 +230,9 @@ impl KubernetesMetadataCollector {
         }
     }
 
-    /**
-     * An endpoint slice represents a group of endpoints(pod), sometimes a pod might have more than one IP
-     * We associate all those IPs with the same PodInfo
-     * We remove all those IPs from pod info map here
-     */
+    /// An endpoint slice represents a group of endpoints(pod), sometimes a pod might have more than one IP
+    /// We associate all those IPs with the same PodInfo
+    /// We remove all those IPs from pod info map here
     fn handle_endpoint_removal(
         slice: EndpointSlice,
         mut pod_info: MutexGuard<'_, HashMap<IpAddr, HashMap<i32, PodInfo>>>,
@@ -258,12 +249,12 @@ impl KubernetesMetadataCollector {
         }
     }
 
-    /**
-     * Handle a EndpointSlice event. EndpointSlice events are sent by kubernetes api server when a new EndpointSlice is added, removed or modified.
-     * An EndpointSlice is a group of endpoints (thus Pods) that share the same service and port.
-     * On add or update events we add to or replace an entries of relevant pods in our internal map.
-     * On delete events we remove associated entries of relevant pods from our internal map.
-     */
+    ///
+    /// Handle a EndpointSlice event. EndpointSlice events are sent by kubernetes api server when a new EndpointSlice is added, removed or modified.
+    /// An EndpointSlice is a group of endpoints (thus Pods) that share the same service and port.
+    /// On add or update events we add to or replace an entries of relevant pods in our internal map.
+    /// On delete events we remove associated entries of relevant pods from our internal map.
+    ///
     fn handle_endpoint_slice_event(
         slice_event_result: Result<Event<EndpointSlice>, watcher::Error>,
         pod_info_arc: Arc<Mutex<HashMap<IpAddr, HashMap<i32, PodInfo>>>>,
@@ -286,9 +277,7 @@ impl KubernetesMetadataCollector {
         }
     }
 
-    /**
-     * Convenience function, to get a watcher stream for a given resource type, like Pod or EndpointSlice
-     */
+    /// Convenience function, to get a watcher stream for a given resource type, like Pod or EndpointSlice
     async fn create_watcher_stream<K>(
     ) -> StreamBackoff<impl Stream<Item = Result<Event<K>, Error>> + Send, DefaultBackoff>
     where
@@ -301,9 +290,7 @@ impl KubernetesMetadataCollector {
         watcher(api, watcher::Config::default().page_size(150)).default_backoff()
     }
 
-    /**
-     * Start a watcher for pod changes. This will run forever
-     */
+    /// Start a watcher for pod changes. This will run forever
     async fn start_pod_watcher(pod_info: Arc<Mutex<HashMap<IpAddr, HashMap<i32, PodInfo>>>>) {
         let pod_stream = Self::create_watcher_stream::<Pod>().await;
         pod_stream
@@ -313,9 +300,7 @@ impl KubernetesMetadataCollector {
             .await;
     }
 
-    /**
-     * Start a watcher for endpoint slice changes. This will run forever
-     */
+    /// Start a watcher for endpoint slice changes. This will run forever
     async fn start_endpoint_slice_watcher(
         pod_info: Arc<Mutex<HashMap<IpAddr, HashMap<i32, PodInfo>>>>,
     ) {
@@ -327,18 +312,17 @@ impl KubernetesMetadataCollector {
             .await;
     }
 
-    /**
-     * Create two tasks running forever, with main goals of listening pod and endpoint slice updates
-     */
-    pub fn setup_watchers(&mut self) {
-        if self.refresher_runtime.is_none() {
-            self.refresher_runtime = Some(tokio::runtime::Runtime::new().unwrap());
+    /// Create two tasks running forever, with main goals of listening pod and endpoint slice updates
+    pub fn setup_watchers(&self) {
+        let mut runtime_guard = self.refresher_runtime.lock().unwrap();
+        if runtime_guard.is_none() {
+            *runtime_guard = Some(tokio::runtime::Runtime::new().unwrap());
         } else {
             // the watchers are already running, no need to do anything
             return;
         }
         ensure_default_crypto_provider_exists();
-        let runtime = self.refresher_runtime.as_ref().unwrap();
+        let runtime = runtime_guard.as_ref().unwrap();
         runtime.spawn(Self::start_pod_watcher(Arc::clone(&self.pod_info_arc)));
         runtime.spawn(Self::start_endpoint_slice_watcher(Arc::clone(
             &self.pod_info_arc,
@@ -365,10 +349,8 @@ impl KubernetesMetadataCollector {
         pod_data
     }
 
-    /**
-     * Get given set of flows and enrich them with kubernetes metadata
-     */
-    pub fn enrich_flows(&mut self, agg_flows: &mut [AggregateResults]) -> u64 {
+    /// Get given set of flows and enrich them with kubernetes metadata
+    pub fn enrich_flows(&self, agg_flows: &mut [AggregateResults]) -> u64 {
         let start = Instant::now();
         let mut enriched_this_run: u64 = 0;
         let pod_info = self.pod_info_arc.lock().unwrap().clone();
@@ -413,7 +395,8 @@ impl KubernetesMetadataCollector {
                 enriched_this_run += 1;
             }
         }
-        self.enriched_flows += enriched_this_run;
+        self.enriched_flows
+            .fetch_add(enriched_this_run, Ordering::Relaxed);
         info!(
             duration_micro = (Instant::now() - start).as_micros(),
             total_flows = agg_flows.len(),
@@ -423,9 +406,7 @@ impl KubernetesMetadataCollector {
         enriched_this_run
     }
 
-    /**
-     * Get the name of the service representing the endpoint slice
-     */
+    /// Get the name of the service representing the endpoint slice
     fn get_service_name_from_endpoint_slice(endpoint_slice: &EndpointSlice) -> String {
         // regular service names are stored under a metadata label, first try that
         let service_name_from_labels = match endpoint_slice.metadata.labels.as_ref() {
@@ -441,6 +422,34 @@ impl KubernetesMetadataCollector {
                 None => "".to_string(),
             },
         }
+    }
+
+    /// Get the total count of flows that have been enriched with Kubernetes metadata
+    pub fn get_enriched_flows_count(&self) -> u64 {
+        self.enriched_flows.load(Ordering::Relaxed)
+    }
+
+    /// Returns a map from Ips to a list of Pods associated. The vector can have more than one pod for the
+    /// hostNetwork pods.
+    /// If ip_filter is empty, returns all mappings. Otherwise, only returns mappings for the specified IP addresses.
+    pub fn get_ip_to_pod_mapping(&self, ip_filter: &[IpAddr]) -> HashMap<IpAddr, HashSet<PodInfo>> {
+        let pod_info_guard = self.pod_info_arc.lock().unwrap();
+
+        pod_info_guard
+            .iter()
+            .filter(|(ip, _port_map)| ip_filter.is_empty() || ip_filter.contains(ip))
+            .map(|(ip, port_map)| {
+                (
+                    *ip,
+                    port_map
+                        .iter()
+                        .fold(HashSet::new(), |mut vec_pods, (_port, pod_info)| {
+                            vec_pods.insert(pod_info.clone());
+                            vec_pods
+                        }),
+                )
+            })
+            .collect()
     }
 }
 
@@ -519,7 +528,7 @@ mod tests {
     #[test]
     fn test_setup_watchers_sanity() {
         let result = panic::catch_unwind(AssertUnwindSafe(|| {
-            let mut collector = KubernetesMetadataCollector::new();
+            let collector = KubernetesMetadataCollector::new();
             collector.setup_watchers();
         }));
 
