@@ -109,18 +109,20 @@ for current_report in "$current_dir"/*_tps-report.json; do
     fi
 
     filename=$(basename "$current_report")
-    baseline_report="$baseline_dir/$filename"
-
-    # Check if baseline exists, compare against that too if it exists
-    has_baseline=true
-    if [[ ! -f "$baseline_report" ]]; then
-        has_baseline=false
-    fi
 
     # Extract instance type and TPS from filename
-    # Format: results-pr-58_m6a.xlarge_10000_tps-report.json
+    # Format: results-pr-58_m6a.xlarge_10000_tps-report.json or results-main-58_m6a.xlarge_10000_tps-report.json
     inst_type=$(echo "$filename" | sed 's/.*_\([^_]*\)_[0-9]*_tps-report.json/\1/')
     tps=$(echo "$filename" | sed 's/.*_\([0-9]*\)_tps-report.json/\1/')
+
+    # Find matching baseline report by instance type and TPS (ignoring test-id prefix)
+    baseline_report=$(find "$baseline_dir" -name "*_${inst_type}_${tps}_tps-report.json" -type f | head -n 1)
+
+    # Check if baseline exists
+    has_baseline=true
+    if [[ -z "$baseline_report" || ! -f "$baseline_report" ]]; then
+        has_baseline=false
+    fi
 
     # Compare key metrics
     metrics=(
