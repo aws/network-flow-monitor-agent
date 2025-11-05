@@ -14,7 +14,9 @@ use std::collections::HashSet;
 use std::net::IpAddr;
 
 use crate::kubernetes::kubernetes_metadata_collector::PodInfo;
-use crate::open_metrics::providers::interface_metrics_provider::types::NamespaceInfo;
+use crate::open_metrics::providers::interface_metrics_provider::types::{
+    NamespaceId, NamespaceInfo,
+};
 
 use super::types::HostInterface;
 
@@ -148,9 +150,9 @@ pub fn get_interface_ips(iface_name: &str) -> Result<Vec<IpAddr>, Box<dyn std::e
 /// Get pod information for an interface
 pub fn get_pod_info_from_iface(
     interface_name: &str,
-    namespace_info: &HashMap<super::types::NamespaceId, super::types::NamespaceInfo>,
+    namespace_info: &HashMap<NamespaceId, NamespaceInfo>,
     pod_mappings: &HashMap<IpAddr, HashSet<PodInfo>>,
-    namespace_id: Option<super::types::NamespaceId>,
+    namespace_id: Option<&NamespaceId>,
 ) -> (String, String) {
     match namespace_id {
         Some(ns_id) => get_pod_info_from_netns(namespace_info.get(&ns_id), pod_mappings),
@@ -420,7 +422,7 @@ mod tests {
         pod_mappings.insert(ip_addr, pod_set);
 
         let result =
-            get_pod_info_from_iface("veth123", &namespace_info, &pod_mappings, Some(ns_id));
+            get_pod_info_from_iface("veth123", &namespace_info, &pod_mappings, Some(&ns_id));
         assert_eq!(
             result,
             ("test-pod".to_string(), "test-namespace".to_string())

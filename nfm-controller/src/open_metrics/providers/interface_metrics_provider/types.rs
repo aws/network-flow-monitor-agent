@@ -35,7 +35,6 @@ pub fn get_ipv6_regex() -> &'static Regex {
 pub enum InterfaceMetricsError {
     CommandExecution { command: String },
     NetworkDataParsing { details: String },
-    InterfaceNotFound { interface: String },
     NamespaceOperation { details: String },
 }
 
@@ -47,9 +46,6 @@ impl fmt::Display for InterfaceMetricsError {
             }
             InterfaceMetricsError::NetworkDataParsing { details } => {
                 write!(f, "Failed to parse network data: {}", details)
-            }
-            InterfaceMetricsError::InterfaceNotFound { interface } => {
-                write!(f, "Interface not found: {}", interface)
             }
             InterfaceMetricsError::NamespaceOperation { details } => {
                 write!(f, "Namespace operation failed: {}", details)
@@ -150,10 +146,5 @@ mod tests {
             command: "test command".to_string(),
         };
         assert!(error.to_string().contains("test command"));
-
-        let error = InterfaceMetricsError::InterfaceNotFound {
-            interface: "eth0".to_string(),
-        };
-        assert!(error.to_string().contains("eth0"));
     }
 }

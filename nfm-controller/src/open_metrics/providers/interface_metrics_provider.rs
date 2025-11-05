@@ -223,8 +223,7 @@ impl InterfaceMetricsProvider {
 
         for (iface, device_status) in interface_stats {
             let netns = if iface.is_virtual() {
-                self.namespace_manager
-                    .get_namespace_id_for_interface_from_map(&iface.name, &interface_ns_map)
+                interface_ns_map.get(&iface.name)
             } else {
                 None
             };
@@ -302,7 +301,7 @@ impl InterfaceMetricsProvider {
         iface_name: &str,
         ns_to_pid: &Option<NamespaceMapping>,
         pod_info_map: &Option<IpToPodMapping>,
-        netns: Option<NamespaceId>,
+        netns: Option<&NamespaceId>,
     ) -> InterfaceMetricKey {
         let (pod, pod_namespace) = match self.compute_platform {
             ComputePlatform::Ec2Plain => (String::new(), String::new()),
@@ -583,7 +582,7 @@ mod tests {
             "veth123",
             &Some(ns_mapping),
             &Some(pod_mapping),
-            Some(ns_id),
+            Some(&ns_id),
         );
 
         assert_eq!(key.iface, "veth123");

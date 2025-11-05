@@ -247,53 +247,6 @@ impl NetworkNamespaceManager {
 
         Ok(interface_ns_map)
     }
-
-    /// Get namespace ID for an interface (optimized version using pre-parsed data)
-    pub fn get_namespace_id_for_interface_from_map(
-        &self,
-        interface_name: &str,
-        interface_map: &HashMap<String, NamespaceId>,
-    ) -> Option<NamespaceId> {
-        interface_map.get(interface_name).copied()
-    }
-
-    /// Get namespace ID for an interface (individual command method)
-    pub fn get_namespace_id_for_interface(
-        &self,
-        interface_name: &str,
-    ) -> Result<Option<NamespaceId>> {
-        let output = self
-            .command_runner
-            .run("ip", &["link", "show", interface_name])
-            .map_err(|_| InterfaceMetricsError::CommandExecution {
-                command: format!("ip link show {}", interface_name),
-            })?;
-
-        if !output.status.success() {
-            return Err(InterfaceMetricsError::InterfaceNotFound {
-                interface: interface_name.to_string(),
-            }
-            .into());
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-
-        if let Some(captures) = self.link_regex.captures(&stdout) {
-            if let Some(netnsid_match) = captures.get(1) {
-                let netns_id = netnsid_match.as_str().parse::<u32>().map_err(|e| {
-                    InterfaceMetricsError::NetworkDataParsing {
-                        details: format!(
-                            "Failed to parse namespace ID for interface {}: {}",
-                            interface_name, e
-                        ),
-                    }
-                })?;
-                return Ok(Some(NamespaceId::new(netns_id)));
-            }
-        }
-
-        Ok(None)
-    }
 }
 
 /// Parse IP addresses from 'ip a' command output
@@ -621,67 +574,6 @@ mod tests {
     }
 
     #[test]
-    fn test_get_namespace_id_for_interface_success() {
-        let mut fake_runner = FakeCommandRunner::new();
-        fake_runner.add_expectation(
-            "ip",
-            &["link", "show", "eth0"],
-            Ok(Output {
-                status: ExitStatus::from_raw(0),
-                stdout: b"2: eth0@if3: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT group default link-netnsid 42".to_vec(),
-                stderr: vec![],
-            }),
-        );
-
-        let manager = NetworkNamespaceManager::new(Box::new(fake_runner));
-        let result = manager.get_namespace_id_for_interface("eth0");
-
-        assert!(result.is_ok());
-        let ns_id = result.unwrap();
-        assert_eq!(ns_id, Some(NamespaceId::new(42)));
-    }
-
-    #[test]
-    fn test_get_namespace_id_for_interface_not_found() {
-        let mut fake_runner = FakeCommandRunner::new();
-        fake_runner.add_expectation(
-            "ip",
-            &["link", "show", "nonexistent"],
-            Ok(Output {
-                status: ExitStatus::from_raw(1 << 8), // Exit code 1
-                stdout: vec![],
-                stderr: b"Device \"nonexistent\" does not exist.".to_vec(),
-            }),
-        );
-
-        let manager = NetworkNamespaceManager::new(Box::new(fake_runner));
-        let result = manager.get_namespace_id_for_interface("nonexistent");
-
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_get_namespace_id_for_interface_no_netnsid() {
-        let mut fake_runner = FakeCommandRunner::new();
-        fake_runner.add_expectation(
-            "ip",
-            &["link", "show", "lo"],
-            Ok(Output {
-                status: ExitStatus::from_raw(0),
-                stdout: b"1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN mode DEFAULT group default".to_vec(),
-                stderr: vec![],
-            }),
-        );
-
-        let manager = NetworkNamespaceManager::new(Box::new(fake_runner));
-        let result = manager.get_namespace_id_for_interface("lo");
-
-        assert!(result.is_ok());
-        let ns_id = result.unwrap();
-        assert_eq!(ns_id, None);
-    }
-
-    #[test]
     fn test_parse_namespace_line_with_missing_ns_file() {
         let mut fake_runner = FakeCommandRunner::new();
         fake_runner.add_expectation(
@@ -894,22 +786,5 @@ mod tests {
         assert_eq!(interface_map.get("veth123"), Some(&NamespaceId::new(0)));
         assert_eq!(interface_map.get("lo"), None);
         assert_eq!(interface_map.get("eth0"), None);
-    }
-
-    #[test]
-    fn test_get_namespace_id_for_interface_from_map() {
-        let manager = create_test_manager();
-
-        let mut interface_map = HashMap::new();
-        interface_map.insert("veth123".to_string(), NamespaceId::new(42));
-        interface_map.insert("veth456".to_string(), NamespaceId::new(7));
-
-        // Test existing interface
-        let result = manager.get_namespace_id_for_interface_from_map("veth123", &interface_map);
-        assert_eq!(result, Some(NamespaceId::new(42)));
-
-        // Test non-existing interface
-        let result = manager.get_namespace_id_for_interface_from_map("eth0", &interface_map);
-        assert_eq!(result, None);
     }
 }
