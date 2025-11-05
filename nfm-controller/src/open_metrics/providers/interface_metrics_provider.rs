@@ -204,6 +204,15 @@ impl InterfaceMetricsProvider {
     fn get_metrics(&mut self) -> HashMap<InterfaceMetricKey, InterfaceMetricValues> {
         let (ns_to_pid, pod_info) = self.environment_info();
 
+        // Parse all interface links once at the beginning for better performance
+        let interface_ns_map = match self.compute_platform {
+            ComputePlatform::Ec2Plain => HashMap::new(),
+            ComputePlatform::Ec2K8sEks | ComputePlatform::Ec2K8sVanilla => self
+                .namespace_manager
+                .parse_all_interface_links()
+                .unwrap_or_default(),
+        };
+
         let mut new_current_metrics = HashMap::new();
         let mut result = HashMap::new();
 
@@ -215,9 +224,7 @@ impl InterfaceMetricsProvider {
         for (iface, device_status) in interface_stats {
             let netns = if iface.is_virtual() {
                 self.namespace_manager
-                    .get_namespace_id_for_interface(&iface.name)
-                    .ok()
-                    .flatten()
+                    .get_namespace_id_for_interface_from_map(&iface.name, &interface_ns_map)
             } else {
                 None
             };
@@ -704,21 +711,13 @@ mod tests {
                 stderr: vec![],
             }));
 
+        // Add expectation for the bulk ip link show command (optimization)
         namespace_runner.add_expectation(
             "ip",
-            &["link", "show", "veth1"],
+            &["link", "show"],
             Ok(Output {
                 status: ExitStatus::from_raw(0),
-                stdout: b"2: veth1@if3: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT group default link-netnsid 88".to_vec(),
-                stderr: vec![],
-            }),
-        );
-        namespace_runner.add_expectation(
-            "ip",
-            &["link", "show", "veth2"],
-            Ok(Output {
-                status: ExitStatus::from_raw(0),
-                stdout: b"3: veth2@if3: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT group default link-netnsid 89".to_vec(),
+                stdout: b"2: veth1@if3: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT group default link-netnsid 88\n3: veth2@if3: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT group default link-netnsid 89\n".to_vec(),
                 stderr: vec![],
             }),
         );
