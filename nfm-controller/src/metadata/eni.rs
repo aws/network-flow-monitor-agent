@@ -6,6 +6,7 @@ use crate::metadata::imds_utils::{
     get_runtime_executor, retrieve_instance_id, retrieve_instance_type,
 };
 use crate::reports::report::ReportValue;
+use crate::utils::host::check_iface_virtual;
 use crate::utils::{CommandRunner, RealCommandRunner};
 use aws_config::imds::Client;
 
@@ -22,6 +23,7 @@ pub struct EniMetadataProvider {
     pub(crate) instance_type: String,
     pub(crate) network: Vec<NetworkInterfaceInfo>,
     pub(crate) command_runner: Box<dyn CommandRunner>,
+    pub(crate) filter_virtual_interfaces: bool,
 }
 
 #[derive(Debug)]
@@ -43,6 +45,7 @@ impl EniMetadataProvider {
             instance_type,
             network,
             command_runner: Box::new(RealCommandRunner {}),
+            filter_virtual_interfaces: true,
         }
     }
 
@@ -59,7 +62,11 @@ impl EniMetadataProvider {
         for line in String::from_utf8_lossy(&output.unwrap().stdout).lines() {
             let parts = line.split_ascii_whitespace().collect::<Vec<_>>();
             if parts.len() == 4 {
-                mac_to_device.insert(parts[2].to_string(), parts[0].to_string());
+                let (name, mac) = (parts[0].to_string(), parts[2].to_string());
+                if !self.filter_virtual_interfaces || !check_iface_virtual(&name) {
+                    // Only add real interfaces
+                    mac_to_device.insert(mac, name);
+                }
             }
         }
 
@@ -202,6 +209,7 @@ mod test {
                 interface_id: "the-interface-id".into(),
             }],
             command_runner: Box::new(FakeCommandRunner::new()),
+            filter_virtual_interfaces: false,
         };
         let metadata = ec2_provider.get_metadata();
 
@@ -275,6 +283,7 @@ mod test {
             instance_type: "the-instance-type".into(),
             network: net_infos,
             command_runner: Box::new(fake_runner.clone()),
+            filter_virtual_interfaces: false,
         };
 
         let expected_net_devs: Vec<NetworkDevice> = vec![

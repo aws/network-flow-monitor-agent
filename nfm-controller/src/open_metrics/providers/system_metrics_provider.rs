@@ -499,6 +499,7 @@ mod tests {
                 instance_type: "the-instance-type".into(),
                 network: net_infos,
                 command_runner: eni_command_runner,
+                filter_virtual_interfaces: false,
             },
             host_stats_provider: HostStatsProviderImpl {
                 network_interface_stats: network_intefrace_stats,

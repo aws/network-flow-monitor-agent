@@ -5,10 +5,11 @@
 
 use std::fmt;
 use std::net::IpAddr;
-use std::path::Path;
 use std::sync::OnceLock;
 
 use regex::Regex;
+
+use crate::utils::host::check_iface_virtual;
 
 // Static regex patterns for performance optimization
 static LINK_NETNSID_REGEX: OnceLock<Regex> = OnceLock::new();
@@ -102,21 +103,13 @@ pub struct HostInterface {
 impl HostInterface {
     pub fn new(name: String) -> Self {
         Self {
-            is_virtual: Self::check_if_virtual(&name),
+            is_virtual: check_iface_virtual(&name),
             name,
         }
     }
 
     pub fn is_virtual(&self) -> bool {
         self.is_virtual
-    }
-
-    /// Check if interface is virtual by examining sysfs
-    fn check_if_virtual(name: &str) -> bool {
-        // Physical interfaces have /sys/class/net/<interface>/device symlink
-        // Virtual interfaces don't have this symlink
-        let device_path = format!("/sys/class/net/{}/device", name);
-        !Path::new(&device_path).exists()
     }
 }
 

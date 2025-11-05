@@ -8,6 +8,7 @@ pub mod cpu;
 pub mod credentials;
 pub mod crypto;
 pub mod event_timer;
+pub mod host;
 pub mod memory_inspector;
 pub mod report;
 
