@@ -421,6 +421,23 @@ mod tests {
         };
     }
 
+    // Mock implementation for testing
+    struct MockVirtualChecker {
+        virtual_interfaces: Vec<String>,
+    }
+
+    impl MockVirtualChecker {
+        fn new(virtual_interfaces: Vec<String>) -> Self {
+            Self { virtual_interfaces }
+        }
+    }
+
+    impl crate::utils::host::InterfaceVirtualChecker for MockVirtualChecker {
+        fn is_virtual(&mut self, iface_name: &str) -> Result<bool, anyhow::Error> {
+            Ok(self.virtual_interfaces.contains(&iface_name.to_string()))
+        }
+    }
+
     fn create_mocked_provider() -> SystemMetricsProvider {
         // Mock ENI
         let mut eni_command_runner = Box::new(FakeCommandRunner::new());
@@ -490,6 +507,10 @@ mod tests {
         network_intefrace_stats.insert(eth1, NetworkInterfaceStats::default());
         network_intefrace_stats.insert(eth2, NetworkInterfaceStats::default());
 
+        // Create a mock that considers eth1 and eth2 as physical (not virtual) so they get included
+        // The ENI provider filters OUT virtual interfaces, keeping physical ones
+        let mock_checker = MockVirtualChecker::new(vec!["lo".to_string(), "docker0".to_string()]); // Mark lo and docker0 as virtual
+
         let compute_platform = ComputePlatform::Ec2Plain;
         SystemMetricsProvider {
             compute_platform: compute_platform.clone(),
@@ -499,7 +520,7 @@ mod tests {
                 instance_type: "the-instance-type".into(),
                 network: net_infos,
                 command_runner: eni_command_runner,
-                filter_virtual_interfaces: false,
+                virtual_checker: Box::new(mock_checker),
             },
             host_stats_provider: HostStatsProviderImpl {
                 network_interface_stats: network_intefrace_stats,

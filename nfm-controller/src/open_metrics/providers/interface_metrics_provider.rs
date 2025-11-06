@@ -152,7 +152,7 @@ impl InterfaceMetricsProvider {
         let netns_command_runner = Box::new(RealCommandRunner {});
         let namespace_manager = NetworkNamespaceManager::new(namespace_command_runner);
         let netns_stats = NetNsStats::new(netns_command_runner);
-        let iface_discovery = Box::new(InterfaceDiscoveryImpl {});
+        let iface_discovery = Box::new(InterfaceDiscoveryImpl::new());
 
         let mut provider = Self {
             compute_platform: compute_platform.clone(),
@@ -204,7 +204,6 @@ impl InterfaceMetricsProvider {
     fn get_metrics(&mut self) -> HashMap<InterfaceMetricKey, InterfaceMetricValues> {
         let (ns_to_pid, pod_info) = self.environment_info();
 
-        // Parse all interface links once at the beginning for better performance
         let interface_ns_map = match self.compute_platform {
             ComputePlatform::Ec2Plain => HashMap::new(),
             ComputePlatform::Ec2K8sEks | ComputePlatform::Ec2K8sVanilla => self
@@ -679,7 +678,7 @@ mod tests {
         result: HashMap<HostInterface, DeviceStatus>,
     }
     impl InterfaceDiscovery for MockInterfaceDiscovery {
-        fn get_virtual_interface_stats(&self) -> Result<HashMap<HostInterface, DeviceStatus>> {
+        fn get_virtual_interface_stats(&mut self) -> Result<HashMap<HostInterface, DeviceStatus>> {
             Ok(self.result.clone())
         }
     }

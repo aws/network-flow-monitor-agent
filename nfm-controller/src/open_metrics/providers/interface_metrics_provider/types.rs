@@ -9,8 +9,6 @@ use std::sync::OnceLock;
 
 use regex::Regex;
 
-use crate::utils::host::check_iface_virtual;
-
 // Static regex patterns for performance optimization
 static LINK_NETNSID_REGEX: OnceLock<Regex> = OnceLock::new();
 static IPV4_REGEX: OnceLock<Regex> = OnceLock::new();
@@ -101,11 +99,9 @@ pub struct HostInterface {
 }
 
 impl HostInterface {
-    pub fn new(name: String) -> Self {
-        Self {
-            is_virtual: check_iface_virtual(&name),
-            name,
-        }
+    /// Create a new HostInterface with the specified virtual status
+    pub fn new(name: String, is_virtual: bool) -> Self {
+        Self { name, is_virtual }
     }
 
     pub fn is_virtual(&self) -> bool {
@@ -128,9 +124,9 @@ mod tests {
 
     #[test]
     fn test_host_interface_virtual_detection() {
-        let interface = HostInterface::new("veth123".to_string());
+        let interface = HostInterface::new("veth123".to_string(), true);
         assert_eq!(interface.name, "veth123");
-        // Virtual detection will depend on the actual system
+        assert_eq!(interface.is_virtual, true);
     }
 
     #[test]

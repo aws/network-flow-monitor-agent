@@ -6,7 +6,7 @@ use crate::metadata::imds_utils::{
     get_runtime_executor, retrieve_instance_id, retrieve_instance_type,
 };
 use crate::reports::report::ReportValue;
-use crate::utils::host::check_iface_virtual;
+use crate::utils::host::{CachedInterfaceVirtualChecker, InterfaceVirtualChecker};
 use crate::utils::{CommandRunner, RealCommandRunner};
 use aws_config::imds::Client;
 
@@ -23,7 +23,7 @@ pub struct EniMetadataProvider {
     pub(crate) instance_type: String,
     pub(crate) network: Vec<NetworkInterfaceInfo>,
     pub(crate) command_runner: Box<dyn CommandRunner>,
-    pub(crate) filter_virtual_interfaces: bool,
+    pub(crate) virtual_checker: Box<dyn InterfaceVirtualChecker>,
 }
 
 #[derive(Debug)]
@@ -45,12 +45,12 @@ impl EniMetadataProvider {
             instance_type,
             network,
             command_runner: Box::new(RealCommandRunner {}),
-            filter_virtual_interfaces: true,
+            virtual_checker: Box::new(CachedInterfaceVirtualChecker::new()),
         }
     }
 
     // Gets the network devices associated with the current host.
-    pub fn get_network_devices(&self) -> Vec<NetworkDevice> {
+    pub fn get_network_devices(&mut self) -> Vec<NetworkDevice> {
         let mut mac_to_device: HashMap<String, String> = HashMap::new();
 
         let output = self.command_runner.run("ip", &["-br", "link"]);
@@ -63,8 +63,17 @@ impl EniMetadataProvider {
             let parts = line.split_ascii_whitespace().collect::<Vec<_>>();
             if parts.len() == 4 {
                 let (name, mac) = (parts[0].to_string(), parts[2].to_string());
-                if !self.filter_virtual_interfaces || !check_iface_virtual(&name) {
-                    // Only add real interfaces
+
+                // Always filter virtual interfaces using the cached virtual checker
+                let should_add = match self.virtual_checker.is_virtual(&name) {
+                    Ok(is_virtual) => !is_virtual, // Add if not virtual
+                    Err(err) => {
+                        error!(error = err.to_string(); "Failed to check if interface '{}' is virtual, skipping interface", name);
+                        false // Skip interface on error
+                    }
+                };
+
+                if should_add {
                     mac_to_device.insert(mac, name);
                 }
             }
@@ -187,8 +196,26 @@ async fn get_mac_attribute(
 mod test {
     use super::*;
     use crate::utils::FakeCommandRunner;
+    use anyhow::Result;
     use std::os::unix::process::ExitStatusExt;
     use std::process::{ExitStatus, Output};
+
+    // Mock implementation for testing
+    struct MockInterfaceVirtualChecker {
+        virtual_interfaces: Vec<String>,
+    }
+
+    impl MockInterfaceVirtualChecker {
+        fn new(virtual_interfaces: Vec<String>) -> Self {
+            Self { virtual_interfaces }
+        }
+    }
+
+    impl InterfaceVirtualChecker for MockInterfaceVirtualChecker {
+        fn is_virtual(&mut self, iface_name: &str) -> Result<bool> {
+            Ok(self.virtual_interfaces.contains(&iface_name.to_string()))
+        }
+    }
 
     #[test]
     fn test_instance_id() {
@@ -209,7 +236,7 @@ mod test {
                 interface_id: "the-interface-id".into(),
             }],
             command_runner: Box::new(FakeCommandRunner::new()),
-            filter_virtual_interfaces: false,
+            virtual_checker: Box::new(CachedInterfaceVirtualChecker::new()),
         };
         let metadata = ec2_provider.get_metadata();
 
@@ -277,15 +304,20 @@ mod test {
             },
         ];
 
+        // Mock docker0 as virtual interface to test filtering
+        let virtual_interfaces = vec!["docker0".to_string(), "lo".to_string()];
+        let mock_checker = MockInterfaceVirtualChecker::new(virtual_interfaces);
+
         let eni_provider = EniMetadataProvider {
             client: Client::builder().build(),
             instance_id: "inst-id1".to_string(),
             instance_type: "the-instance-type".into(),
             network: net_infos,
             command_runner: Box::new(fake_runner.clone()),
-            filter_virtual_interfaces: false,
+            virtual_checker: Box::new(mock_checker),
         };
 
+        // Expected: only eth1 and eth2 (not docker0 or lo, which are marked as virtual)
         let expected_net_devs: Vec<NetworkDevice> = vec![
             NetworkDevice {
                 interface_id: "ifc-id1".to_string(),
@@ -297,6 +329,7 @@ mod test {
             },
         ];
 
+        let mut eni_provider = eni_provider;
         let actual_net_devs = eni_provider.get_network_devices();
         assert_eq!(actual_net_devs, expected_net_devs);
         assert!(fake_runner.expectations.lock().unwrap().is_empty());
