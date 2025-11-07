@@ -172,7 +172,6 @@ impl NetworkNamespaceManager {
             .or_else(|_| Ok(Vec::new()))
     }
 
-    /// Parse all interface links in a single command execution for better performance.
     /// Returns a HashMap mapping interface names to their namespace IDs.
     pub fn parse_all_interface_links(&self) -> Result<HashMap<String, NamespaceId>> {
         let mut interface_ns_map = HashMap::new();

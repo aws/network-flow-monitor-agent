@@ -73,7 +73,7 @@ mod tests {
 
         // Test that known interface names return consistent results
         // Note: These tests work by checking filesystem, so results depend on the system
-        let interface_name = "lo"; // loopback is typically present on most systems
+        let interface_name = "lo";
 
         let result1 = checker.is_virtual(interface_name);
         let result2 = checker.is_virtual(interface_name);
@@ -83,30 +83,6 @@ mod tests {
             (Ok(val1), Ok(val2)) => assert_eq!(val1, val2),
             _ => panic!("Interface checker should not fail for loopback interface"),
         }
-    }
-
-    #[test]
-    fn test_cached_interface_virtual_checker_lru_behavior() {
-        let mut checker = CachedInterfaceVirtualChecker::with_capacity(2);
-
-        // Test LRU behavior using the loopback interface (should exist)
-        // This test verifies that the cache works correctly, not the LRU eviction
-        // since we need existing interfaces to actually cache results
-        let result1 = checker.is_virtual("lo");
-        let result2 = checker.is_virtual("lo");
-
-        // Both calls should succeed and return the same result
-        assert!(result1.is_ok());
-        assert!(result2.is_ok());
-
-        let val1 = result1.unwrap();
-        let val2 = result2.unwrap();
-        assert_eq!(val1, val2);
-
-        // Test with another call to verify caching is working
-        let result3 = checker.is_virtual("lo");
-        assert!(result3.is_ok());
-        assert_eq!(val1, result3.unwrap());
     }
 
     #[test]

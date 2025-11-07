@@ -64,18 +64,16 @@ impl EniMetadataProvider {
             if parts.len() == 4 {
                 let (name, mac) = (parts[0].to_string(), parts[2].to_string());
 
-                // Always filter virtual interfaces using the cached virtual checker
-                let should_add = match self.virtual_checker.is_virtual(&name) {
-                    Ok(is_virtual) => !is_virtual, // Add if not virtual
+                match self.virtual_checker.is_virtual(&name) {
+                    Ok(is_virtual) => {
+                        if !is_virtual {
+                            mac_to_device.insert(mac, name);
+                        }
+                    }
                     Err(err) => {
                         error!(error = err.to_string(); "Failed to check if interface '{}' is virtual, skipping interface", name);
-                        false // Skip interface on error
                     }
                 };
-
-                if should_add {
-                    mac_to_device.insert(mac, name);
-                }
             }
         }
 
@@ -304,7 +302,6 @@ mod test {
             },
         ];
 
-        // Mock docker0 as virtual interface to test filtering
         let virtual_interfaces = vec!["docker0".to_string(), "lo".to_string()];
         let mock_checker = MockInterfaceVirtualChecker::new(virtual_interfaces);
 
@@ -317,7 +314,6 @@ mod test {
             virtual_checker: Box::new(mock_checker),
         };
 
-        // Expected: only eth1 and eth2 (not docker0 or lo, which are marked as virtual)
         let expected_net_devs: Vec<NetworkDevice> = vec![
             NetworkDevice {
                 interface_id: "ifc-id1".to_string(),

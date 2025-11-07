@@ -104,7 +104,6 @@ impl NetNsStats {
     }
 
     /// Parse /proc/$pid/net/snmp format for TCP connection statistics
-    /// Format is different from nstat output - it's space-separated with headers
     fn parse_proc_netstat(&self, content: &str) -> NetNsInterfaceMetricValues {
         let mut tcp_active_opens = 0;
         let mut tcp_passive_opens = 0;
