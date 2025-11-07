@@ -3,7 +3,8 @@
 
 //! Network namespace statistics collection for interface metrics provider.
 
-use log::warn;
+use log::{debug, warn};
+use std::fs;
 
 use crate::{
     open_metrics::providers::interface_metrics_provider::types::NamespaceInfo, utils::CommandRunner,
@@ -47,38 +48,138 @@ impl NetNsStats {
     }
 
     /// Get TCP flow statistics for a namespace
-    pub fn get_namespace_flow_stats(&self, ns_info: &NamespaceInfo) -> NetNsInterfaceMetricValues {
+    pub fn get_namespace_flow_stats(
+        &self,
+        ns_info: &NamespaceInfo,
+    ) -> Result<NetNsInterfaceMetricValues, String> {
         match &ns_info.ns_file {
             Some(ns_file) => self.execute_nsenter(
                 &["--net", ns_file, "nstat", "-a"],
                 &format!("File {}", ns_file),
             ),
-            None => self.execute_nsenter(
-                &["-t", &ns_info.pid.as_u32().to_string(), "-n", "nstat", "-a"],
-                &format!("PID {}", ns_info.pid.as_u32()),
-            ),
+            None => self.try_read_proc_netstat(ns_info.pid.as_u32()),
         }
     }
 
-    fn execute_nsenter(&self, args: &[&str], context: &str) -> NetNsInterfaceMetricValues {
+    fn execute_nsenter(
+        &self,
+        args: &[&str],
+        context: &str,
+    ) -> Result<NetNsInterfaceMetricValues, String> {
         let output = self.command_runner.run("nsenter", args);
 
-        let Ok(output) = output else {
+        let output = output.map_err(|e| {
             warn!(context = context; "Failed to execute nsenter command");
-            return NetNsInterfaceMetricValues::default();
-        };
+            format!("Failed to execute nsenter command: {}", e)
+        })?;
 
         if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
             warn!(
                 context = context;
                 "Failed to get TCP statistics: {}",
-                String::from_utf8_lossy(&output.stderr)
+                stderr
             );
-            return NetNsInterfaceMetricValues::default();
+            return Err(format!("nsenter command failed: {}", stderr));
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        self.parse_nstat_output(&stdout)
+        Ok(self.parse_nstat_output(&stdout))
+    }
+
+    /// Try to read /proc/$pid/net/snmp directly for optimization
+    fn try_read_proc_netstat(&self, pid: u32) -> Result<NetNsInterfaceMetricValues, String> {
+        let proc_path = format!("/proc/{}/net/snmp", pid);
+
+        match fs::read_to_string(&proc_path) {
+            Ok(content) => {
+                debug!("Successfully read {}", proc_path);
+                Ok(self.parse_proc_netstat(&content))
+            }
+            Err(e) => {
+                debug!("Failed to read {}: {}", proc_path, e);
+                Err(format!("Failed to read {}: {}", proc_path, e))
+            }
+        }
+    }
+
+    /// Parse /proc/$pid/net/snmp format for TCP connection statistics
+    /// Format is different from nstat output - it's space-separated with headers
+    fn parse_proc_netstat(&self, content: &str) -> NetNsInterfaceMetricValues {
+        let mut tcp_active_opens = 0;
+        let mut tcp_passive_opens = 0;
+
+        let lines: Vec<&str> = content.lines().collect();
+
+        // Look for Tcp section
+        for i in 0..lines.len() {
+            let line = lines[i];
+            if line.starts_with("Tcp:") && i + 1 < lines.len() {
+                let header_line = line;
+                let values_line = lines[i + 1];
+
+                match self.parse_tcp_section(header_line, values_line) {
+                    Ok(stats) => {
+                        tcp_active_opens = stats.egress_flow_count;
+                        tcp_passive_opens = stats.ingress_flow_count;
+                    }
+                    Err(e) => {
+                        debug!("Error parsing TCP section: {}", e);
+                        // Continue with default values (0)
+                    }
+                }
+                break;
+            }
+        }
+
+        NetNsInterfaceMetricValues::new(tcp_passive_opens, tcp_active_opens)
+    }
+
+    /// Parse TCP section from /proc/net/snmp
+    fn parse_tcp_section(
+        &self,
+        header_line: &str,
+        values_line: &str,
+    ) -> Result<NetNsInterfaceMetricValues, String> {
+        let headers: Vec<&str> = header_line.split_whitespace().collect();
+        let values: Vec<&str> = values_line.split_whitespace().collect();
+
+        if headers.len() != values.len() {
+            let error_msg = "Header and value count mismatch in /proc/net/snmp TCP section";
+            warn!("{}", error_msg);
+            return Err(error_msg.to_string());
+        }
+
+        let mut tcp_active_opens = 0;
+        let mut tcp_passive_opens = 0;
+
+        for (i, header) in headers.iter().enumerate() {
+            match *header {
+                "ActiveOpens" => {
+                    tcp_active_opens = values[i].parse::<u64>().unwrap_or_else(|_| {
+                        warn!("Error parsing ActiveOpens value: {}", values[i]);
+                        0
+                    });
+                }
+                "PassiveOpens" => {
+                    tcp_passive_opens = values[i].parse::<u64>().unwrap_or_else(|_| {
+                        warn!("Error parsing PassiveOpens value: {}", values[i]);
+                        0
+                    });
+                }
+                _ => {} // Ignore other fields
+            }
+
+            // Early termination optimization
+            if tcp_active_opens > 0 && tcp_passive_opens > 0 {
+                break;
+            }
+        }
+
+        Ok(NetNsInterfaceMetricValues::new(
+            tcp_passive_opens,
+            tcp_active_opens,
+        ))
     }
 
     /// Parse nstat output for TCP connection statistics
@@ -195,7 +296,7 @@ TcpAttemptFails                 5                  0.0";
         let mut fake_runner = FakeCommandRunner::new();
         fake_runner.add_expectation(
             "nsenter",
-            &["-t", "1234", "-n", "nstat", "-a"],
+            &["--net", "/proc/1234/ns/net", "nstat", "-a"],
             Ok(Output {
                 status: ExitStatus::from_raw(0),
                 stdout: b"TcpActiveOpens                  100                0.0\nTcpPassiveOpens                 200                0.0\nTcpAttemptFails                 5                  0.0".to_vec(),
@@ -206,10 +307,10 @@ TcpAttemptFails                 5                  0.0";
         let collector = NetNsStats::new(Box::new(fake_runner));
         let ns_info = NamespaceInfo {
             pid: ProcessId::new(1234),
-            ns_file: None,
+            ns_file: Some("/proc/1234/ns/net".to_string()),
             ip_addresses: vec![],
         };
-        let result = collector.get_namespace_flow_stats(&ns_info);
+        let result = collector.get_namespace_flow_stats(&ns_info).unwrap();
 
         assert_eq!(result.ingress_flow_count, 200); // TcpPassiveOpens
         assert_eq!(result.egress_flow_count, 100); // TcpActiveOpens
@@ -232,9 +333,8 @@ TcpAttemptFails                 5                  0.0";
         };
         let result = collector.get_namespace_flow_stats(&ns_info);
 
-        // Should return default values on command failure
-        assert_eq!(result.ingress_flow_count, 0);
-        assert_eq!(result.egress_flow_count, 0);
+        // Should return error on command failure
+        assert!(result.is_err());
     }
 
     #[test]
@@ -242,7 +342,7 @@ TcpAttemptFails                 5                  0.0";
         let mut fake_runner = FakeCommandRunner::new();
         fake_runner.add_expectation(
             "nsenter",
-            &["-t", "1234", "-n", "nstat", "-a"],
+            &["--net", "/proc/1234/ns/net", "nstat", "-a"],
             Ok(Output {
                 status: ExitStatus::from_raw(1 << 8), // Exit code 1
                 stdout: vec![],
@@ -253,14 +353,14 @@ TcpAttemptFails                 5                  0.0";
         let collector = NetNsStats::new(Box::new(fake_runner));
         let ns_info = NamespaceInfo {
             pid: ProcessId::new(1234),
-            ns_file: None,
+            ns_file: Some("/proc/1234/ns/net".to_string()),
             ip_addresses: vec![],
         };
         let result = collector.get_namespace_flow_stats(&ns_info);
 
-        // Should return default values on command failure
-        assert_eq!(result.ingress_flow_count, 0);
-        assert_eq!(result.egress_flow_count, 0);
+        // Should return error on command failure
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("nsenter command failed"));
     }
 
     #[test]
@@ -355,5 +455,126 @@ TcpInSegs                       1000               0.0";
         let line = "TcpActiveOpens                  18446744073709551615                0.0";
         let result = parse_nstat_value(line, "TcpActiveOpens");
         assert_eq!(result, 18446744073709551615);
+    }
+
+    #[test]
+    fn test_parse_proc_netstat() {
+        let fake_runner = FakeCommandRunner::new();
+        let collector = NetNsStats::new(Box::new(fake_runner));
+
+        // This is the actual format from /proc/net/snmp
+        let proc_snmp_content = "Ip: Forwarding DefaultTTL InReceives InHdrErrors InAddrErrors ForwDatagrams InUnknownProtos InDiscards InDelivers OutRequests OutDiscards OutNoRoutes ReasmTimeout ReasmReqds ReasmOKs ReasmFails FragOKs FragFails FragCreates
+Ip: 1 255 34597080 0 1 9651 0 0 34587427 30845281 12 32 0 0 0 0 0 0 0
+Icmp: InMsgs InErrors InCsumErrors InDestUnreachs InTimeExcds InParmProbs InSrcQuenchs InRedirects InEchos InEchoReps InTimestamps InTimestampReps InAddrMasks InAddrMaskReps OutMsgs OutErrors OutDestUnreachs OutTimeExcds OutParmProbs OutSrcQuenchs OutRedirects OutEchos OutEchoReps OutTimestamps OutTimestampReps OutAddrMasks OutAddrMaskReps
+Icmp: 2304 2 0 2148 6 0 0 0 114 0 36 0 0 0 4005 0 3855 0 0 0 0 0 150 0 0 0 0
+Tcp: RtoAlgorithm RtoMin RtoMax MaxConn ActiveOpens PassiveOpens AttemptFails EstabResets CurrEstab InSegs OutSegs RetransSegs InErrs OutRsts InCsumErrors
+Tcp: 1 200 120000 -1 100 200 5 10 2 1000 800 50 0 20 0
+Udp: InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors SndbufErrors InCsumErrors IgnoredMulti
+Udp: 2827021 5108 0 3335454 0 0 0 0";
+
+        let result = collector.parse_proc_netstat(proc_snmp_content);
+        assert_eq!(result.ingress_flow_count, 200); // PassiveOpens
+        assert_eq!(result.egress_flow_count, 100); // ActiveOpens
+    }
+
+    #[test]
+    fn test_parse_tcp_section() {
+        let fake_runner = FakeCommandRunner::new();
+        let collector = NetNsStats::new(Box::new(fake_runner));
+
+        let header_line = "Tcp: RtoAlgorithm RtoMin RtoMax MaxConn ActiveOpens PassiveOpens AttemptFails EstabResets CurrEstab InSegs OutSegs RetransSegs InErrs OutRsts InCsumErrors";
+        let values_line = "Tcp: 1 200 120000 -1 150 250 5 10 2 1000 800 50 0 20 0";
+
+        let result = collector.parse_tcp_section(header_line, values_line);
+        assert!(result.is_ok());
+
+        let stats = result.unwrap();
+        assert_eq!(stats.ingress_flow_count, 250); // PassiveOpens
+        assert_eq!(stats.egress_flow_count, 150); // ActiveOpens
+    }
+
+    #[test]
+    fn test_parse_tcp_section_mismatch() {
+        let fake_runner = FakeCommandRunner::new();
+        let collector = NetNsStats::new(Box::new(fake_runner));
+
+        let header_line = "Tcp: RtoAlgorithm RtoMin RtoMax MaxConn ActiveOpens PassiveOpens";
+        let values_line = "Tcp: 1 200 120000 -1 150"; // Missing values
+
+        let result = collector.parse_tcp_section(header_line, values_line);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .contains("Header and value count mismatch"));
+    }
+
+    #[test]
+    fn test_parse_tcp_section_invalid_values() {
+        let fake_runner = FakeCommandRunner::new();
+        let collector = NetNsStats::new(Box::new(fake_runner));
+
+        let header_line =
+            "Tcp: RtoAlgorithm RtoMin RtoMax MaxConn ActiveOpens PassiveOpens AttemptFails";
+        let values_line = "Tcp: 1 200 120000 -1 invalid_active invalid_passive 5";
+
+        let result = collector.parse_tcp_section(header_line, values_line);
+        assert!(result.is_ok());
+
+        let stats = result.unwrap();
+        assert_eq!(stats.ingress_flow_count, 0); // PassiveOpens parsing failed
+        assert_eq!(stats.egress_flow_count, 0); // ActiveOpens parsing failed
+    }
+
+    #[test]
+    fn test_parse_proc_netstat_no_tcp_section() {
+        let fake_runner = FakeCommandRunner::new();
+        let collector = NetNsStats::new(Box::new(fake_runner));
+
+        let proc_netstat_content = "TcpExt: SyncookiesSent SyncookiesRecv
+TcpExt: 0 0
+IpExt: InNoRoutes InTruncatedPkts
+IpExt: 0 0";
+
+        let result = collector.parse_proc_netstat(proc_netstat_content);
+        assert_eq!(result.ingress_flow_count, 0);
+        assert_eq!(result.egress_flow_count, 0);
+    }
+
+    #[test]
+    fn test_parse_proc_netstat_partial_tcp_data() {
+        let fake_runner = FakeCommandRunner::new();
+        let collector = NetNsStats::new(Box::new(fake_runner));
+
+        // Test with only ActiveOpens in TCP section
+        let proc_netstat_content =
+            "Tcp: RtoAlgorithm RtoMin RtoMax MaxConn ActiveOpens AttemptFails
+Tcp: 1 200 120000 -1 150 5";
+
+        let result = collector.parse_proc_netstat(proc_netstat_content);
+        assert_eq!(result.ingress_flow_count, 0); // No PassiveOpens
+        assert_eq!(result.egress_flow_count, 150); // ActiveOpens
+    }
+
+    #[test]
+    fn test_parse_proc_netstat_early_termination() {
+        let fake_runner = FakeCommandRunner::new();
+        let collector = NetNsStats::new(Box::new(fake_runner));
+
+        let proc_netstat_content = "Tcp: RtoAlgorithm RtoMin RtoMax MaxConn ActiveOpens PassiveOpens AttemptFails EstabResets CurrEstab InSegs OutSegs RetransSegs InErrs OutRsts InCsumErrors
+Tcp: 1 200 120000 -1 100 200 5 10 2 1000 800 50 0 20 0";
+
+        let result = collector.parse_proc_netstat(proc_netstat_content);
+        assert_eq!(result.ingress_flow_count, 200); // PassiveOpens
+        assert_eq!(result.egress_flow_count, 100); // ActiveOpens
+    }
+
+    #[test]
+    fn test_parse_proc_netstat_empty() {
+        let fake_runner = FakeCommandRunner::new();
+        let collector = NetNsStats::new(Box::new(fake_runner));
+
+        let result = collector.parse_proc_netstat("");
+        assert_eq!(result.ingress_flow_count, 0);
+        assert_eq!(result.egress_flow_count, 0);
     }
 }

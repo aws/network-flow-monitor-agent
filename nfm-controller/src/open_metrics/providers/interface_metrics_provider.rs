@@ -248,8 +248,11 @@ impl InterfaceMetricsProvider {
                 // Use the already retrieved netns value
                 netns_metrics =
                     match netns.and_then(|ns| ns_to_pid.as_ref().and_then(|map| map.get(&ns))) {
-                        None => NetNsInterfaceMetricValues::default(),
-                        Some(ns_info) => self.netns_stats.get_namespace_flow_stats(ns_info),
+                        None => continue,
+                        Some(ns_info) => self
+                            .netns_stats
+                            .get_namespace_flow_stats(ns_info)
+                            .unwrap_or_else(|_| NetNsInterfaceMetricValues::default()),
                     };
             }
 
