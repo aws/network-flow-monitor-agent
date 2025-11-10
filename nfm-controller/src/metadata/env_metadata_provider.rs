@@ -112,6 +112,7 @@ mod test {
                 interface_id: "the-interface-id".into(),
             }],
             command_runner: Box::new(FakeCommandRunner::new()),
+            virtual_checker: Box::new(crate::utils::host::CachedInterfaceVirtualChecker::new()),
         };
         let host_metadata = HostMetadataProvider::default();
         let runtime_env_metadata = RuntimeEnvironmentMetadataProvider::default();

@@ -152,7 +152,7 @@ impl InterfaceMetricsProvider {
         let netns_command_runner = Box::new(RealCommandRunner {});
         let namespace_manager = NetworkNamespaceManager::new(namespace_command_runner);
         let netns_stats = NetNsStats::new(netns_command_runner);
-        let iface_discovery = Box::new(InterfaceDiscoveryImpl {});
+        let iface_discovery = Box::new(InterfaceDiscoveryImpl::new());
 
         let mut provider = Self {
             compute_platform: compute_platform.clone(),
@@ -204,6 +204,14 @@ impl InterfaceMetricsProvider {
     fn get_metrics(&mut self) -> HashMap<InterfaceMetricKey, InterfaceMetricValues> {
         let (ns_to_pid, pod_info) = self.environment_info();
 
+        let interface_ns_map = match self.compute_platform {
+            ComputePlatform::Ec2Plain => HashMap::new(),
+            ComputePlatform::Ec2K8sEks | ComputePlatform::Ec2K8sVanilla => self
+                .namespace_manager
+                .parse_all_interface_links()
+                .unwrap_or_default(),
+        };
+
         let mut new_current_metrics = HashMap::new();
         let mut result = HashMap::new();
 
@@ -214,10 +222,7 @@ impl InterfaceMetricsProvider {
 
         for (iface, device_status) in interface_stats {
             let netns = if iface.is_virtual() {
-                self.namespace_manager
-                    .get_namespace_id_for_interface(&iface.name)
-                    .ok()
-                    .flatten()
+                interface_ns_map.get(&iface.name)
             } else {
                 None
             };
@@ -242,9 +247,12 @@ impl InterfaceMetricsProvider {
 
                 // Use the already retrieved netns value
                 netns_metrics =
-                    match netns.and_then(|ns| ns_to_pid.as_ref().and_then(|map| map.get(&ns))) {
-                        None => NetNsInterfaceMetricValues::default(),
-                        Some(ns_info) => self.netns_stats.get_namespace_flow_stats(ns_info),
+                    match netns.and_then(|ns| ns_to_pid.as_ref().and_then(|map| map.get(ns))) {
+                        None => continue,
+                        Some(ns_info) => self
+                            .netns_stats
+                            .get_namespace_flow_stats(ns_info)
+                            .unwrap_or_else(|_| NetNsInterfaceMetricValues::default()),
                     };
             }
 
@@ -295,7 +303,7 @@ impl InterfaceMetricsProvider {
         iface_name: &str,
         ns_to_pid: &Option<NamespaceMapping>,
         pod_info_map: &Option<IpToPodMapping>,
-        netns: Option<NamespaceId>,
+        netns: Option<&NamespaceId>,
     ) -> InterfaceMetricKey {
         let (pod, pod_namespace) = match self.compute_platform {
             ComputePlatform::Ec2Plain => (String::new(), String::new()),
@@ -576,7 +584,7 @@ mod tests {
             "veth123",
             &Some(ns_mapping),
             &Some(pod_mapping),
-            Some(ns_id),
+            Some(&ns_id),
         );
 
         assert_eq!(key.iface, "veth123");
@@ -673,7 +681,7 @@ mod tests {
         result: HashMap<HostInterface, DeviceStatus>,
     }
     impl InterfaceDiscovery for MockInterfaceDiscovery {
-        fn get_virtual_interface_stats(&self) -> Result<HashMap<HostInterface, DeviceStatus>> {
+        fn get_virtual_interface_stats(&mut self) -> Result<HashMap<HostInterface, DeviceStatus>> {
             Ok(self.result.clone())
         }
     }
@@ -704,21 +712,13 @@ mod tests {
                 stderr: vec![],
             }));
 
+        // Add expectation for the bulk ip link show command (optimization)
         namespace_runner.add_expectation(
             "ip",
-            &["link", "show", "veth1"],
+            &["link", "show"],
             Ok(Output {
                 status: ExitStatus::from_raw(0),
-                stdout: b"2: veth1@if3: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT group default link-netnsid 88".to_vec(),
-                stderr: vec![],
-            }),
-        );
-        namespace_runner.add_expectation(
-            "ip",
-            &["link", "show", "veth2"],
-            Ok(Output {
-                status: ExitStatus::from_raw(0),
-                stdout: b"3: veth2@if3: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT group default link-netnsid 89".to_vec(),
+                stdout: b"2: veth1@if3: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT group default link-netnsid 88\n3: veth2@if3: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT group default link-netnsid 89\n".to_vec(),
                 stderr: vec![],
             }),
         );

@@ -14,9 +14,12 @@ use std::collections::HashSet;
 use std::net::IpAddr;
 
 use crate::kubernetes::kubernetes_metadata_collector::PodInfo;
-use crate::open_metrics::providers::interface_metrics_provider::types::NamespaceInfo;
+use crate::open_metrics::providers::interface_metrics_provider::types::{
+    NamespaceId, NamespaceInfo,
+};
 
 use super::types::HostInterface;
+use crate::utils::host::{CachedInterfaceVirtualChecker, InterfaceVirtualChecker};
 
 /// Host-level interface statistics
 #[derive(Debug, Clone, Default)]
@@ -63,24 +66,47 @@ impl HostInterfaceMetricValues {
 
 /// Discovers and filters network interfaces
 pub trait InterfaceDiscovery {
-    fn get_virtual_interface_stats(&self) -> Result<HashMap<HostInterface, DeviceStatus>>;
+    fn get_virtual_interface_stats(&mut self) -> Result<HashMap<HostInterface, DeviceStatus>>;
 }
 
-pub struct InterfaceDiscoveryImpl;
+pub struct InterfaceDiscoveryImpl {
+    virtual_checker: Box<dyn InterfaceVirtualChecker>,
+}
+
+impl InterfaceDiscoveryImpl {
+    pub fn new() -> Self {
+        Self {
+            virtual_checker: Box::new(CachedInterfaceVirtualChecker::new()),
+        }
+    }
+}
 
 impl InterfaceDiscovery for InterfaceDiscoveryImpl {
     /// Get interface statistics with filtering for virtual interfaces
-    fn get_virtual_interface_stats(&self) -> Result<HashMap<HostInterface, DeviceStatus>> {
+    fn get_virtual_interface_stats(&mut self) -> Result<HashMap<HostInterface, DeviceStatus>> {
         let interfaces =
             dev_status().context("Failed to read network interface statistics from procfs")?;
 
         let interface_flags = get_interface_flags().context("Failed to get interface flags")?;
 
-        let filtered_interfaces = interfaces
-            .into_iter()
-            .map(|(name, status)| (HostInterface::new(name), status))
-            .filter(|(iface, _)| should_include_interface(iface, &interface_flags))
-            .collect();
+        let mut filtered_interfaces = HashMap::new();
+
+        for (name, status) in interfaces {
+            let is_virtual = match self.virtual_checker.is_virtual(&name) {
+                Ok(virtual_status) => virtual_status,
+                Err(err) => {
+                    debug!(
+                        iface = name, err = err.to_string(); "Failed to check if interface is virtual, skipping",
+                    );
+                    continue;
+                }
+            };
+
+            let interface = HostInterface::new(name, is_virtual);
+            if should_include_interface(&interface, &interface_flags) {
+                filtered_interfaces.insert(interface, status);
+            }
+        }
 
         Ok(filtered_interfaces)
     }
@@ -148,12 +174,12 @@ pub fn get_interface_ips(iface_name: &str) -> Result<Vec<IpAddr>, Box<dyn std::e
 /// Get pod information for an interface
 pub fn get_pod_info_from_iface(
     interface_name: &str,
-    namespace_info: &HashMap<super::types::NamespaceId, super::types::NamespaceInfo>,
+    namespace_info: &HashMap<NamespaceId, NamespaceInfo>,
     pod_mappings: &HashMap<IpAddr, HashSet<PodInfo>>,
-    namespace_id: Option<super::types::NamespaceId>,
+    namespace_id: Option<&NamespaceId>,
 ) -> (String, String) {
     match namespace_id {
-        Some(ns_id) => get_pod_info_from_netns(namespace_info.get(&ns_id), pod_mappings),
+        Some(ns_id) => get_pod_info_from_netns(namespace_info.get(ns_id), pod_mappings),
         None => get_pod_info_from_real_iface(interface_name, pod_mappings),
     }
 }
@@ -248,7 +274,7 @@ mod tests {
         let mut flags = HashMap::new();
 
         // Test interface not found in flags
-        let interface = HostInterface::new("test0".to_string());
+        let interface = HostInterface::new("test0".to_string(), false);
         assert!(!should_include_interface(&interface, &flags));
 
         // Test loopback interface (should be excluded)
@@ -256,12 +282,12 @@ mod tests {
             "lo".to_string(),
             InterfaceFlags::LOOPBACK | InterfaceFlags::UP,
         );
-        let loopback = HostInterface::new("lo".to_string());
+        let loopback = HostInterface::new("lo".to_string(), true);
         assert!(!should_include_interface(&loopback, &flags));
 
         // Test non-UP interface (should be excluded)
         flags.insert("down0".to_string(), InterfaceFlags::empty());
-        let down_interface = HostInterface::new("down0".to_string());
+        let down_interface = HostInterface::new("down0".to_string(), true);
         assert!(!should_include_interface(&down_interface, &flags));
     }
 
@@ -301,12 +327,12 @@ mod tests {
 
         // Test virtual interface that is UP (should be included)
         flags.insert("veth123".to_string(), InterfaceFlags::UP);
-        let veth_interface = HostInterface::new("veth123".to_string());
+        let veth_interface = HostInterface::new("veth123".to_string(), true);
         assert!(should_include_interface(&veth_interface, &flags));
 
         // Test docker interface that is UP (should be included)
         flags.insert("docker0".to_string(), InterfaceFlags::UP);
-        let docker_interface = HostInterface::new("docker0".to_string());
+        let docker_interface = HostInterface::new("docker0".to_string(), true);
         assert!(should_include_interface(&docker_interface, &flags));
     }
 
@@ -316,7 +342,7 @@ mod tests {
 
         // Test physical interface (should be excluded even if UP)
         flags.insert("eth0".to_string(), InterfaceFlags::UP);
-        let eth_interface = HostInterface::new("eth0".to_string());
+        let eth_interface = HostInterface::new("eth0".to_string(), false);
         assert!(!should_include_interface(&eth_interface, &flags));
     }
 
@@ -420,7 +446,7 @@ mod tests {
         pod_mappings.insert(ip_addr, pod_set);
 
         let result =
-            get_pod_info_from_iface("veth123", &namespace_info, &pod_mappings, Some(ns_id));
+            get_pod_info_from_iface("veth123", &namespace_info, &pod_mappings, Some(&ns_id));
         assert_eq!(
             result,
             ("test-pod".to_string(), "test-namespace".to_string())
@@ -458,7 +484,7 @@ mod tests {
             "veth456".to_string(),
             InterfaceFlags::UP | InterfaceFlags::RUNNING | InterfaceFlags::BROADCAST,
         );
-        let veth_interface = HostInterface::new("veth456".to_string());
+        let veth_interface = HostInterface::new("veth456".to_string(), true);
         assert!(should_include_interface(&veth_interface, &flags));
 
         // Test loopback with UP flag (should still be excluded)
@@ -466,7 +492,7 @@ mod tests {
             "lo".to_string(),
             InterfaceFlags::LOOPBACK | InterfaceFlags::UP | InterfaceFlags::RUNNING,
         );
-        let loopback = HostInterface::new("lo".to_string());
+        let loopback = HostInterface::new("lo".to_string(), true);
         assert!(!should_include_interface(&loopback, &flags));
     }
 }

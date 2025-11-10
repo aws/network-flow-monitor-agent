@@ -189,6 +189,7 @@ async fn handle_request(
     registry: Arc<Registry>,
     providers: MetricProviders,
 ) -> Result<Response<String>> {
+    let start_time = Instant::now();
     let path = req.uri().path();
     debug!(open_metric = "incoming_request", path = path; "Received request");
 
@@ -217,6 +218,12 @@ async fn handle_request(
         .header("Content-Type", content_type)
         .body(body)
         .unwrap();
+
+    info!(
+        open_metric = "request_timing",
+        duration_us = start_time.elapsed().as_micros();
+        "Request processed",
+    );
 
     Ok(response)
 }
@@ -265,7 +272,6 @@ async fn handle_connection(
     cancel_token: CancellationToken,
     bind_addr: SocketAddr,
 ) {
-    let start_time = Instant::now();
     let io = TokioIo::new(stream);
 
     // Clone the Arc to use in the closure
@@ -290,20 +296,8 @@ async fn handle_connection(
             }
         }
         _ = cancel_token.cancelled() => {
-            info!(
-                open_metric = "request_timing",
-                duration_us = start_time.elapsed().as_micros();
-                "Request cancelled",
-            );
-            return;
         }
     }
-
-    info!(
-        open_metric = "request_timing",
-        duration_us = start_time.elapsed().as_micros();
-        "Request processed",
-    );
 }
 
 /// Accept and process connections in the main server loop
