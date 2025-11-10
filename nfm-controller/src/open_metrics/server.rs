@@ -296,7 +296,6 @@ async fn handle_connection(
             }
         }
         _ = cancel_token.cancelled() => {
-            return;
         }
     }
 }

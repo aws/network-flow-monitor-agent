@@ -70,7 +70,7 @@ impl NetNsStats {
 
         let output = output.map_err(|e| {
             warn!(context = context; "Failed to execute nsenter command");
-            format!("Failed to execute nsenter command: {}", e)
+            format!("Failed to execute nsenter command: {e}")
         })?;
 
         if !output.status.success() {
@@ -80,7 +80,7 @@ impl NetNsStats {
                 "Failed to get TCP statistics: {}",
                 stderr
             );
-            return Err(format!("nsenter command failed: {}", stderr));
+            return Err(format!("nsenter command failed: {stderr}"));
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -111,7 +111,7 @@ impl NetNsStats {
         let lines: Vec<&str> = content.lines().collect();
 
         // Look for Tcp section
-        for i in 0..lines.len() {
+        for i in 0..lines.len() - 1 {
             let line = lines[i];
             if line.starts_with("Tcp:") && i + 1 < lines.len() {
                 let header_line = line;

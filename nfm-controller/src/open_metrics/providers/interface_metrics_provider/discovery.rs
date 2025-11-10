@@ -179,7 +179,7 @@ pub fn get_pod_info_from_iface(
     namespace_id: Option<&NamespaceId>,
 ) -> (String, String) {
     match namespace_id {
-        Some(ns_id) => get_pod_info_from_netns(namespace_info.get(&ns_id), pod_mappings),
+        Some(ns_id) => get_pod_info_from_netns(namespace_info.get(ns_id), pod_mappings),
         None => get_pod_info_from_real_iface(interface_name, pod_mappings),
     }
 }
