@@ -150,7 +150,7 @@ impl<C: Clock> EventProvider for EventProviderEbpf<C> {
         let sock_nat_result = nat_resolver.store_beyond_nat_entries(&mut self.sock_cache);
         let mut leaks: usize = 0;
         let mut flow_leaks: usize = 0;
-        let mut fake_leaks: usize = 0;
+        let mut rtt_zero_leaks: usize = 0;
 
         for entry in self.sock_cache.iter_mut() {
             let e = entry.1;
@@ -174,12 +174,12 @@ impl<C: Clock> EventProvider for EventProviderEbpf<C> {
                 flow_leaks += 1;
                 leakeds.push(entry.1);
                 if entry.1.stats.rtt_us.count == 0 {
-                    fake_leaks += 1;
+                    rtt_zero_leaks += 1;
                 }
             }
         }
 
-        println!("leaks:{} flow_leaks:{} fake_leaks:{} leakeds:{:?}", leaks, flow_leaks, fake_leaks, leakeds);
+        println!("leaks:{} flow_leaks:{} rtt_zero_leaks:{} leaked_entries:{:?}", leaks, flow_leaks, rtt_zero_leaks, leakeds);
 
         // Collect some stats before evicting entries.
         self.agg_socks_handled = self.sock_cache.len().try_into().unwrap();

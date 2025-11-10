@@ -119,9 +119,9 @@ impl NatResolver for NatResolverImpl {
                     rate_str = format!(" | {:.0} events/sec", events_per_sec);
                 }
             }
-
-            println!("perform_aggregation_cycle: {} entries ins {} µs ({} ns/entry avg){}",
-                asd, cpu_elapsed_ns / 1000, avg_ns_per_entry, rate_str);
+            let evs = self.total_entries;
+            println!("perform_aggregation_cycle: {asd} entries in {} µs ({avg_ns_per_entry} ns/entry avg){rate_str}. Events so far: {evs}",
+                cpu_elapsed_ns / 1000);
         }
     }
 
