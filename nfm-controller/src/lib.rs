@@ -239,6 +239,7 @@ pub fn on_load(opt: Options) -> Result<(), anyhow::Error> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn do_work(
     mut provider: impl EventProvider,
     mut nat_resolver: Box<dyn NatResolver>,
