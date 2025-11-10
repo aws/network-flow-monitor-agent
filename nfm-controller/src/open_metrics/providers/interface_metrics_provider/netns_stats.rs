@@ -111,7 +111,7 @@ impl NetNsStats {
         let lines: Vec<&str> = content.lines().collect();
 
         // Look for Tcp section
-        for i in 0..lines.len() - 1 {
+        for i in 0..lines.len() {
             let line = lines[i];
             if line.starts_with("Tcp:") && i + 1 < lines.len() {
                 let header_line = line;

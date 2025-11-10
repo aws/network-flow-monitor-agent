@@ -300,7 +300,7 @@ mod tests {
 
     #[test]
     fn test_register_to_registry() {
-        let mut provider = create_test_provider(ComputePlatform::Ec2Plain);
+        let mut provider = create_mocked_provider();
         let mut registry = Registry::new();
 
         provider.register_to(&mut registry);
@@ -338,7 +338,8 @@ mod tests {
         ];
 
         for platform in platforms {
-            let mut provider = create_test_provider(platform.clone());
+            // Create a mocked provider for each platform
+            let mut provider = create_mocked_provider_for_platform(platform.clone());
             assert_eq!(provider.compute_platform, platform);
 
             // Create a fresh registry for each platform to avoid conflicts
@@ -376,7 +377,7 @@ mod tests {
             ComputePlatform::Ec2K8sEks,
             ComputePlatform::Ec2K8sVanilla,
         ] {
-            let mut provider = create_test_provider(platform.clone());
+            let mut provider = create_mocked_provider_for_platform(platform.clone());
             let mut registry = Registry::new();
             provider.register_to(&mut registry);
             let _ = provider.update_metrics();
@@ -439,6 +440,12 @@ mod tests {
     }
 
     fn create_mocked_provider() -> SystemMetricsProvider {
+        create_mocked_provider_for_platform(ComputePlatform::Ec2Plain)
+    }
+
+    fn create_mocked_provider_for_platform(
+        compute_platform: ComputePlatform,
+    ) -> SystemMetricsProvider {
         // Mock ENI
         let mut eni_command_runner = Box::new(FakeCommandRunner::new());
         eni_command_runner.add_expectation(
@@ -511,7 +518,14 @@ mod tests {
         // The ENI provider filters OUT virtual interfaces, keeping physical ones
         let mock_checker = MockVirtualChecker::new(vec!["lo".to_string(), "docker0".to_string()]); // Mark lo and docker0 as virtual
 
-        let compute_platform = ComputePlatform::Ec2Plain;
+        // Set node name based on platform type (for K8s platforms, use a meaningful node name)
+        let node_name = match compute_platform {
+            ComputePlatform::Ec2Plain => "node-name".to_string(),
+            ComputePlatform::Ec2K8sEks | ComputePlatform::Ec2K8sVanilla => {
+                "k8s-node-name".to_string()
+            }
+        };
+
         SystemMetricsProvider {
             compute_platform: compute_platform.clone(),
             eni_metadata_provider: EniMetadataProvider {
@@ -526,7 +540,7 @@ mod tests {
                 network_interface_stats: network_intefrace_stats,
                 command_runner: host_command_runner,
             },
-            node_name: "node-name".to_string(),
+            node_name,
             bw_in_allowance_exceeded: build_gauge_metric::<SystemMetric>(
                 &compute_platform,
                 "bw_in_allowance_exceeded",
