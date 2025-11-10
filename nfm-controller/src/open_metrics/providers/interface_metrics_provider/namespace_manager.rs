@@ -22,11 +22,15 @@ use super::types::{
 /// Manages network namespace operations
 pub struct NetworkNamespaceManager {
     command_runner: Box<dyn CommandRunner>,
+    link_regex: Regex,
 }
 
 impl NetworkNamespaceManager {
     pub fn new(command_runner: Box<dyn CommandRunner>) -> Self {
-        Self { command_runner }
+        Self {
+            command_runner,
+            link_regex: get_link_netnsid_regex().clone(),
+        }
     }
 
     /// Get fresh namespace information from system
@@ -168,43 +172,79 @@ impl NetworkNamespaceManager {
             .or_else(|_| Ok(Vec::new()))
     }
 
-    /// Get namespace ID for an interface
-    pub fn get_namespace_id_for_interface(
-        &self,
-        interface_name: &str,
-    ) -> Result<Option<NamespaceId>> {
+    /// Returns a HashMap mapping interface names to their namespace IDs.
+    pub fn parse_all_interface_links(&self) -> Result<HashMap<String, NamespaceId>> {
+        let mut interface_ns_map = HashMap::new();
+
         let output = self
             .command_runner
-            .run("ip", &["link", "show", interface_name])
+            .run("ip", &["link", "show"])
             .map_err(|_| InterfaceMetricsError::CommandExecution {
-                command: format!("ip link show {}", interface_name),
+                command: "ip link show".to_string(),
             })?;
 
         if !output.status.success() {
-            return Err(InterfaceMetricsError::InterfaceNotFound {
-                interface: interface_name.to_string(),
-            }
-            .into());
+            warn!(
+                "Failed to get all interface link information: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return Ok(interface_ns_map);
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let regex = get_link_netnsid_regex();
+        let mut current_iface: Option<String> = None;
 
-        if let Some(captures) = regex.captures(&stdout) {
-            if let Some(netnsid_match) = captures.get(1) {
-                let netns_id = netnsid_match.as_str().parse::<u32>().map_err(|e| {
-                    InterfaceMetricsError::NetworkDataParsing {
-                        details: format!(
-                            "Failed to parse namespace ID for interface {}: {}",
-                            interface_name, e
-                        ),
+        for line in stdout.lines() {
+            // Check if this is an interface definition line (starts with a number)
+            if let Some(first_token) = line.split_whitespace().next() {
+                if first_token.ends_with(':')
+                    && first_token[..first_token.len() - 1].parse::<u32>().is_ok()
+                {
+                    // This is an interface definition line like "15: veth123@if14: <FLAGS>"
+                    if let Some(iface_match) = line.split_whitespace().nth(1) {
+                        // Extract interface name: handle both "eth0:" and "veth123@if14:" formats
+                        let iface_name = if iface_match.contains('@') {
+                            // For cases like "veth123@if14:", extract "veth123"
+                            iface_match.split('@').next().unwrap_or("")
+                        } else {
+                            // For cases like "eth0:", extract "eth0"
+                            iface_match.trim_end_matches(':')
+                        };
+
+                        if !iface_name.is_empty() {
+                            current_iface = Some(iface_name.to_string());
+                        }
                     }
-                })?;
-                return Ok(Some(NamespaceId::new(netns_id)));
+                }
+            }
+
+            // Look for namespace ID in any line (interface header or details)
+            if let Some(captures) = self.link_regex.captures(line) {
+                if let (Some(iface), Some(netnsid_match)) = (&current_iface, captures.get(1)) {
+                    // Only insert if we haven't already processed this interface
+                    if !interface_ns_map.contains_key(iface) {
+                        match netnsid_match.as_str().parse::<u32>() {
+                            Ok(netnsid) => {
+                                interface_ns_map.insert(iface.clone(), NamespaceId::new(netnsid));
+                            }
+                            Err(e) => {
+                                debug!(
+                                    iface = iface, error = e.to_string();
+                                    "Failed to parse namespace ID in bulk parsing"
+                                );
+                            }
+                        }
+                    }
+                }
             }
         }
 
-        Ok(None)
+        debug!(
+            interfaces_parsed = interface_ns_map.len();
+            "Parsed interface namespace mappings"
+        );
+
+        Ok(interface_ns_map)
     }
 }
 
@@ -533,67 +573,6 @@ mod tests {
     }
 
     #[test]
-    fn test_get_namespace_id_for_interface_success() {
-        let mut fake_runner = FakeCommandRunner::new();
-        fake_runner.add_expectation(
-            "ip",
-            &["link", "show", "eth0"],
-            Ok(Output {
-                status: ExitStatus::from_raw(0),
-                stdout: b"2: eth0@if3: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT group default link-netnsid 42".to_vec(),
-                stderr: vec![],
-            }),
-        );
-
-        let manager = NetworkNamespaceManager::new(Box::new(fake_runner));
-        let result = manager.get_namespace_id_for_interface("eth0");
-
-        assert!(result.is_ok());
-        let ns_id = result.unwrap();
-        assert_eq!(ns_id, Some(NamespaceId::new(42)));
-    }
-
-    #[test]
-    fn test_get_namespace_id_for_interface_not_found() {
-        let mut fake_runner = FakeCommandRunner::new();
-        fake_runner.add_expectation(
-            "ip",
-            &["link", "show", "nonexistent"],
-            Ok(Output {
-                status: ExitStatus::from_raw(1 << 8), // Exit code 1
-                stdout: vec![],
-                stderr: b"Device \"nonexistent\" does not exist.".to_vec(),
-            }),
-        );
-
-        let manager = NetworkNamespaceManager::new(Box::new(fake_runner));
-        let result = manager.get_namespace_id_for_interface("nonexistent");
-
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_get_namespace_id_for_interface_no_netnsid() {
-        let mut fake_runner = FakeCommandRunner::new();
-        fake_runner.add_expectation(
-            "ip",
-            &["link", "show", "lo"],
-            Ok(Output {
-                status: ExitStatus::from_raw(0),
-                stdout: b"1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN mode DEFAULT group default".to_vec(),
-                stderr: vec![],
-            }),
-        );
-
-        let manager = NetworkNamespaceManager::new(Box::new(fake_runner));
-        let result = manager.get_namespace_id_for_interface("lo");
-
-        assert!(result.is_ok());
-        let ns_id = result.unwrap();
-        assert_eq!(ns_id, None);
-    }
-
-    #[test]
     fn test_parse_namespace_line_with_missing_ns_file() {
         let mut fake_runner = FakeCommandRunner::new();
         fake_runner.add_expectation(
@@ -671,5 +650,140 @@ mod tests {
         let addresses = result.unwrap();
         assert_eq!(addresses.len(), 1);
         assert!(addresses.contains(&"192.168.1.10".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_parse_all_interface_links_success() {
+        let mut fake_runner = FakeCommandRunner::new();
+        fake_runner.add_expectation(
+            "ip",
+            &["link", "show"],
+            Ok(Output {
+                status: ExitStatus::from_raw(0),
+                stdout: b"1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN mode DEFAULT group default qlen 1000\n    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00\n2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc pfifo_fast state UP mode DEFAULT group default qlen 1000\n    link/ether 08:00:27:12:34:56 brd ff:ff:ff:ff:ff:ff\n15: veth123@if14: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue master docker0 state UP mode DEFAULT group default link-netnsid 42\n    link/ether 02:42:ac:11:00:03 brd ff:ff:ff:ff:ff:ff link-netnsid 42\n17: vethab45@if16: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue master docker0 state UP mode DEFAULT group default link-netnsid 7\n    link/ether 02:42:ac:11:00:05 brd ff:ff:ff:ff:ff:ff link-netnsid 7\n".to_vec(),
+                stderr: vec![],
+            }),
+        );
+
+        let manager = NetworkNamespaceManager::new(Box::new(fake_runner));
+        let result = manager.parse_all_interface_links();
+
+        assert!(result.is_ok());
+        let interface_map = result.unwrap();
+
+        // Should parse interfaces with namespace IDs and ignore those without
+        assert_eq!(interface_map.len(), 2);
+        assert_eq!(interface_map.get("veth123"), Some(&NamespaceId::new(42)));
+        assert_eq!(interface_map.get("vethab45"), Some(&NamespaceId::new(7)));
+        assert_eq!(interface_map.get("lo"), None); // No namespace ID
+        assert_eq!(interface_map.get("eth0"), None); // No namespace ID
+    }
+
+    #[test]
+    fn test_parse_all_interface_links_empty_output() {
+        let mut fake_runner = FakeCommandRunner::new();
+        fake_runner.add_expectation(
+            "ip",
+            &["link", "show"],
+            Ok(Output {
+                status: ExitStatus::from_raw(0),
+                stdout: vec![],
+                stderr: vec![],
+            }),
+        );
+
+        let manager = NetworkNamespaceManager::new(Box::new(fake_runner));
+        let result = manager.parse_all_interface_links();
+
+        assert!(result.is_ok());
+        let interface_map = result.unwrap();
+        assert!(interface_map.is_empty());
+    }
+
+    #[test]
+    fn test_parse_all_interface_links_command_failure() {
+        let mut fake_runner = FakeCommandRunner::new();
+        fake_runner.add_expectation(
+            "ip",
+            &["link", "show"],
+            Ok(Output {
+                status: ExitStatus::from_raw(1 << 8), // Exit code 1
+                stdout: vec![],
+                stderr: b"ip: command failed".to_vec(),
+            }),
+        );
+
+        let manager = NetworkNamespaceManager::new(Box::new(fake_runner));
+        let result = manager.parse_all_interface_links();
+
+        assert!(result.is_ok());
+        let interface_map = result.unwrap();
+        assert!(interface_map.is_empty());
+    }
+
+    #[test]
+    fn test_parse_all_interface_links_command_error() {
+        let mut fake_runner = FakeCommandRunner::new();
+        fake_runner.add_expectation(
+            "ip",
+            &["link", "show"],
+            Err(Error::new(ErrorKind::NotFound, "ip command not found")),
+        );
+
+        let manager = NetworkNamespaceManager::new(Box::new(fake_runner));
+        let result = manager.parse_all_interface_links();
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_all_interface_links_invalid_namespace_id() {
+        let mut fake_runner = FakeCommandRunner::new();
+        fake_runner.add_expectation(
+            "ip",
+            &["link", "show"],
+            Ok(Output {
+                status: ExitStatus::from_raw(0),
+                stdout: b"15: veth123@if14: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue master docker0 state UP mode DEFAULT group default link-netnsid invalid\n    link/ether 02:42:ac:11:00:03 brd ff:ff:ff:ff:ff:ff link-netnsid invalid\n17: vethab45@if16: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue master docker0 state UP mode DEFAULT group default link-netnsid 7\n    link/ether 02:42:ac:11:00:05 brd ff:ff:ff:ff:ff:ff link-netnsid 7\n".to_vec(),
+                stderr: vec![],
+            }),
+        );
+
+        let manager = NetworkNamespaceManager::new(Box::new(fake_runner));
+        let result = manager.parse_all_interface_links();
+
+        assert!(result.is_ok());
+        let interface_map = result.unwrap();
+
+        // Should skip the interface with invalid namespace ID and parse the valid one
+        assert_eq!(interface_map.len(), 1);
+        assert_eq!(interface_map.get("vethab45"), Some(&NamespaceId::new(7)));
+        assert_eq!(interface_map.get("veth123"), None); // Invalid namespace ID should be skipped
+    }
+
+    #[test]
+    fn test_parse_all_interface_links_mixed_interfaces() {
+        let mut fake_runner = FakeCommandRunner::new();
+        fake_runner.add_expectation(
+            "ip",
+            &["link", "show"],
+            Ok(Output {
+                status: ExitStatus::from_raw(0),
+                stdout: b"1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN mode DEFAULT group default qlen 1000\n    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00\n2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc pfifo_fast state UP mode DEFAULT group default qlen 1000\n    link/ether 08:00:27:12:34:56 brd ff:ff:ff:ff:ff:ff\n15: veth123@if14: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue master docker0 state UP mode DEFAULT group default link-netnsid 0\n    link/ether 02:42:ac:11:00:03 brd ff:ff:ff:ff:ff:ff link-netnsid 0\n".to_vec(),
+                stderr: vec![],
+            }),
+        );
+
+        let manager = NetworkNamespaceManager::new(Box::new(fake_runner));
+        let result = manager.parse_all_interface_links();
+
+        assert!(result.is_ok());
+        let interface_map = result.unwrap();
+
+        // Should only parse interfaces that have namespace IDs
+        assert_eq!(interface_map.len(), 1);
+        assert_eq!(interface_map.get("veth123"), Some(&NamespaceId::new(0)));
+        assert_eq!(interface_map.get("lo"), None);
+        assert_eq!(interface_map.get("eth0"), None);
     }
 }

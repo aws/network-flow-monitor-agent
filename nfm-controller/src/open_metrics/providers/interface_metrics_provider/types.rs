@@ -5,7 +5,6 @@
 
 use std::fmt;
 use std::net::IpAddr;
-use std::path::Path;
 use std::sync::OnceLock;
 
 use regex::Regex;
@@ -35,7 +34,6 @@ pub fn get_ipv6_regex() -> &'static Regex {
 pub enum InterfaceMetricsError {
     CommandExecution { command: String },
     NetworkDataParsing { details: String },
-    InterfaceNotFound { interface: String },
     NamespaceOperation { details: String },
 }
 
@@ -47,9 +45,6 @@ impl fmt::Display for InterfaceMetricsError {
             }
             InterfaceMetricsError::NetworkDataParsing { details } => {
                 write!(f, "Failed to parse network data: {}", details)
-            }
-            InterfaceMetricsError::InterfaceNotFound { interface } => {
-                write!(f, "Interface not found: {}", interface)
             }
             InterfaceMetricsError::NamespaceOperation { details } => {
                 write!(f, "Namespace operation failed: {}", details)
@@ -104,23 +99,13 @@ pub struct HostInterface {
 }
 
 impl HostInterface {
-    pub fn new(name: String) -> Self {
-        Self {
-            is_virtual: Self::check_if_virtual(&name),
-            name,
-        }
+    /// Create a new HostInterface with the specified virtual status
+    pub fn new(name: String, is_virtual: bool) -> Self {
+        Self { name, is_virtual }
     }
 
     pub fn is_virtual(&self) -> bool {
         self.is_virtual
-    }
-
-    /// Check if interface is virtual by examining sysfs
-    fn check_if_virtual(name: &str) -> bool {
-        // Physical interfaces have /sys/class/net/<interface>/device symlink
-        // Virtual interfaces don't have this symlink
-        let device_path = format!("/sys/class/net/{}/device", name);
-        !Path::new(&device_path).exists()
     }
 }
 
@@ -139,9 +124,9 @@ mod tests {
 
     #[test]
     fn test_host_interface_virtual_detection() {
-        let interface = HostInterface::new("veth123".to_string());
+        let interface = HostInterface::new("veth123".to_string(), true);
         assert_eq!(interface.name, "veth123");
-        // Virtual detection will depend on the actual system
+        assert_eq!(interface.is_virtual, true);
     }
 
     #[test]
@@ -150,10 +135,5 @@ mod tests {
             command: "test command".to_string(),
         };
         assert!(error.to_string().contains("test command"));
-
-        let error = InterfaceMetricsError::InterfaceNotFound {
-            interface: "eth0".to_string(),
-        };
-        assert!(error.to_string().contains("eth0"));
     }
 }
