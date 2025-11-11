@@ -43,6 +43,9 @@ mountpoint -q nfm_agent_temp_test_cgroup || sudo mount -t cgroup2 none nfm_agent
 log "${GREEN}Starting network-flow-monitor-agent ${NC}"
 log_file="results/$tps_dir/`date +%Y-%m-%dT%H:%M:%S`-agent"
 
+# Need to log the Aggregation result msg
+export RUST_LOG=debug
+
 # Check if the binary can run (there can be a GLIBC compatibility issue depending on where the binary is built)
 if ! sudo $cmd_prefix /usr/local/sbin/network-flow-monitor-agent --cgroup ./nfm_agent_temp_test_cgroup \
     --publish-reports on --log-reports on --aggregate-msecs 500 --endpoint-region $region \
