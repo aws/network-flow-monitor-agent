@@ -19,7 +19,7 @@ LOG_FILE_PATH=/test-context/agent.log
 PUBLISH_SECS=5
 
 # Start the agent in the background.
-network-flow-monitor-agent --cgroup /mnt/cgroup-nfm --publish-reports off \
+RUST_LOG=debug network-flow-monitor-agent --cgroup /mnt/cgroup-nfm --publish-reports off \
     --log-reports on --notrack-secs 10 --publish-secs $PUBLISH_SECS > $LOG_FILE_PATH &
 MONITOR_PID=$!
 

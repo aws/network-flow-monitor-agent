@@ -46,7 +46,7 @@ impl RuntimeEnvironmentMetadataProvider {
         }
     }
 
-    fn get_compute_platform() -> ComputePlatform {
+    pub fn get_compute_platform() -> ComputePlatform {
         if env::var(super::k8s_metadata::ENV_EKS_CLUSTER_NAME).is_ok() {
             ComputePlatform::Ec2K8sEks
         } else if env::var(super::k8s_metadata::ENV_K8S_NODE_NAME).is_ok() {

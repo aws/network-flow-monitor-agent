@@ -32,7 +32,9 @@ jobs:
       - name: Check code coverage
         run: |
           BPF_OBJECT_PATH="${{ github.workspace }}/target/ebpf/bpfel-unknown-none/release/nfm-bpf" \
-          cargo tarpaulin --ignore-tests \
+          cargo tarpaulin \
+          --features open-metrics \
+          --ignore-tests \
           --workspace \
           --exclude nfm-bpf \
           --exclude-files '**/build.rs' \

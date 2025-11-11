@@ -25,7 +25,7 @@ use aya::{
 };
 use aya_obj::generated::BPF_ANY;
 use hashbrown::{hash_map::Entry, HashMap, HashSet};
-use log::info;
+use log::{debug, info};
 use procfs::{Current, Meminfo};
 use std::cmp::min;
 use std::fs::File;
@@ -98,7 +98,7 @@ fn calculate_ebpf_memory_usage(sock_props_max_entries: u64, sock_stats_max_entri
 impl<C: Clock> EventProvider for EventProviderEbpf<C> {
     // Aggregates results from the eBPF layer, and evicts closed sockets.
     fn perform_aggregation_cycle(&mut self, nat_resolver: &Box<dyn NatResolver>) {
-        info!("Aggregating across sockets");
+        debug!("Aggregating across sockets");
 
         // Apply adaptive sampling if we're receiving events faster than we can process.
         if self.ebpf_counters().map_insertion_errors > 0 {
@@ -178,7 +178,7 @@ impl<C: Clock> EventProvider for EventProviderEbpf<C> {
         self.process_counters.socket_eviction_completed += sock_eviction_result.completed;
         self.process_counters.socket_eviction_failed += sock_eviction_result.failed;
 
-        info!(
+        debug!(
             sock_add_result:serde,
             sock_delta_result:serde,
             sock_nat_result:serde,

@@ -6,9 +6,14 @@ pub mod command_runner;
 pub mod conntrack_listener;
 pub mod cpu;
 pub mod credentials;
+pub mod crypto;
 pub mod event_timer;
+pub mod host;
 pub mod memory_inspector;
 pub mod report;
+
+#[cfg(test)]
+pub mod test_utils;
 
 pub use clock::{timespec_to_nsec, timespec_to_us, Clock, FakeClock, SystemBootClock};
 pub use command_runner::{CommandRunner, FakeCommandRunner, RealCommandRunner};

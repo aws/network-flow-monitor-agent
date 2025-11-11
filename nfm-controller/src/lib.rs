@@ -7,6 +7,9 @@ pub mod metadata;
 pub mod reports;
 pub mod utils;
 
+#[cfg(feature = "open-metrics")]
+pub mod open_metrics;
+
 use aya::util::KernelVersion;
 use caps::{CapSet, Capability};
 use clap::{Parser, ValueEnum};
@@ -39,6 +42,9 @@ use crate::utils::{
     event_timer, CpuUsageMonitor, EventTimer, MemoryInspector, ProcessMemoryInspector,
     SystemBootClock,
 };
+
+#[cfg(feature = "open-metrics")]
+use crate::open_metrics::server::{OpenMetricsServer, OpenMetricsServerConfig};
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, ValueEnum)]
 #[serde(rename_all = "lowercase")]
@@ -123,6 +129,21 @@ pub struct Options {
     /// Within reports, use IP addresses that are external to locally performed NAT.
     #[clap(short = 'n', long, default_value_t = OnOff::Off)]
     resolve_nat: OnOff,
+
+    /// Enable OpenMetrics server for Prometheus-compatible metrics
+    #[cfg(feature = "open-metrics")]
+    #[clap(long = "open-metrics", default_value_t = OnOff::Off)]
+    open_metrics: OnOff,
+
+    /// Port for OpenMetrics server
+    #[cfg(feature = "open-metrics")]
+    #[clap(long = "open-metrics-port", default_value_t = 80)]
+    open_metrics_port: u16,
+
+    /// Address for OpenMetrics server
+    #[cfg(feature = "open-metrics")]
+    #[clap(long = "open-metrics-address", default_value = "127.0.0.1")]
+    open_metrics_address: String,
 }
 
 pub fn check_kernel_version() -> Result<(), anyhow::Error> {
@@ -198,6 +219,12 @@ pub fn on_load(opt: Options) -> Result<(), anyhow::Error> {
     };
     let host_stats_provider = HostStatsProviderImpl::new();
 
+    // Create shared collector for both main thread and OpenMetrics server
+    let k8s_metadata_collector = Arc::new(KubernetesMetadataCollector::new());
+
+    #[cfg(feature = "open-metrics")]
+    let _server = start_open_metrics_server(&opt, Some(k8s_metadata_collector.clone()));
+
     do_work(
         event_provider,
         nat_resolver,
@@ -205,12 +232,14 @@ pub fn on_load(opt: Options) -> Result<(), anyhow::Error> {
         publisher,
         metadata_provider,
         host_stats_provider,
+        k8s_metadata_collector,
         opt,
     );
 
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn do_work(
     mut provider: impl EventProvider,
     mut nat_resolver: Box<dyn NatResolver>,
@@ -218,6 +247,7 @@ fn do_work(
     publisher: impl ReportPublisher,
     mut metadata_provider: impl MultiMetadataProvider,
     mut host_stats_provider: impl HostStatsProvider,
+    k8s_metadata_collector: Arc<KubernetesMetadataCollector>,
     opt: Options,
 ) {
     let memory_inspector = ProcessMemoryInspector::new();
@@ -246,7 +276,6 @@ fn do_work(
     let enable_usage_data = opt.usage_data == OnOff::On;
     let mut failed_reports_count = 0;
     let mut usage_stats = UsageStats::default();
-    let mut k8s_metadata_collector = KubernetesMetadataCollector::new();
     if opt.kubernetes_metadata == OnOff::On {
         k8s_metadata_collector.setup_watchers();
     }
@@ -312,6 +341,28 @@ fn do_work(
             usage_stats.sockets_tracked = usage_stats.sockets_tracked.max(provider.socket_count());
             usage_stats.ebpf_allocated_mem_kb = provider.ebpf_allocated_mem_kb();
         }
+    }
+}
+
+#[cfg(feature = "open-metrics")]
+fn start_open_metrics_server(
+    opt: &Options,
+    k8s_collector: Option<Arc<KubernetesMetadataCollector>>,
+) -> Option<OpenMetricsServer> {
+    // Start OpenMetrics server in a separate thread before entering main loop
+    if opt.open_metrics == OnOff::On {
+        let config = OpenMetricsServerConfig::from(
+            opt.open_metrics_address.clone(),
+            opt.open_metrics_port,
+            k8s_collector,
+        );
+        let mut server = OpenMetricsServer::with_config(config);
+        if let Err(e) = server.start() {
+            panic!("Failed to start OpenMetrics server: {}", e);
+        }
+        Some(server)
+    } else {
+        None
     }
 }
 
@@ -440,6 +491,51 @@ mod test {
         }
     }
 
+    #[cfg(feature = "open-metrics")]
+    fn create_options() -> Options {
+        Options {
+            log_reports: OnOff::Off,
+            publish_reports: OnOff::Off,
+            endpoint: "a".to_string(),
+            endpoint_region: "b".to_string(),
+            cgroup: "c".to_string(),
+            proxy: "d".to_string(),
+            top_k: 100,
+            notrack_secs: 0,
+            usage_data: OnOff::On,
+            aggregate_msecs: 0,
+            publish_secs: 0,
+            jitter_secs: 0,
+            report_compression: ReportCompression::None,
+            kubernetes_metadata: OnOff::On,
+            resolve_nat: OnOff::On,
+            open_metrics: OnOff::Off,
+            open_metrics_port: 80,
+            open_metrics_address: "127.0.0.1".to_string(),
+        }
+    }
+
+    #[cfg(not(feature = "open-metrics"))]
+    fn create_options() -> Options {
+        Options {
+            log_reports: OnOff::Off,
+            publish_reports: OnOff::Off,
+            endpoint: "a".to_string(),
+            endpoint_region: "b".to_string(),
+            cgroup: "c".to_string(),
+            proxy: "d".to_string(),
+            top_k: 100,
+            notrack_secs: 0,
+            usage_data: OnOff::On,
+            aggregate_msecs: 0,
+            publish_secs: 0,
+            jitter_secs: 0,
+            report_compression: ReportCompression::None,
+            kubernetes_metadata: OnOff::On,
+            resolve_nat: OnOff::On,
+        }
+    }
+
     #[test]
     fn test_do_work() {
         let event_provider = EventProviderNoOp::default();
@@ -465,23 +561,8 @@ mod test {
                 publisher_clone,
                 metadata_provider_clone,
                 host_stats_provider_clone,
-                Options {
-                    log_reports: OnOff::Off,
-                    publish_reports: OnOff::Off,
-                    endpoint: "a".to_string(),
-                    endpoint_region: "b".to_string(),
-                    cgroup: "c".to_string(),
-                    proxy: "d".to_string(),
-                    top_k: 100,
-                    notrack_secs: 0,
-                    usage_data: OnOff::On,
-                    aggregate_msecs: 0,
-                    publish_secs: 0,
-                    jitter_secs: 0,
-                    report_compression: ReportCompression::None,
-                    kubernetes_metadata: OnOff::On,
-                    resolve_nat: OnOff::On,
-                },
+                Arc::new(KubernetesMetadataCollector::new()),
+                create_options(),
             );
         });
 

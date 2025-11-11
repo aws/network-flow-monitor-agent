@@ -2,7 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::env_metadata_provider::{EnvMetadata, EnvMetadataProvider, NetworkDevice};
+use crate::metadata::imds_utils::{
+    get_runtime_executor, retrieve_instance_id, retrieve_instance_type,
+};
 use crate::reports::report::ReportValue;
+use crate::utils::host::{CachedInterfaceVirtualChecker, InterfaceVirtualChecker};
 use crate::utils::{CommandRunner, RealCommandRunner};
 use aws_config::imds::Client;
 
@@ -19,6 +23,7 @@ pub struct EniMetadataProvider {
     pub(crate) instance_type: String,
     pub(crate) network: Vec<NetworkInterfaceInfo>,
     pub(crate) command_runner: Box<dyn CommandRunner>,
+    pub(crate) virtual_checker: Box<dyn InterfaceVirtualChecker>,
 }
 
 #[derive(Debug)]
@@ -40,6 +45,7 @@ impl EniMetadataProvider {
             instance_type,
             network,
             command_runner: Box::new(RealCommandRunner {}),
+            virtual_checker: Box::new(CachedInterfaceVirtualChecker::new()),
         }
     }
 
@@ -56,7 +62,18 @@ impl EniMetadataProvider {
         for line in String::from_utf8_lossy(&output.unwrap().stdout).lines() {
             let parts = line.split_ascii_whitespace().collect::<Vec<_>>();
             if parts.len() == 4 {
-                mac_to_device.insert(parts[2].to_string(), parts[0].to_string());
+                let (name, mac) = (parts[0].to_string(), parts[2].to_string());
+
+                match self.virtual_checker.is_virtual(&name) {
+                    Ok(is_virtual) => {
+                        if !is_virtual {
+                            mac_to_device.insert(mac, name);
+                        }
+                    }
+                    Err(err) => {
+                        error!(error = err.to_string(); "Failed to check if interface '{}' is virtual, skipping interface", name);
+                    }
+                };
             }
         }
 
@@ -108,66 +125,42 @@ impl EnvMetadataProvider for EniMetadataProvider {
     }
 }
 
-fn retrieve_imds_metadata(client: &aws_config::imds::Client, path: String) -> String {
-    let rt = match tokio::runtime::Runtime::new() {
-        Ok(rt) => rt,
-        Err(err) => {
-            error!(error = err.to_string(); "Error creating tokio runtime");
-            return "".into();
-        }
-    };
-
-    match rt.block_on(client.get(&path)) {
-        Ok(instance_id) => instance_id.into(),
-        Err(err) => {
-            error!(error = err.to_string(), path = path; "Error retrieving imds metadata");
-            "".into()
+fn retrieve_network_information(client: &aws_config::imds::Client) -> Vec<NetworkInterfaceInfo> {
+    match get_runtime_executor() {
+        Some(executor) => executor.block_on(retrieve_network_information_async(client)),
+        None => {
+            error!("Failed to get runtime executor for network information");
+            vec![]
         }
     }
 }
 
-fn retrieve_instance_id(client: &aws_config::imds::Client) -> String {
-    retrieve_imds_metadata(client, "/latest/meta-data/instance-id".to_string())
-}
-
-fn retrieve_instance_type(client: &aws_config::imds::Client) -> String {
-    retrieve_imds_metadata(client, "/latest/meta-data/instance-type".to_string())
-}
-
-fn retrieve_network_information(client: &aws_config::imds::Client) -> Vec<NetworkInterfaceInfo> {
-    let rt = match tokio::runtime::Runtime::new() {
-        Ok(rt) => rt,
-        Err(err) => {
-            error!(error = err.to_string(); "Error creating tokio runtime");
-            return vec![];
-        }
-    };
-
-    rt.block_on(async {
-        match client
-            .get("/latest/meta-data/network/interfaces/macs/")
-            .await
-        {
-            Ok(macs) => {
-                let mut network_information = vec![];
-                let macs = String::from(macs);
-                for mac in macs.split('\n') {
-                    // There is trailing backslash in each line.
-                    let mut mac = mac.to_string();
-                    if !mac.is_empty() && mac.ends_with('/') {
-                        mac.pop();
-                    }
-
-                    network_information.extend(retrieve_mac_information(client, mac).await)
+async fn retrieve_network_information_async(
+    client: &aws_config::imds::Client,
+) -> Vec<NetworkInterfaceInfo> {
+    match client
+        .get("/latest/meta-data/network/interfaces/macs/")
+        .await
+    {
+        Ok(macs) => {
+            let mut network_information = vec![];
+            let macs = String::from(macs);
+            for mac in macs.split('\n') {
+                // There is trailing backslash in each line.
+                let mut mac = mac.to_string();
+                if !mac.is_empty() && mac.ends_with('/') {
+                    mac.pop();
                 }
-                network_information
+
+                network_information.extend(retrieve_mac_information(client, mac).await)
             }
-            Err(err) => {
-                error!(error = err.to_string(); "Error retrieving network information");
-                vec![]
-            }
+            network_information
         }
-    })
+        Err(err) => {
+            error!(error = err.to_string(); "Error retrieving network information");
+            vec![]
+        }
+    }
 }
 
 async fn retrieve_mac_information(
@@ -201,8 +194,26 @@ async fn get_mac_attribute(
 mod test {
     use super::*;
     use crate::utils::FakeCommandRunner;
+    use anyhow::Result;
     use std::os::unix::process::ExitStatusExt;
     use std::process::{ExitStatus, Output};
+
+    // Mock implementation for testing
+    struct MockInterfaceVirtualChecker {
+        virtual_interfaces: Vec<String>,
+    }
+
+    impl MockInterfaceVirtualChecker {
+        fn new(virtual_interfaces: Vec<String>) -> Self {
+            Self { virtual_interfaces }
+        }
+    }
+
+    impl InterfaceVirtualChecker for MockInterfaceVirtualChecker {
+        fn is_virtual(&mut self, iface_name: &str) -> Result<bool> {
+            Ok(self.virtual_interfaces.contains(&iface_name.to_string()))
+        }
+    }
 
     #[test]
     fn test_instance_id() {
@@ -223,6 +234,7 @@ mod test {
                 interface_id: "the-interface-id".into(),
             }],
             command_runner: Box::new(FakeCommandRunner::new()),
+            virtual_checker: Box::new(CachedInterfaceVirtualChecker::new()),
         };
         let metadata = ec2_provider.get_metadata();
 
@@ -290,12 +302,16 @@ mod test {
             },
         ];
 
-        let mut eni_provider = EniMetadataProvider {
+        let virtual_interfaces = vec!["docker0".to_string(), "lo".to_string()];
+        let mock_checker = MockInterfaceVirtualChecker::new(virtual_interfaces);
+
+        let eni_provider = EniMetadataProvider {
             client: Client::builder().build(),
             instance_id: "inst-id1".to_string(),
             instance_type: "the-instance-type".into(),
             network: net_infos,
             command_runner: Box::new(fake_runner.clone()),
+            virtual_checker: Box::new(mock_checker),
         };
 
         let expected_net_devs: Vec<NetworkDevice> = vec![
@@ -309,6 +325,7 @@ mod test {
             },
         ];
 
+        let mut eni_provider = eni_provider;
         let actual_net_devs = eni_provider.get_network_devices();
         assert_eq!(actual_net_devs, expected_net_devs);
         assert!(fake_runner.expectations.lock().unwrap().is_empty());

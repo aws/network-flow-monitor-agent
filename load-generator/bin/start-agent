@@ -44,7 +44,7 @@ log "${GREEN}Starting network-flow-monitor-agent ${NC}"
 log_file="results/$tps_dir/`date +%Y-%m-%dT%H:%M:%S`-agent"
 
 # Check if the binary can run (there can be a GLIBC compatibility issue depending on where the binary is built)
-if ! sudo $cmd_prefix /usr/local/sbin/network-flow-monitor-agent --cgroup ./nfm_agent_temp_test_cgroup \
+if ! sudo RUST_LOG=debug $cmd_prefix /usr/local/sbin/network-flow-monitor-agent --cgroup ./nfm_agent_temp_test_cgroup \
     --publish-reports on --log-reports on --aggregate-msecs 500 --endpoint-region $region \
     --endpoint https://networkflowmonitorreports.$region.api.aws/publish \
     --publish-secs 30 --jitter-secs 0 > "$log_file" 2>&1; then
