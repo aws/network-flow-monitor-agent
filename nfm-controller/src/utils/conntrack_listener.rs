@@ -12,12 +12,10 @@ use netlink_sys::{constants::NETLINK_NETFILTER, Socket};
 use std::convert::TryFrom;
 use std::io::ErrorKind;
 
-// 425984 Bytes of space can store 333 messages. (default for c5.4xlarge kubernetes host env / can be less or more for others)
-// Meaning for 500msec agg period we can only receive up to 666 new conntrack events per second with that size.
-// Setting this to target 10k connections per second -> (425984) * (10000 / 666) = 6396156 Bytes.
-// Cost of reading each entry is around 2.5us, so 10k entries will cost 25ms per second (2.5% load for a single core)
-// Rounding up to nearest 4096 -> 6397952, i.e. 6.4MByte-ish
-const SOCKET_RX_BUF_DESIRED_SIZE: usize = 6397952;
+// Each raw netlink datagram in socket consumes 1280 bytes.
+// Targeting to handle up to 100k new connections per second, we need a storage for 10k * 1280 = 12_800_000, i.e. 12.8MBytes (assuming 100msec agg period).
+// Cost of reading, parsing and storing each entry is around 4us (host variant), so 100k entries will cost 400ms per second (40% load for a single core)
+const SOCKET_RX_BUF_DESIRED_SIZE: usize = 12_800_000;
 
 #[derive(Clone, Debug)]
 pub struct ConntrackEntry {
@@ -25,19 +23,17 @@ pub struct ConntrackEntry {
     pub reply: ConnectionProperties,
 }
 
-impl ConntrackEntry {
-    pub fn was_natd(&self) -> bool {
-        Self::reverse(&self.reply) != self.original
-    }
+pub trait ConnectionPropertiesHelpers {
+    fn is_inverse_of(&self, other: ConnectionProperties) -> bool;
+}
 
-    fn reverse(cxn: &ConnectionProperties) -> ConnectionProperties {
-        ConnectionProperties {
-            src_ip: cxn.dst_ip,
-            dst_ip: cxn.src_ip,
-            src_port: cxn.dst_port,
-            dst_port: cxn.src_port,
-            protocol: cxn.protocol,
-        }
+impl ConnectionPropertiesHelpers for ConnectionProperties {
+    fn is_inverse_of(&self, other: ConnectionProperties) -> bool {
+        self.src_ip == other.dst_ip
+            && self.dst_ip == other.src_ip
+            && self.src_port == other.dst_port
+            && self.dst_port == other.src_port
+            && self.protocol == other.protocol
     }
 }
 
@@ -74,7 +70,7 @@ impl ConntrackListener {
         let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
         info!(page_size, initial_rx_buf_size, desired_rx_buf_size, actual_rx_buf_size; "Configured conntrack socket buffer.");
 
-        let rx_buf: Vec<u8> = vec![0; actual_rx_buf_size];
+        let rx_buf: Vec<u8> = vec![0; 2048]; // each netlink message consumes less than 256 bytes. But reserving more for possible future changes
 
         // Subscribe to conntrack events.
         socket.bind_auto().unwrap();
@@ -155,6 +151,10 @@ impl ConntrackProvider for ConntrackListener {
 
             match Self::parse_connection_properties(msg) {
                 Ok((original, reply)) => {
+                    if original.is_inverse_of(reply) {
+                        // This is not a NAT-ed connection, ignore this event.
+                        continue;
+                    }
                     events.push(ConntrackEntry { original, reply });
                 }
                 Err(_) => {
@@ -170,7 +170,8 @@ impl ConntrackProvider for ConntrackListener {
 
 #[cfg(test)]
 mod test {
-    use crate::utils::{conntrack_listener::ConntrackEntry, ConntrackListener};
+    use crate::utils::conntrack_listener::ConnectionPropertiesHelpers;
+    use crate::utils::ConntrackListener;
 
     use netlink_packet_core::NetlinkMessage;
     use netlink_packet_netfilter::{nfconntrack::nlas::ConnectionProperties, NetfilterMessage};
@@ -341,7 +342,7 @@ mod test {
 
     #[test]
     fn test_conntrack_props_reverse() {
-        let expected = ConnectionProperties {
+        let actual = ConnectionProperties {
             src_ip: IpAddr::from_str("1.2.3.4").unwrap(),
             dst_ip: IpAddr::from_str("5.6.7.8").unwrap(),
             src_port: 1234,
@@ -349,44 +350,124 @@ mod test {
             protocol: libc::IPPROTO_TCP as u8,
         };
 
-        let actual = ConntrackEntry::reverse(&ConnectionProperties {
+        let mut reverse = ConnectionProperties {
             src_ip: IpAddr::from_str("5.6.7.8").unwrap(),
             dst_ip: IpAddr::from_str("1.2.3.4").unwrap(),
             src_port: 5678,
             dst_port: 1234,
             protocol: libc::IPPROTO_TCP as u8,
-        });
+        };
 
-        assert_eq!(actual, expected);
-        assert!(ConntrackEntry::reverse(&actual) != expected);
-        assert_eq!(
-            ConntrackEntry::reverse(&ConntrackEntry::reverse(&actual)),
-            expected
-        );
+        assert!(reverse.is_inverse_of(actual));
+        assert!(actual.is_inverse_of(reverse));
+
+        reverse.dst_port += 1;
+
+        assert!(!reverse.is_inverse_of(actual));
+        assert!(!actual.is_inverse_of(reverse));
     }
 
     #[test]
-    fn test_conntrack_entry_was_natd() {
-        let mut entry = ConntrackEntry {
-            original: ConnectionProperties {
-                src_ip: IpAddr::from_str("1.2.3.4").unwrap(),
-                dst_ip: IpAddr::from_str("5.6.7.8").unwrap(),
-                src_port: 1234,
-                dst_port: 5678,
-                protocol: libc::IPPROTO_TCP as u8,
-            },
-            reply: ConnectionProperties {
-                src_ip: IpAddr::from_str("5.6.7.8").unwrap(),
-                dst_ip: IpAddr::from_str("1.2.3.4").unwrap(),
-                src_port: 5678,
-                dst_port: 1234,
-                protocol: libc::IPPROTO_TCP as u8,
-            },
-        };
+    #[cfg(feature = "requires-conntrack")]
+    fn test_conntrack_listener_real_nat_entry() {
+        use crate::utils::conntrack_listener::ConntrackProvider;
+        use std::process::Command;
+        use std::thread;
+        use std::time::Duration;
 
-        // Test the negative case, then the positive case.
-        assert!(!entry.was_natd());
-        entry.reply.src_port += 1;
-        assert!(entry.was_natd());
+        let original_src = "99.99.99.99";
+        let desired_dst = "11.11.11.11";
+        let actual_dst = "5.5.5.5";
+        let original_sport = 12345;
+        let original_dport = 80;
+        let reply_sport = 54321;
+
+        // Create a ConntrackListener
+        let mut listener = ConntrackListener::initialize();
+
+        // Add a NAT entry to conntrack table using conntrack CLI
+        // Original: 99.99.99.99:12345 -> 11.11.11.11:80
+        // Reply: 5.5.5.5:80 -> 99.99.99.99:54321 (NAT applied)
+        let output = Command::new("conntrack")
+            .args(&[
+                "-I",
+                "-p",
+                "tcp",
+                "-s",
+                original_src,
+                "-d",
+                desired_dst,
+                "--sport",
+                &original_sport.to_string(),
+                "--dport",
+                &original_dport.to_string(),
+                "--reply-src",
+                actual_dst,
+                "--reply-dst",
+                original_src,
+                "--reply-port-src",
+                &reply_sport.to_string(),
+                "--reply-port-dst",
+                &original_sport.to_string(),
+                "-t",
+                "120",
+                "--state",
+                "ESTABLISHED",
+            ])
+            .output();
+
+        if output.is_err() || !output.as_ref().unwrap().status.success() {
+            eprintln!("Failed to add conntrack entry. Make sure conntrack tool is installed and you have CAP_NET_ADMIN. Error: {output:?}");
+            assert!(false);
+        }
+
+        // Give kernel time to generate the event
+        thread::sleep(Duration::from_millis(100));
+
+        // Read events from listener
+        let entries = listener.get_new_entries().expect("Failed to get entries");
+
+        // Cleanup: delete the conntrack entry
+        Command::new("conntrack")
+            .args(&[
+                "-D",
+                "-s",
+                original_src,
+                "-d",
+                desired_dst,
+                "--sport",
+                &original_sport.to_string(),
+                "--dport",
+                &original_dport.to_string(),
+                "-p",
+                "tcp",
+            ])
+            .output()
+            .ok();
+
+        // Verify we got the NAT entry
+        assert!(
+            !entries.is_empty(),
+            "Should have received at least one conntrack event"
+        );
+
+        let entry = entries.iter().find(|e| {
+            e.original.src_ip == IpAddr::from_str(original_src).unwrap()
+                && e.original.dst_ip == IpAddr::from_str(desired_dst).unwrap()
+                && e.original.src_port == original_sport
+                && e.original.dst_port == original_dport
+                && e.original.protocol == libc::IPPROTO_TCP as u8
+                && e.reply.src_ip == IpAddr::from_str(actual_dst).unwrap()
+                && e.reply.dst_ip == IpAddr::from_str(original_src).unwrap()
+                && e.reply.src_port == reply_sport
+                && e.reply.dst_port == original_sport
+                && e.reply.protocol == libc::IPPROTO_TCP as u8
+        });
+
+        assert!(entry.is_some(), "Should have found the inserted NAT entry");
+        let entry = entry.unwrap();
+
+        // Verify it's not an inverse (NAT was applied)
+        assert!(!entry.original.is_inverse_of(entry.reply));
     }
 }

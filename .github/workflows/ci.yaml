@@ -29,11 +29,13 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Install tarpaulin
         run: cargo install cargo-tarpaulin
+      - name: Install conntrack
+        run: sudo apt-get update && sudo apt-get install -y conntrack
       - name: Check code coverage
         run: |
           BPF_OBJECT_PATH="${{ github.workspace }}/target/ebpf/bpfel-unknown-none/release/nfm-bpf" \
-          cargo tarpaulin \
-          --features open-metrics \
+          sudo -E env "PATH=$PATH" cargo tarpaulin \
+          --features open-metrics,requires-conntrack \
           --ignore-tests \
           --workspace \
           --exclude nfm-bpf \
