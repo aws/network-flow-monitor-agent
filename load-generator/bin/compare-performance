@@ -48,17 +48,18 @@ fi
 get_metric() {
     local file="$1"
     local path="$2"
-    jq -r "$path // 0" "$file" 2>/dev/null || echo "0"
+    local value=$(jq -r "$path // 0" "$file" 2>/dev/null || echo "0")
+    printf "%.3f" "$value" 2>/dev/null || echo "$value"
 }
 
-# Function to calculate percentage change
-calc_change() {
+# Function to calculate percentage change (returns numeric value or N/A)
+calc_change_percent() {
     local old="$1"
     local new="$2"
     if [[ "$old" == "0" || "$old" == "0.000" ]]; then
         echo "N/A"
     else
-        python3 -c "print(f'{((float('$new') - float('$old')) / float('$old') * 100):+.1f}%')"
+        python3 -c "print(f'{((float('$new') - float('$old')) / float('$old') * 100):+.1f}')"
     fi
 }
 
@@ -93,14 +94,29 @@ check_limit() {
     fi
 }
 
-# Generate comparison report
-echo "## 📊 Performance Comparison"
-echo "| Metric | Instance Type | TPS | Baseline |  Current  |  Change  |       Limit      |"
-echo "|--------|---------------|-----|----------|-----------|----------|------------------|"
+# Function to format change with icon (input is numeric or N/A, output adds %)
+format_change() {
+    local change="$1"
+    if [[ "$change" == "N/A" ]]; then
+        echo "$change"
+        return
+    fi
+    if (( $(awk "BEGIN {print ($change > 10)}" 2>/dev/null || echo 0) )); then
+        echo "🔻${change}%"
+    elif (( $(awk "BEGIN {print ($change < -10)}" 2>/dev/null || echo 0) )); then
+        echo "▲${change}%"
+    else
+        echo "${change}%"
+    fi
+}
 
 # Collect all data first for sorting
-tmp_file=$(mktemp)
+detailed_metrics_file=$(mktemp)
 limit_breaches=0
+
+# Associative arrays for aggregated metrics
+declare -A metric_changes
+declare -A metric_counts
 
 # Compare each report file
 for current_report in "$current_dir"/*_tps-report.json; do
@@ -127,7 +143,7 @@ for current_report in "$current_dir"/*_tps-report.json; do
     # Compare key metrics
     metrics=(
         "User CPU|.tps_report.sonar_agent_process.cpu_util_pct.avg"
-        "User CPU Single Core|(.tps_report.sonar_bpf_program.cpu_util_pct.max + .tps_report.sonar_agent_process.cpu_util_pct.max) * .tps_report.cpu_cores"
+        "User+BPF CPU 1-Core p90|(.tps_report.sonar_bpf_program.cpu_util_pct.p90 + .tps_report.sonar_agent_process.cpu_util_pct.p90) * .tps_report.cpu_cores"
         "Memory|.tps_report.sonar_agent_process.resident_mem_kb.avg"
         "BPF CPU|.tps_report.sonar_bpf_program.cpu_util_pct.avg"
     )
@@ -140,11 +156,12 @@ for current_report in "$current_dir"/*_tps-report.json; do
 
         if [[ "$has_baseline" == "true" ]]; then
             baseline_val=$(get_metric "$baseline_report" "$metric_path")
-            change=$(calc_change "$baseline_val" "$current_val")
+            change_pct=$(calc_change_percent "$baseline_val" "$current_val")
         else
             baseline_val="N/A"
-            change="N/A"
+            change_pct="N/A"
         fi
+        change_fmt=$(format_change "$change_pct")
 
         # Format values
         if [[ "$metric_name" == *"Memory"* ]]; then
@@ -157,17 +174,6 @@ for current_report in "$current_dir"/*_tps-report.json; do
         else
             baseline_fmt=$baseline_val
             current_fmt="$current_val"
-        fi
-
-        # Add emoji for significant changes
-        change_icon=""
-        if [[ "$change" != "N/A" ]]; then
-            change_num=$(echo "$change" | sed 's/[+%]//g')
-            if (( $(awk "BEGIN {print ($change_num > 10)}" 2>/dev/null || echo 0) )); then
-                change_icon="🔻"
-            elif (( $(awk "BEGIN {print ($change_num < -10)}" 2>/dev/null || echo 0) )); then
-                change_icon="▲"
-            fi
         fi
 
         # Check against performance limits
@@ -191,24 +197,44 @@ for current_report in "$current_dir"/*_tps-report.json; do
             limit_display="$limit_status"
         fi
 
-        if [[ -n "$change_icon" ]]; then
-            change_fmt="$change_icon $change"
-        else
-            change_fmt="$change"
-        fi
+        # Store data for sorting: METRIC|TPS|INSTANCE
+        printf "| %s | %d | %s | %s | %s | %s | %s |\n" "$metric_name" "$tps" "$inst_type" "$baseline_fmt" "$current_fmt" "$change_fmt" "$limit_display" >> "$detailed_metrics_file"
 
-        # Store data for sorting: TPS|METRIC|INSTANCE|ROW
-        printf "| %s | %s | %d | %s | %s | %s | %s |\n" "$metric_name" "$inst_type" "$tps" "$baseline_fmt" "$current_fmt" "$change_fmt" "$limit_display" >> "$tmp_file"
+        # Accumulate individual changes for aggregated metrics
+        if [[ "$change_pct" != "N/A" ]]; then
+            metric_changes["$metric_name"]=$(awk "BEGIN {print ${metric_changes[$metric_name]:-0} + $change_pct}")
+            metric_counts["$metric_name"]=$((${metric_counts[$metric_name]:-0} + 1))
+        fi
     done
 done
 
-# Sort by TPS, then metric, then instance type
-sort -t'|' -k1,1n -k2,2 -k3,3 "$tmp_file"
-rm -f "$tmp_file"
+# Print Aggregated summary metrics first
+echo ""
+echo "## 📈 Aggregated Metrics Comparison"
+echo "| Metric | Avg Change |"
+echo "|--------|------------|"
 
-echo "-----"
+for metric_name in "${!metric_changes[@]}"; do
+    total_change_pct=${metric_changes[$metric_name]}
+    count=${metric_counts[$metric_name]}
 
-log "🔴 = Significant increase (>10%)  🟢 = Significant improvement (>10% decrease)  ⚠️ = Exceeds performance limit"
+    avg_change_pct=$(awk "BEGIN {printf \"%+.1f\", $total_change_pct / $count}")
+    change_fmt=$(format_change "$avg_change_pct")
+
+    echo "| $metric_name | $change_fmt |"
+done
+
+## Print detailed metrics next
+echo "## 📊 Detailed Metrics Comparison"
+echo "| Metric | TPS | Instance Type | Baseline |  Current  |  Change  |       Limit      |"
+echo "|--------|-----|---------------|----------|-----------|----------|------------------|"
+
+# Sort by metric name, then TPS, then instance type
+sort -t'|' -k2,2 -k3,3n -k4,4 "$detailed_metrics_file"
+rm -f "$detailed_metrics_file"
+
+echo ""
+log "🔻 = Significant increase (>10%)  ▲ = Significant improvement (>10% decrease)  ⚠️ = Exceeds performance limit"
 
 # Exit with error if any limits were breached
 if [[ $limit_breaches -gt 0 ]]; then

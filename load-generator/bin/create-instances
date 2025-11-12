@@ -70,6 +70,16 @@ ami_id=$(aws ec2 describe-images \
 echo "Using AMI: $ami_id in region: $region"
 
 instance_ids=""
+
+# Cleanup to terminate instances launched so far if there is a failure
+cleanup_on_error() {
+    if [[ -n $instance_ids ]]; then
+        echo "Error occurred. Cleaning up created instances: $instance_ids"
+        aws ec2 terminate-instances --instance-ids $instance_ids --region "$region" || true
+    fi
+}
+trap cleanup_on_error ERR
+
 IFS=',' read -ra TYPES <<< "$instance_types"
 for instance_type in "${TYPES[@]}"
 do

@@ -2,7 +2,7 @@
   "m6a.xlarge": {
     "limits": {
       "User CPU": 2.5,
-      "User CPU Single Core": 20.0,
+      "User+BPF CPU 1-Core p90": 20.0,
       "Memory": 30000,
       "BPF CPU": 5.0
     }
@@ -10,7 +10,7 @@
   "m6a.4xlarge": {
     "limits": {
       "User CPU": 2.5,
-      "User CPU Single Core": 30.0,
+      "User+BPF CPU 1-Core p90": 30.0,
       "Memory": 35000,
       "BPF CPU": 4.0
     }
@@ -18,7 +18,7 @@
   "m6a.8xlarge": {
     "limits": {
       "User CPU": 2.5,
-      "User CPU Single Core": 40.0,
+      "User+BPF CPU 1-Core p90": 40.0,
       "Memory": 40000,
       "BPF CPU": 3.0
     }
@@ -26,7 +26,7 @@
   "m6a.16xlarge": {
     "limits": {
       "User CPU": 2.5,
-      "User CPU Single Core": 60.0,
+      "User+BPF CPU 1-Core p90": 60.0,
       "Memory": 60000,
       "BPF CPU": 2.5
     }
@@ -34,7 +34,7 @@
   "m6a.24xlarge": {
     "limits": {
       "User CPU": 2.5,
-      "User CPU Single Core": 80.0,
+      "User+BPF CPU 1-Core p90": 80.0,
       "Memory": 75000,
       "BPF CPU": 3.0
     }
@@ -42,7 +42,7 @@
   "m6a.48xlarge": {
     "limits": {
       "User CPU": 2.5,
-      "User CPU Single Core": 100.0,
+      "User+BPF CPU 1-Core p90": 100.0,
       "Memory": 75000,
       "BPF CPU": 1.5
     }
