@@ -9,7 +9,7 @@ use std::vec::Vec;
 
 pub trait EventProvider {
     #[allow(clippy::borrowed_box)]
-    fn perform_aggregation_cycle(&mut self, nat_resolver: &Box<dyn NatResolver>);
+    fn perform_aggregation_cycle(&mut self, nat_resolver: &mut Box<dyn NatResolver>);
     fn network_stats(&mut self) -> Vec<AggregateResults>;
     fn counters(&mut self) -> CountersOverall;
     fn socket_count(&self) -> u64;

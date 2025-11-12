@@ -20,6 +20,7 @@ crate-type = ["lib"]
 [features]
 default = []
 privileged = [] # To identify test that need privileges to run.
+requires-conntrack = [] # To identify tests that requires conntrack CLI to be present
 dhat = ["dep:dhat"] # enable dhat only when requested
 open-metrics = [
     "default",
@@ -32,10 +33,6 @@ open-metrics = [
 ]
 
 [profile.dev]
-panic = "abort"
-overflow-checks = true
-
-[profile.release]
 panic = "abort"
 overflow-checks = true
 

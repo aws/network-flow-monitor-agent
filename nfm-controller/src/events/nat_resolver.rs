@@ -11,6 +11,7 @@ use hashbrown::HashMap;
 use log::error;
 use netlink_packet_netfilter::nfconntrack::nlas::ConnectionProperties;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::rc::Rc;
 
 // We use a ring buffer of maps to maintain NAT mappings beyond a single aggregation cycle.  This
 // is because we're taking no reliance on which of our subsystems will be the first to see an event
@@ -48,7 +49,8 @@ impl NatResolver for NatResolverNoOp {
 
 pub struct NatResolverImpl {
     conntrack_listener: Box<dyn ConntrackProvider>,
-    conntrack_ringbuf: [HashMap<ConnectionProperties, ConnectionProperties>; RING_BUF_ENTRIES],
+    conntrack_ringbuf:
+        [HashMap<Rc<ConnectionProperties>, Rc<ConnectionProperties>>; RING_BUF_ENTRIES],
     ringbuf_index: usize,
 }
 
@@ -68,16 +70,13 @@ impl NatResolver for NatResolverImpl {
 
         let entry_cache = &mut self.conntrack_ringbuf[self.ringbuf_index];
         for new_entry in new_entries.iter() {
-            // If the entry was not actually NAT'd, there's no need to store it.
-            if !new_entry.was_natd() {
-                continue;
-            }
-
             // For locally-initiated connections, eBPF sock_ops sees the original flow, pre-NAT.
             // For remote-initiated connections, eBPF sees the reply flow, post-NAT.  Hence, we key
             // by both sides to allow for either lookup.
-            entry_cache.insert(new_entry.original, new_entry.reply);
-            entry_cache.insert(new_entry.reply, new_entry.original);
+            let orig_rc = Rc::new(new_entry.original);
+            let reply_rc = Rc::new(new_entry.reply);
+            entry_cache.insert(orig_rc.clone(), reply_rc.clone());
+            entry_cache.insert(reply_rc.clone(), orig_rc.clone());
         }
     }
 
@@ -130,7 +129,7 @@ impl NatResolverImpl {
     pub fn initialize() -> Self {
         Self {
             conntrack_listener: Box::new(ConntrackListener::initialize()),
-            conntrack_ringbuf: std::array::from_fn(|_i| HashMap::new()),
+            conntrack_ringbuf: std::array::from_fn(|_i| HashMap::with_capacity(4096)), // (2 + 8 + 8) * 4096 * RING_BUF_ENTRIES = ~0.22 MB upfront
             ringbuf_index: 0,
         }
     }
@@ -225,7 +224,7 @@ mod test {
     #[test]
     fn test_nat_resolver_aggregation() {
         // Mirror reflection means NAT was not applied.
-        let ct_entry1 = ConntrackEntry {
+        let ct_entry = ConntrackEntry {
             original: ConnectionProperties {
                 src_ip: IpAddr::from_str("1.2.3.4").unwrap(),
                 dst_ip: IpAddr::from_str("5.6.7.8").unwrap(),
@@ -234,29 +233,21 @@ mod test {
                 protocol: libc::IPPROTO_TCP as u8,
             },
             reply: ConnectionProperties {
-                src_ip: IpAddr::from_str("5.6.7.8").unwrap(),
+                src_ip: IpAddr::from_str("9.10.11.12").unwrap(),
                 dst_ip: IpAddr::from_str("1.2.3.4").unwrap(),
-                src_port: 5678,
+                src_port: 9876,
                 dst_port: 1234,
                 protocol: libc::IPPROTO_TCP as u8,
             },
         };
 
-        // Change some reply values to represent NAT.
-        let mut ct_entry2 = ct_entry1.clone();
-        ct_entry2.reply.src_ip = IpAddr::from_str("9.10.11.12").unwrap();
-        ct_entry2.reply.src_port = 9876;
-
         let conntrack_listener = ConntrackListenerSeeded {
-            pending_replies: VecDeque::from([vec![ct_entry1], vec![ct_entry2]]),
+            pending_replies: VecDeque::from([vec![ct_entry]]),
         };
         let mut nat_resolver = seeded_nat_resolver(conntrack_listener);
 
-        // After the first agg cycle, expect nothing cached.
-        nat_resolver.perform_aggregation_cycle();
-        assert_eq!(nat_resolver.num_entries(), 0);
-
-        // After the second agg cycle, expect a cache entry for each direction.
+        // Expect a cache entry for each direction.
+        // Each entry from conntrack listener fed to resolver is now always a NATed one
         nat_resolver.perform_aggregation_cycle();
         assert_eq!(nat_resolver.num_entries(), 2);
 

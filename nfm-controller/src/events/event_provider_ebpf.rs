@@ -97,7 +97,7 @@ fn calculate_ebpf_memory_usage(sock_props_max_entries: u64, sock_stats_max_entri
 
 impl<C: Clock> EventProvider for EventProviderEbpf<C> {
     // Aggregates results from the eBPF layer, and evicts closed sockets.
-    fn perform_aggregation_cycle(&mut self, nat_resolver: &Box<dyn NatResolver>) {
+    fn perform_aggregation_cycle(&mut self, nat_resolver: &mut Box<dyn NatResolver>) {
         debug!("Aggregating across sockets");
 
         // Apply adaptive sampling if we're receiving events faster than we can process.
@@ -143,6 +143,7 @@ impl<C: Clock> EventProvider for EventProviderEbpf<C> {
             .update_stats_and_get_deltas(&mut self.sock_stream, staleness_timestamp);
 
         // Apply beyond-NAT sock properties to any NAT'd sockets.
+        nat_resolver.perform_aggregation_cycle(); // call order matters. should be after reading bpf for higher accuracy
         let sock_nat_result = nat_resolver.store_beyond_nat_entries(&mut self.sock_cache);
 
         // Aggregate our delta stats into flows.
