@@ -131,7 +131,6 @@ jobs:
             comment += comparison + '\n\n';
 
             if (graphs.length > 0) {
-              comment += `Generated ${graphs.length} performance graphs.\n\n`;
               graphs.forEach(graph => {
                 const graphUrl = `https://raw.githubusercontent.com/${{ github.repository }}/gh-perf-images/perf-images/pr-${{ github.event.number }}/${graph}`;
                 comment += `![${graph}](${graphUrl})\n\n`;
