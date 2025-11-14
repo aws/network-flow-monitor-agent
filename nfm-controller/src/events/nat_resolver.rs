@@ -134,6 +134,18 @@ impl NatResolverImpl {
         }
     }
 
+    /// BPF side will report ipv4 addresses as ipv6 wrapped addresses if the applications are developed in dual-stack support in mind
+    /// and use wrapped format. i.e. ::ffff:192.168.1.1 rather than 192.168.1.1.
+    /// But Netlink side always reports IP addresses in non-wrapped format and we store them as is.
+    /// Thus stripping the pseudo ipv6 prefix in case it exists for ipv4 adresses, as this is the map query key.
+    fn ipv6_to_ipaddr(addr: &[u8; 16]) -> IpAddr {
+        if addr[..10] == [0; 10] && addr[10] == 0xff && addr[11] == 0xff {
+            IpAddr::from(Ipv4Addr::from([addr[12], addr[13], addr[14], addr[15]]))
+        } else {
+            IpAddr::from(Ipv6Addr::from(*addr))
+        }
+    }
+
     fn sock_context_to_egress_cxn_info(
         sock_context: &SockContext,
     ) -> Result<ConnectionProperties, String> {
@@ -143,8 +155,8 @@ impl NatResolverImpl {
                 IpAddr::from(Ipv4Addr::from_bits(sock_context.remote_ipv4)),
             ),
             libc::AF_INET6 => (
-                IpAddr::from(Ipv6Addr::from(sock_context.local_ipv6)),
-                IpAddr::from(Ipv6Addr::from(sock_context.remote_ipv6)),
+                Self::ipv6_to_ipaddr(&sock_context.local_ipv6),
+                Self::ipv6_to_ipaddr(&sock_context.remote_ipv6),
             ),
             _ => {
                 return Err(format!(
@@ -347,6 +359,30 @@ mod test {
         let expected_cxn_info = ConnectionProperties {
             src_ip: IpAddr::from_str("fe80::1979:4bff:febb:da61").unwrap(),
             dst_ip: IpAddr::from_str("fe80:2160::1997:4bff:febb:da61").unwrap(),
+            src_port: 99,
+            dst_port: 100,
+            protocol: libc::IPPROTO_TCP.try_into().unwrap(),
+        };
+        let actual_cxn_info = NatResolverImpl::sock_context_to_egress_cxn_info(&ctx).unwrap();
+        assert_eq!(actual_cxn_info, expected_cxn_info);
+    }
+
+    #[test]
+    fn test_sock_context_to_egress_cxn_info_pseudo_ipv6() {
+        let ctx = SockContext {
+            local_ipv4: 0,
+            remote_ipv4: 0,
+            local_ipv6: Ipv6Addr::from_str("::ffff:1.2.3.4").unwrap().octets(),
+            remote_ipv6: Ipv6Addr::from_str("::ffff:1.2.3.5").unwrap().octets(),
+            local_port: 99,
+            remote_port: 100,
+            address_family: libc::AF_INET6.try_into().unwrap(),
+            is_client: true,
+            ..Default::default()
+        };
+        let expected_cxn_info = ConnectionProperties {
+            src_ip: IpAddr::from_str("1.2.3.4").unwrap(),
+            dst_ip: IpAddr::from_str("1.2.3.5").unwrap(),
             src_port: 99,
             dst_port: 100,
             protocol: libc::IPPROTO_TCP.try_into().unwrap(),
