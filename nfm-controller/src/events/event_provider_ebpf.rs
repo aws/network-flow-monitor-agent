@@ -110,7 +110,7 @@ impl<C: Clock> EventProvider for EventProviderEbpf<C> {
         // Retrieve properties of newly initiated sockets.
         let mut new_cpu_sock_keys = HashSet::<CpuSockKey>::new();
         let now_us = self.clock.now_us();
-        let context_timestamp = now_us - self.notrack_us / 2;
+        let context_timestamp = now_us.saturating_sub(self.notrack_us / 2);
         let mut sock_add_result = SockOperationResult::default();
         for (cpu_sock_key, sock_context) in self.ebpf_sock_props.iter().flatten() {
             let result =
@@ -137,7 +137,7 @@ impl<C: Clock> EventProvider for EventProviderEbpf<C> {
             &self.sock_cache,
             &mut self.sock_stream,
         );
-        let staleness_timestamp = now_us - self.notrack_us;
+        let staleness_timestamp = now_us.saturating_sub(self.notrack_us);
         let sock_delta_result = self
             .sock_cache
             .update_stats_and_get_deltas(&mut self.sock_stream, staleness_timestamp);
