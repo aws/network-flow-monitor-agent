@@ -28,6 +28,7 @@ spec:
         {{- end }}
     spec:
       hostNetwork: true
+      hostPID: true
       containers:
         - name: {{ .Values.daemonSet.name }}
           image: {{ include "aws-network-flow-monitor-agent.image" . }}
