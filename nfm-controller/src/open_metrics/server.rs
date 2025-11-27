@@ -7,8 +7,9 @@
 //! in Prometheus format on the /metrics endpoint.
 
 use std::io::{Error, ErrorKind, Result};
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::rc::Rc;
+use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
@@ -53,11 +54,10 @@ impl OpenMetricsServerConfig {
         port: u16,
         k8s_metadata: Option<Arc<KubernetesMetadataCollector>>,
     ) -> Self {
-        let socket_addr = format!("{}:{}", addr, port)
-            .parse()
-            .expect("Invalid server address");
+        let ip = IpAddr::from_str(&addr)
+            .expect(&format!("Invalid OpenMetrics server address: {}", addr));
         Self {
-            addr: socket_addr,
+            addr: SocketAddr::new(ip, port),
             k8s_metadata,
         }
     }
