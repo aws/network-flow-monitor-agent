@@ -362,24 +362,22 @@ impl KubernetesMetadataCollector {
             let (mut local_pod_info, mut remote_pod_info) = (None, None);
 
             if agg_flow.flow.is_client_flow() {
-                // if this is a client flow, we can be sure of the remote end, but we can only be sure of the local only under the case
-                // when theres only one pod associated with the local IP
                 if let Some(local_port_map) = local_pod_port_map {
-                    if local_port_map.len() == 1 {
-                        // if there is only one pod associated with this IP we can be sure that this is the pod that is initiating the connection
-                        local_pod_info = local_port_map.values().next();
+                    if let Some(first_pod) = local_port_map.values().next() {
+                        if local_port_map.values().all(|p| p.name == first_pod.name) {
+                            local_pod_info = Some(first_pod);
+                        }
                     }
                 }
                 if let Some(remote_port_map) = remote_pod_port_map {
                     remote_pod_info = remote_port_map.get(&agg_flow.flow.remote_port.into());
                 }
             } else {
-                // if this is a server flow, we can be sure of the local end, but we can only be sure of the remote only under the case
-                // when theres only one pod associated with the remote IP
                 if let Some(remote_port_map) = remote_pod_port_map {
-                    if remote_port_map.len() == 1 {
-                        // if there is only one pod associated with this IP we can be sure that this is the pod that is initiating the connection
-                        remote_pod_info = remote_port_map.values().next();
+                    if let Some(first_pod) = remote_port_map.values().next() {
+                        if remote_port_map.values().all(|p| p.name == first_pod.name) {
+                            remote_pod_info = Some(first_pod);
+                        }
                     }
                 }
                 if let Some(local_port_map) = local_pod_port_map {
@@ -770,6 +768,66 @@ mod tests {
         assert_eq!(collector.enrich_flows(&mut flows), 1);
         assert_eq!(get_flow(flows[0].clone()).local.unwrap(), pod_info_local);
         assert_eq!(get_flow(flows[0].clone()).remote, None);
+    }
+
+    /**
+     * Test that when multiple ports belong to the same pod, we can still resolve it.
+     * Scenario 7: For a client flow, if local IP has multiple ports but all belong to same pod, resolve local pod.
+     * Scenario 8: For a server flow, if remote IP has multiple ports but all belong to same pod, resolve remote pod.
+     */
+    #[test]
+    fn test_enrich_flows_multiple_ports_same_pod() {
+        let mut collector = KubernetesMetadataCollector::new();
+        let pod_local = IpAddr::from_str("10.0.0.1").unwrap();
+        let pod_remote = IpAddr::from_str("10.0.0.2").unwrap();
+        let pod_info_local = create_pod_info("p-1", "ns-1", "s-1");
+        let pod_info_remote = create_pod_info("p-2", "ns-2", "s-2");
+
+        // Scenario 7: Client flow with multiple ports on local IP, all from same pod
+        let pod_info: HashMap<IpAddr, HashMap<i32, PodInfo>> = HashMap::from([
+            (
+                pod_local,
+                HashMap::from([
+                    (80, pod_info_local.clone()),
+                    (443, pod_info_local.clone()),
+                    (8080, pod_info_local.clone()),
+                ]),
+            ),
+            (pod_remote, HashMap::from([(6666, pod_info_remote.clone())])),
+        ]);
+        let mut flows: Vec<AggregateResults> = vec![create_agg_results(
+            0,
+            6666,
+            Some(pod_local),
+            Some(pod_remote),
+        )];
+        collector.pod_info_arc = Arc::new(Mutex::new(pod_info));
+        assert_eq!(collector.enrich_flows(&mut flows), 1);
+        assert_eq!(get_flow(flows[0].clone()).local.unwrap(), pod_info_local);
+        assert_eq!(get_flow(flows[0].clone()).remote.unwrap(), pod_info_remote);
+
+        // Scenario 8: Server flow with multiple ports on remote IP, all from same pod
+        let pod_info: HashMap<IpAddr, HashMap<i32, PodInfo>> = HashMap::from([
+            (pod_local, HashMap::from([(1111, pod_info_local.clone())])),
+            (
+                pod_remote,
+                HashMap::from([
+                    (80, pod_info_remote.clone()),
+                    (443, pod_info_remote.clone()),
+                    (8080, pod_info_remote.clone()),
+                ]),
+            ),
+        ]);
+        let mut flows: Vec<AggregateResults> = vec![create_agg_results(
+            1111,
+            0,
+            Some(pod_local),
+            Some(pod_remote),
+        )];
+        collector.pod_info_arc = Arc::new(Mutex::new(pod_info));
+        assert_eq!(collector.enrich_flows(&mut flows), 1);
+        assert_eq!(get_flow(flows[0].clone()).local.unwrap(), pod_info_local);
+        assert_eq!(get_flow(flows[0].clone()).remote.unwrap(), pod_info_remote);
     }
 
     fn adress_to_podname(address: IpAddr) -> String {
