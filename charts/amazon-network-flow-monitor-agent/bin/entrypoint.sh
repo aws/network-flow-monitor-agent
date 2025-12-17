@@ -12,14 +12,19 @@ cd /usr/local/bin
 
 # Get local region based on locally available EC2 metadata
 IMDS_TOKEN=`curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 600"`
-echo "Successfully retrieved IMDS Token $IMDS_TOKEN"
+echo "Successfully retrieved IMDS Token"
 region=`curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/placement/region`
 if [[ -z $region ]]; then
     echo -e "IMDSv2 failed, not running in an ec2 instance, exiting"
     exit 1
 fi
 
-endpoint="https://networkflowmonitorreports.$region.api.aws/publish"
+# Use custom endpoint if provided, otherwise use default
+if [[ -n "${CUSTOM_INGESTION_ENDPOINT:-}" ]]; then
+    endpoint="$CUSTOM_INGESTION_ENDPOINT"
+else
+    endpoint="https://networkflowmonitorreports.$region.api.aws/publish"
+fi
 
 # Configure OpenMetrics arguments
 OPEN_METRICS_ARGS=()
@@ -34,5 +39,5 @@ if [[ "${OPEN_METRICS:-}" == "on" ]]; then
 fi
 
 echo -e "Starting NetworkFlowMonitorAgent with:\n\tendpoint:${endpoint}\n\topen metrics config: ${OPEN_METRICS_ARGS[*]}"
-./nfm-agent --cgroup /mnt/cgroup-nfm-agent --endpoint-region ${region} --endpoint ${endpoint} -k on -n on "${OPEN_METRICS_ARGS[@]}"
+./nfm-agent --cgroup /mnt/cgroup-nfm-agent --endpoint-region "${region}" --endpoint "${endpoint}" -k on -n on "${OPEN_METRICS_ARGS[@]}"
 echo "Terminating NetworkFlowMonitorAgent"

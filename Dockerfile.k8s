@@ -4,7 +4,7 @@ FROM amazonlinux:2023
 RUN yum install -y util-linux
 
 # Agent dependencies
-RUN yum install -y iproute ethtool
+RUN yum install -y iproute ethtool procps
 
 # Copy local executable to image
 COPY ./target/release/network-flow-monitor-agent /usr/local/bin/nfm-agent

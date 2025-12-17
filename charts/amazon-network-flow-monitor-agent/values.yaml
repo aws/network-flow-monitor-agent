@@ -1,6 +1,6 @@
 image:
   override: '' # if defined, this value is used as the canonical image name ("{image_repo}{image_name}:{tag}")
-  tag: v1.1.1-eksbuild.1-rev1  # this is the default image tag. It might be overwritten at runtime
+  tag: v1.1.2-eksbuild.1  # this is the default image tag. It might be overwritten at runtime
   containerRegistry: '' # this gets overriden at runtime with the correct Docker Image Registry
   name: aws-network-sonar-agent # this determines the ecr folder to look for in the target ecr registry
 
@@ -22,7 +22,9 @@ additionalLabels: {}
 # Useful parameters that provide flexibility to customers
 podLabels: {}
 podAnnotations: {}
-tolerations: []
+tolerations:
+- operator: Exists # by default install everywhere, tolerate every taint
+
 
 # allow user to change the internal addon name labels
 nameOverride: ""
