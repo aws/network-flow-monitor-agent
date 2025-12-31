@@ -82,7 +82,7 @@ prost = "0.13"
 rand = "0.8"
 reqwest = { version = "0.12", features = [
     "blocking",
-    "rustls-tls",
+    "rustls-tls-native-roots"
 ], default-features = false }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

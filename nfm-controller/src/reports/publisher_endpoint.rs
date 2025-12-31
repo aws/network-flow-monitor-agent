@@ -187,7 +187,7 @@ where
         {
             Ok(res) => res,
             Err(e) => {
-                error!("Error sending request: {e}");
+                error!("Error sending request: {e:?}");
                 return false;
             }
         };
