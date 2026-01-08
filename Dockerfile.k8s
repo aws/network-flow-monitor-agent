@@ -9,8 +9,6 @@ RUN yum install -y iproute ethtool procps
 # Copy local executable to image
 COPY ./target/release/network-flow-monitor-agent /usr/local/bin/nfm-agent
 RUN chmod +x /usr/local/bin/nfm-agent
-# Add cap_sys_admin and cap_bpf, required for loading bpf without being root, dropped later within executable
-RUN setcap cap_sys_admin,cap_bpf=eip /usr/local/bin/nfm-agent
 
 COPY ./charts/amazon-network-flow-monitor-agent/bin/entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/entrypoint.sh
