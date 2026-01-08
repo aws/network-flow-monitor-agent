@@ -66,7 +66,7 @@ kube = { version = "0.99", features = [
 ], default-features = false }
 libc = "0.2"
 log = "0.4"
-lru = "0.12"
+lru = "0.16.3"
 netlink-packet-core = { version = "0.7" }
 netlink-packet-netfilter = { package = "reyzell-netlink-packet-netfilter", version = "0.2" }
 netlink-packet-utils = { version = "0.5" }
