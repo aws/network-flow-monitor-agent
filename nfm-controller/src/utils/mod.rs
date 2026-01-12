@@ -11,6 +11,7 @@ pub mod event_timer;
 pub mod host;
 pub mod memory_inspector;
 pub mod report;
+pub mod vpc_cidr_checker;
 
 #[cfg(test)]
 pub mod test_utils;
