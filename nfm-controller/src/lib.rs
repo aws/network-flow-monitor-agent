@@ -341,6 +341,9 @@ fn do_work(
             } else {
                 failed_reports_count += 1;
             }
+            if resolve_nat_event != UNKNOWN_EVENT {
+                info!("NAT resolution stats: {}", nat_resolver.stats_summary());
+            }
         } else if event_id == resolve_nat_event {
             nat_resolver.perform_aggregation_cycle();
         } else {
@@ -455,6 +458,9 @@ mod test {
         }
         fn num_entries(&self) -> usize {
             0
+        }
+        fn stats_summary(&self) -> String {
+            String::new()
         }
     }
 
@@ -595,6 +601,8 @@ mod test {
             };
         }
         assert!(false); // failure
+        assert_eq!(nat_resolver.num_entries(), 0);
+        assert_eq!(nat_resolver.stats_summary(), String::new());
     }
 
     #[test]

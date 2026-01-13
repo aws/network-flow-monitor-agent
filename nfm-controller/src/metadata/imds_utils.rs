@@ -36,7 +36,7 @@ pub(crate) fn get_runtime_executor() -> Option<RuntimeExecutor> {
     }
 }
 
-fn retrieve_imds_metadata(client: &aws_config::imds::Client, path: String) -> String {
+pub fn retrieve_imds_metadata(client: &aws_config::imds::Client, path: String) -> String {
     match get_runtime_executor() {
         Some(executor) => match executor.block_on(client.get(&path)) {
             Ok(instance_id) => instance_id.into(),

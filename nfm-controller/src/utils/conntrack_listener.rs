@@ -12,6 +12,8 @@ use netlink_sys::{constants::NETLINK_NETFILTER, Socket};
 use std::convert::TryFrom;
 use std::io::ErrorKind;
 
+use super::vpc_cidr_checker::VpcCidrChecker;
+
 // Each raw netlink datagram in socket consumes 1280 bytes.
 // Targeting to handle up to 100k new connections per second, we need a storage for 10k * 1280 = 12_800_000, i.e. 12.8MBytes (assuming 100msec agg period).
 // Cost of reading, parsing and storing each entry is around 4us (host variant), so 100k entries will cost 400ms per second (40% load for a single core)
@@ -24,11 +26,11 @@ pub struct ConntrackEntry {
 }
 
 pub trait ConnectionPropertiesHelpers {
-    fn is_inverse_of(&self, other: ConnectionProperties) -> bool;
+    fn is_inverse_of(&self, other: &ConnectionProperties) -> bool;
 }
 
 impl ConnectionPropertiesHelpers for ConnectionProperties {
-    fn is_inverse_of(&self, other: ConnectionProperties) -> bool {
+    fn is_inverse_of(&self, other: &ConnectionProperties) -> bool {
         self.src_ip == other.dst_ip
             && self.dst_ip == other.src_ip
             && self.src_port == other.dst_port
@@ -39,11 +41,20 @@ impl ConnectionPropertiesHelpers for ConnectionProperties {
 
 pub trait ConntrackProvider {
     fn get_new_entries(&mut self) -> Result<Vec<ConntrackEntry>, String>;
+    fn stats_summary(&self) -> String;
 }
 
 pub struct ConntrackListener {
     socket: Socket,
     rx_buf: Vec<u8>,
+    vpc_cidr_checker: VpcCidrChecker,
+
+    // stats
+    snat_overrides: u64,
+    snat_skips: u64,
+    non_nats: u64,
+    non_tcps: u64,
+    events: u64,
 }
 
 impl ConntrackListener {
@@ -76,7 +87,18 @@ impl ConntrackListener {
         socket.bind_auto().unwrap();
         socket.add_membership(NFNLGRP_CONNTRACK_NEW).unwrap();
 
-        Self { socket, rx_buf }
+        let vpc_cidr_checker = VpcCidrChecker::new();
+
+        Self {
+            socket,
+            rx_buf,
+            vpc_cidr_checker,
+            snat_overrides: 0,
+            non_nats: 0,
+            non_tcps: 0,
+            snat_skips: 0,
+            events: 0,
+        }
     }
 
     fn parse_connection_properties(
@@ -103,7 +125,14 @@ impl ConntrackListener {
                         }
                         ConnectionNla::TupleReply(tuple) => {
                             match ConnectionProperties::try_from(tuple) {
-                                Ok(cxn) => reply_opt = Some(cxn),
+                                Ok(cxn) => {
+                                    reply_opt = Some(cxn);
+                                    // in general, orig is placed first inside the packet, then reply.
+                                    // so if orig is already there by now (100% hit rate under normal operation), break eagerly and skipping extra parsing.
+                                    if orig_opt.is_some() {
+                                        break;
+                                    }
+                                }
                                 Err(e) => {
                                     return Err(format!(
                                         "Failed to extract reply connection properties: {e:?}",
@@ -121,6 +150,46 @@ impl ConntrackListener {
             (Some(orig), Some(reply)) => Ok((orig, reply)),
             _ => Err("Connection properties not found".to_string()),
         }
+    }
+
+    /// Decide whether to ignore the conntrack event or not.
+    /// Particularly we do not care when there is no NAT at all,
+    /// And also when theres only SNAT, but the original source is already a VPC CIDR IP.
+    /// When both SNAT and DNAT occur and original source is a VPC CIDR IP, we modify the reply to remove SNAT effects.
+    /// Returns true if we should accept this event.
+    fn filter_and_normalize_event(
+        &mut self,
+        original: &ConnectionProperties,
+        reply: &mut ConnectionProperties,
+    ) -> bool {
+        // NFM only operates on TCP. Ignore UDP falsely interfering with NAT logic.
+        if original.protocol != libc::IPPROTO_TCP as u8 {
+            self.non_tcps += 1;
+            return false;
+        }
+        if original.is_inverse_of(reply) {
+            // This is not a NAT-ed connection, ignore this event.
+            self.non_nats += 1;
+            return false;
+        }
+
+        let snat_occurred = original.src_ip != reply.dst_ip;
+        if snat_occurred && self.vpc_cidr_checker.is_vpc_ip(&original.src_ip) {
+            let dnat_occurred = original.dst_ip != reply.src_ip;
+            if dnat_occurred {
+                // If both SNAT and DNAT occurred, and source is VPC IP, remove SNAT effect
+                reply.dst_ip = original.src_ip;
+                reply.dst_port = original.src_port;
+                info!("NAT override {original:?} -> {reply:?}");
+                self.snat_overrides += 1;
+            } else {
+                // Skip if only SNAT occurred and source is VPC ENI IP
+                self.snat_skips += 1;
+                return false;
+            }
+        }
+
+        true
     }
 }
 
@@ -150,12 +219,10 @@ impl ConntrackProvider for ConntrackListener {
             };
 
             match Self::parse_connection_properties(msg) {
-                Ok((original, reply)) => {
-                    if original.is_inverse_of(reply) {
-                        // This is not a NAT-ed connection, ignore this event.
-                        continue;
+                Ok((original, mut reply)) => {
+                    if self.filter_and_normalize_event(&original, &mut reply) {
+                        events.push(ConntrackEntry { original, reply });
                     }
-                    events.push(ConntrackEntry { original, reply });
                 }
                 Err(_) => {
                     // The message was not a valid pair of 5-tuples.
@@ -163,15 +230,23 @@ impl ConntrackProvider for ConntrackListener {
                 }
             }
         }
+        self.events += events.len() as u64;
 
         Ok(events)
+    }
+
+    fn stats_summary(&self) -> String {
+        format!(
+            "events:{}, snat_overrides:{}, snat_skips:{}, non_nats:{}, non_tcps:{}",
+            self.events, self.snat_overrides, self.snat_skips, self.non_nats, self.non_tcps
+        )
     }
 }
 
 #[cfg(test)]
 mod test {
-    use crate::utils::conntrack_listener::ConnectionPropertiesHelpers;
-    use crate::utils::ConntrackListener;
+    use super::*;
+    use crate::utils::vpc_cidr_checker::VpcCidrChecker;
 
     use netlink_packet_core::NetlinkMessage;
     use netlink_packet_netfilter::{nfconntrack::nlas::ConnectionProperties, NetfilterMessage};
@@ -358,13 +433,13 @@ mod test {
             protocol: libc::IPPROTO_TCP as u8,
         };
 
-        assert!(reverse.is_inverse_of(actual));
-        assert!(actual.is_inverse_of(reverse));
+        assert!(reverse.is_inverse_of(&actual));
+        assert!(actual.is_inverse_of(&reverse));
 
         reverse.dst_port += 1;
 
-        assert!(!reverse.is_inverse_of(actual));
-        assert!(!actual.is_inverse_of(reverse));
+        assert!(!reverse.is_inverse_of(&actual));
+        assert!(!actual.is_inverse_of(&reverse));
     }
 
     #[test]
@@ -376,6 +451,7 @@ mod test {
         use std::time::Duration;
 
         let original_src = "99.99.99.99";
+        let original_src_udp = "99.99.99.100";
         let desired_dst = "11.11.11.11";
         let actual_dst = "5.5.5.5";
         let original_sport = 12345;
@@ -421,6 +497,38 @@ mod test {
             assert!(false);
         }
 
+        // add another with UDP. Check that it is ignored
+        let output = Command::new("conntrack")
+            .args(&[
+                "-I",
+                "-p",
+                "udp",
+                "-s",
+                original_src_udp,
+                "-d",
+                desired_dst,
+                "--sport",
+                &original_sport.to_string(),
+                "--dport",
+                &original_dport.to_string(),
+                "--reply-src",
+                actual_dst,
+                "--reply-dst",
+                original_src_udp,
+                "--reply-port-src",
+                &reply_sport.to_string(),
+                "--reply-port-dst",
+                &original_sport.to_string(),
+                "-t",
+                "120",
+            ])
+            .output();
+
+        if output.is_err() || !output.as_ref().unwrap().status.success() {
+            eprintln!("Failed to add conntrack entry. Make sure conntrack tool is installed and you have CAP_NET_ADMIN. Error: {output:?}");
+            assert!(false);
+        }
+
         // Give kernel time to generate the event
         thread::sleep(Duration::from_millis(100));
 
@@ -441,6 +549,22 @@ mod test {
                 &original_dport.to_string(),
                 "-p",
                 "tcp",
+            ])
+            .output()
+            .ok();
+        Command::new("conntrack")
+            .args(&[
+                "-D",
+                "-s",
+                original_src,
+                "-d",
+                desired_dst,
+                "--sport",
+                &original_sport.to_string(),
+                "--dport",
+                &original_dport.to_string(),
+                "-p",
+                "udp",
             ])
             .output()
             .ok();
@@ -468,6 +592,120 @@ mod test {
         let entry = entry.unwrap();
 
         // Verify it's not an inverse (NAT was applied)
-        assert!(!entry.original.is_inverse_of(entry.reply));
+        assert!(!entry.original.is_inverse_of(&entry.reply));
+
+        // check that udp entry is not there
+        let entry = entries.iter().find(|e| {
+            e.original.src_ip == IpAddr::from_str(original_src_udp).unwrap()
+                && e.original.dst_ip == IpAddr::from_str(desired_dst).unwrap()
+                && e.original.src_port == original_sport
+                && e.original.dst_port == original_dport
+                && e.original.protocol == libc::IPPROTO_UDP as u8
+                && e.reply.src_ip == IpAddr::from_str(actual_dst).unwrap()
+                && e.reply.dst_ip == IpAddr::from_str(original_src_udp).unwrap()
+                && e.reply.src_port == reply_sport
+                && e.reply.dst_port == original_sport
+                && e.reply.protocol == libc::IPPROTO_UDP as u8
+        });
+        assert!(
+            entry.is_none(),
+            "Should NOT have found the inserted UDP NAT entry"
+        );
+    }
+
+    #[test]
+    fn test_process_conntrack_event_snat_and_dnat_with_vpc_ip() {
+        let vpc_cidr_checker = VpcCidrChecker {
+            vpc_cidrs_v4: vec![(0x0a000000, 0xff000000)], // 10.0.0.0/8
+            vpc_cidrs_v6: vec![],
+        };
+        let mut listener = ConntrackListener {
+            socket: Socket::new(NETLINK_NETFILTER).unwrap(),
+            rx_buf: vec![],
+            vpc_cidr_checker,
+            snat_overrides: 0,
+            non_nats: 0,
+            non_tcps: 0,
+            snat_skips: 0,
+            events: 0,
+        };
+
+        let orig_src = "10.0.1.5";
+
+        // Only SNAT: dst unchanged, src changed, source is VPC IP -> should skip
+        let original = ConnectionProperties {
+            src_ip: IpAddr::from_str(orig_src).unwrap(),
+            dst_ip: IpAddr::from_str("8.8.8.8").unwrap(),
+            src_port: 5000,
+            dst_port: 443,
+            protocol: libc::IPPROTO_TCP as u8,
+        };
+        let mut reply = ConnectionProperties {
+            src_ip: IpAddr::from_str("8.8.8.8").unwrap(),
+            dst_ip: IpAddr::from_str("1.2.3.4").unwrap(), // SNAT applied
+            src_port: 443,
+            dst_port: 6000,
+            protocol: libc::IPPROTO_TCP as u8,
+        };
+        assert_eq!(
+            listener.filter_and_normalize_event(&original, &mut reply),
+            false
+        );
+
+        // Only SNAT but source is NOT VPC IP -> should not skip
+        let original_non_vpc = ConnectionProperties {
+            src_ip: IpAddr::from_str("192.168.1.5").unwrap(),
+            dst_ip: IpAddr::from_str("8.8.8.8").unwrap(),
+            src_port: 5000,
+            dst_port: 443,
+            protocol: libc::IPPROTO_TCP as u8,
+        };
+        assert_eq!(
+            listener.filter_and_normalize_event(&original_non_vpc, &mut reply),
+            true
+        );
+
+        // Both SNAT and DNAT with VPC IP -> should accept with SNAT removed
+        let original_both = ConnectionProperties {
+            src_ip: IpAddr::from_str(orig_src).unwrap(),
+            dst_ip: IpAddr::from_str("10.0.2.100").unwrap(), // ClusterIP
+            src_port: 5000,
+            dst_port: 80,
+            protocol: libc::IPPROTO_TCP as u8,
+        };
+        let mut reply_both = ConnectionProperties {
+            src_ip: IpAddr::from_str("192.168.10.10").unwrap(), // DNAT: actual pod IP
+            dst_ip: IpAddr::from_str("1.2.3.4").unwrap(),       // SNAT: external IP
+            src_port: 8080,
+            dst_port: 6000,
+            protocol: libc::IPPROTO_TCP as u8,
+        };
+        listener.filter_and_normalize_event(&original_both, &mut reply_both);
+        // SNAT should be removed: reply.dst should be original.src
+        assert_eq!(reply_both.dst_ip, IpAddr::from_str(orig_src).unwrap());
+        assert_eq!(reply_both.dst_port, 5000);
+        // DNAT should be preserved
+        assert_eq!(
+            reply_both.src_ip,
+            IpAddr::from_str("192.168.10.10").unwrap()
+        );
+        assert_eq!(reply_both.src_port, 8080);
+
+        // DNAT only (no SNAT) -> should accept without touching
+        let reply_dnat = ConnectionProperties {
+            src_ip: IpAddr::from_str("10.1.1.1").unwrap(), // DNAT: dst changed
+            dst_ip: IpAddr::from_str(orig_src).unwrap(),   // No SNAT
+            src_port: 443,
+            dst_port: 5000,
+            protocol: libc::IPPROTO_TCP as u8,
+        };
+        let mut reply_dnat_clone = reply_dnat.clone();
+        listener.filter_and_normalize_event(&original, &mut reply_dnat_clone);
+        assert_eq!(reply_dnat_clone, reply_dnat);
+
+        assert_eq!(
+            listener.stats_summary(),
+            "events:0, snat_overrides:1, snat_skips:1, non_nats:0, non_tcps:0"
+        );
     }
 }

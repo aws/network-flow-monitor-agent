@@ -1,12 +1,7 @@
-FROM amazonlinux:2023
+FROM public.ecr.aws/amazonlinux/amazonlinux:2023-minimal
 
-# To install mount command
-RUN yum install -y util-linux
+RUN microdnf install -y util-linux iproute ethtool procps-ng && microdnf clean all
 
-# Agent dependencies
-RUN yum install -y iproute ethtool procps
-
-# Copy local executable to image
 COPY ./target/release/network-flow-monitor-agent /usr/local/bin/nfm-agent
 RUN chmod +x /usr/local/bin/nfm-agent
 

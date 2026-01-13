@@ -24,6 +24,7 @@ pub trait NatResolver {
     fn get_beyond_nat_entry(&self, sock_context: &SockContext) -> Option<SockContext>;
     fn store_beyond_nat_entries(&self, sock_cache: &mut SockCache) -> SockOperationResult;
     fn num_entries(&self) -> usize;
+    fn stats_summary(&self) -> String;
 }
 
 #[derive(Clone, Default)]
@@ -44,6 +45,9 @@ impl NatResolver for NatResolverNoOp {
 
     fn num_entries(&self) -> usize {
         0
+    }
+    fn stats_summary(&self) -> String {
+        String::new()
     }
 }
 
@@ -122,6 +126,10 @@ impl NatResolver for NatResolverImpl {
         }
 
         result
+    }
+
+    fn stats_summary(&self) -> String {
+        self.conntrack_listener.stats_summary()
     }
 }
 
@@ -222,6 +230,9 @@ mod test {
     impl ConntrackProvider for ConntrackListenerSeeded {
         fn get_new_entries(&mut self) -> Result<Vec<ConntrackEntry>, String> {
             Ok(self.pending_replies.pop_front().unwrap())
+        }
+        fn stats_summary(&self) -> String {
+            String::new()
         }
     }
 
