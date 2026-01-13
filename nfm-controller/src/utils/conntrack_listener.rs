@@ -180,7 +180,6 @@ impl ConntrackListener {
                 // If both SNAT and DNAT occurred, and source is VPC IP, remove SNAT effect
                 reply.dst_ip = original.src_ip;
                 reply.dst_port = original.src_port;
-                info!("NAT override {original:?} -> {reply:?}");
                 self.snat_overrides += 1;
             } else {
                 // Skip if only SNAT occurred and source is VPC ENI IP
