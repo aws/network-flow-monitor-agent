@@ -38,6 +38,11 @@ if [[ "${OPEN_METRICS:-}" == "on" ]]; then
     fi
 fi
 
-echo -e "Starting NetworkFlowMonitorAgent with:\n\tendpoint:${endpoint}\n\topen metrics config: ${OPEN_METRICS_ARGS[*]}"
-./nfm-agent --cgroup /mnt/cgroup-nfm-agent --endpoint-region "${region}" --endpoint "${endpoint}" -k on -n on "${OPEN_METRICS_ARGS[@]}"
+PUBLISHING_ARGS=()
+if [[ "${DISABLE_PUBLISHING:-false}" == "true" ]]; then
+    PUBLISHING_ARGS+=("-p" "off")
+fi
+
+echo -e "Starting NetworkFlowMonitorAgent with:\n\tendpoint:${endpoint}\n\topen metrics config: ${OPEN_METRICS_ARGS[*]}\n\tpublishing: ${DISABLE_PUBLISHING:-false}"
+./nfm-agent --cgroup /mnt/cgroup-nfm-agent --endpoint-region "${region}" --endpoint "${endpoint}" -k on -n on "${OPEN_METRICS_ARGS[@]}" "${PUBLISHING_ARGS[@]}"
 echo "Terminating NetworkFlowMonitorAgent"

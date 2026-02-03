@@ -25,12 +25,15 @@ podAnnotations: {}
 tolerations:
 - operator: Exists # by default install everywhere, tolerate every taint
 
-
 # allow user to change the internal addon name labels
 nameOverride: ""
 
 env:
   RUST_LOG: info
+  OPEN_METRICS: "off"
+  OPEN_METRICS_PORT: "9109"
+  OPEN_METRICS_ADDRESS: "0.0.0.0"
+  # DISABLE_PUBLISHING: "true"
 
 resources:
   limits:

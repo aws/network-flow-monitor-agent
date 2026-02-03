@@ -35,6 +35,12 @@ spec:
           securityContext:
             privileged: true
           resources: {{ toYaml .Values.resources | nindent 12 }}
+          {{- if eq .Values.env.OPEN_METRICS "on" }}
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.env.OPEN_METRICS_PORT | int }}
+              protocol: TCP
+          {{- end }}
           env:
             {{- range $key, $value := .Values.env }}
             - name: {{ $key }}
