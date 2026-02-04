@@ -1,0 +1,7 @@
+target/*
+!target/release/
+.git/
+.github/
+*.tar
+*.tgz
+oci.tar

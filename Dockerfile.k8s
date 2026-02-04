@@ -1,10 +1,16 @@
+FROM rust:1.93 AS builder
+WORKDIR /build
+
+# Install bpf-linker
+RUN cargo install bpf-linker
+
+COPY . .
+RUN cargo build --release --features open-metrics
+
 FROM public.ecr.aws/amazonlinux/amazonlinux:2023-minimal
-
 RUN microdnf install -y util-linux iproute ethtool procps-ng && microdnf clean all
-
-COPY ./target/release/network-flow-monitor-agent /usr/local/bin/nfm-agent
+COPY --from=builder /build/target/release/network-flow-monitor-agent /usr/local/bin/nfm-agent
 RUN chmod +x /usr/local/bin/nfm-agent
-
 COPY ./charts/amazon-network-flow-monitor-agent/bin/entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/entrypoint.sh
 ENTRYPOINT ["/bin/sh", "/usr/local/bin/entrypoint.sh"]
