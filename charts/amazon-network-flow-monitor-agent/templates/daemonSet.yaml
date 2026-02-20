@@ -59,6 +59,28 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            {{- if .Values.caCerts.enabled }}
+            - name: AWS_CA_BUNDLE
+              value: {{ .Values.caCerts.mountPath }}/{{ .Values.caCerts.fileName }}
+            - name: SSL_CERT_FILE
+              value: {{ .Values.caCerts.mountPath }}/{{ .Values.caCerts.fileName }}
+            {{- end }}
+          {{- if .Values.caCerts.enabled }}
+          volumeMounts:
+            - name: ca-bundle
+              mountPath: {{ .Values.caCerts.mountPath }}/{{ .Values.caCerts.fileName }}
+              subPath: {{ .Values.caCerts.fileName }}
+              readOnly: true
+          {{- end }}
+      {{- if .Values.caCerts.enabled }}
+      volumes:
+        - name: ca-bundle
+          secret:
+            secretName: {{ .Values.caCerts.secretName }}
+            items:
+              - key: {{ .Values.caCerts.secretKey }}
+                path: {{ .Values.caCerts.fileName }}
+      {{- end }}
       nodeSelector:
         kubernetes.io/os: linux
       terminationGracePeriodSeconds: 5

@@ -17,7 +17,7 @@ netns-rs = "0.1.0"
 env_logger = "0.10"
 log = { version = "0.4", features = ["kv", "kv_serde"] }
 clap = { version = "4.1", features = ["derive"] }
-rand = "*"
+rand = "0.10.0"
 serde = { version = "*", features = ["derive"] }
 serde_json = "*"
 
