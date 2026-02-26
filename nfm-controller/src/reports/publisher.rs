@@ -240,6 +240,8 @@ mod tests {
             open_metrics: OnOff::Off,
             open_metrics_port: 0,
             open_metrics_address: "127.0.0.1".to_string(),
+            prometheus_workspace_id: "".to_string(),
+            prometheus_region: "".to_string(),
         }
     }
 
