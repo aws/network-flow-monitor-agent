@@ -7,7 +7,7 @@
 use prost::Message;
 
 #[derive(Clone, PartialEq, Message)]
-pub struct WriteRequest {
+pub struct RemoteWriteV1 {
     #[prost(message, repeated, tag = "1")]
     pub timeseries: Vec<TimeSeries>,
 }

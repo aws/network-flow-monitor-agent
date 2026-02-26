@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::metadata::eni::KEY_INSTANCE_ID;
-use crate::reports::prometheus_remote_write_proto::{Label, Sample, TimeSeries, WriteRequest};
+use crate::reports::prometheus_remote_write_proto::{Label, RemoteWriteV1, Sample, TimeSeries};
 use crate::reports::report::{NfmReport, ReportValue};
 use crate::utils::{timespec_to_nsec, Clock};
 use crate::ReportPublisher;
@@ -15,7 +15,7 @@ use tokio::time::Duration;
 
 const APS_SERVICE: &str = "aps";
 
-pub struct ReportPublisherPrometheusRemoteWrite<P, C>
+pub struct ReportPublisherAmazonManagedPrometheus<P, C>
 where
     P: ProvideCredentials,
     C: Clock,
@@ -27,7 +27,7 @@ where
     clock: C,
 }
 
-impl<P, C> ReportPublisherPrometheusRemoteWrite<P, C>
+impl<P, C> ReportPublisherAmazonManagedPrometheus<P, C>
 where
     P: ProvideCredentials,
     C: Clock,
@@ -46,7 +46,7 @@ where
             builder = builder.proxy(proxy_instance);
         }
 
-        ReportPublisherPrometheusRemoteWrite {
+        ReportPublisherAmazonManagedPrometheus {
             client: builder.build().unwrap(),
             endpoint,
             region,
@@ -180,19 +180,20 @@ where
                 _ => None,
             })
             .unwrap_or_else(|| String::new());
+
         let timeseries = self.convert_to_timeseries(report, instance_id);
-        let write_request = WriteRequest { timeseries };
+        let write_request = RemoteWriteV1 { timeseries };
 
         // Encode as protobuf
         let mut buf = Vec::new();
         write_request.encode(&mut buf).unwrap();
 
-        // Snappy compress (block format, same as golang snappy.Encode)
+        // Snappy compress (block format)
         snap::raw::Encoder::new().compress_vec(&buf).unwrap()
     }
 }
 
-impl<P, C> ReportPublisher for ReportPublisherPrometheusRemoteWrite<P, C>
+impl<P, C> ReportPublisher for ReportPublisherAmazonManagedPrometheus<P, C>
 where
     P: ProvideCredentials,
     C: Clock,
@@ -273,7 +274,7 @@ where
 
         // Check response
         let status = res.status().as_u16();
-        info!(status = status; "HTTP request complete");
+        info!(status = status; "Prometheus HTTP request complete");
         if status != 200 && status != 204 {
             warn!(body = res.text().unwrap_or("Invalid body".to_string()); "Request body");
             return false;
@@ -298,7 +299,7 @@ mod tests {
     #[test]
     fn test_snappy_compression() {
         // Create a simple WriteRequest with one timeseries
-        let write_request = WriteRequest {
+        let write_request = RemoteWriteV1 {
             timeseries: vec![TimeSeries {
                 labels: vec![
                     Label {
@@ -354,7 +355,7 @@ mod tests {
             node_name: Some(ReportValue::String("test-node".to_string())),
         };
 
-        let publisher = ReportPublisherPrometheusRemoteWrite {
+        let publisher = ReportPublisherAmazonManagedPrometheus {
             client: Client::new(),
             endpoint: "http://localhost:9090".to_string(),
             region: "us-east-1".to_string(),

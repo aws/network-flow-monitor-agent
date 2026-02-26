@@ -9,7 +9,7 @@ use crate::{
 use log::info;
 
 pub use super::publisher_endpoint::ReportPublisherOTLP;
-pub use super::publisher_prometheus_remote_write::ReportPublisherPrometheusRemoteWrite;
+pub use super::publisher_prometheus_remote_write::ReportPublisherAmazonManagedPrometheus;
 
 pub trait ReportPublisher {
     /// Publish a report and return true if it was successful.
@@ -89,13 +89,15 @@ impl MultiPublisher {
                 region, opt.prometheus_workspace_id
             );
 
-            publisher_builder.with_publisher(Box::new(ReportPublisherPrometheusRemoteWrite::new(
-                prometheus_endpoint,
-                region,
-                get_credentials_provider(),
-                RealTimeClock {},
-                opt.proxy.clone(),
-            )));
+            publisher_builder.with_publisher(Box::new(
+                ReportPublisherAmazonManagedPrometheus::new(
+                    prometheus_endpoint,
+                    region,
+                    get_credentials_provider(),
+                    RealTimeClock {},
+                    opt.proxy.clone(),
+                ),
+            ));
         };
         publisher_builder.build()
     }
