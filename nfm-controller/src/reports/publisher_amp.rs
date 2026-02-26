@@ -340,7 +340,6 @@ mod tests {
             .decompress_vec(&compressed)
             .unwrap();
         assert_eq!(buf, decompressed);
-        println!("✓ Compression/decompression works correctly");
     }
 
     #[test]
@@ -370,7 +369,5 @@ mod tests {
 
         // Should have no timeseries since report has no network stats
         assert_eq!(timeseries.len(), 0);
-
-        println!("✓ K8s metadata labels test passed");
     }
 }
