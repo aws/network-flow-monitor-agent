@@ -292,6 +292,15 @@ fn add_label(labels: &mut Vec<Label>, name: &str, value: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::events::network_event::{AggregateResults, FlowProperties, NetworkStats};
+    use crate::kubernetes::flow_metadata::FlowMetadata;
+    use crate::kubernetes::kubernetes_metadata_collector::PodInfo;
+    use crate::metadata::k8s_metadata::K8sMetadata;
+    use crate::reports::report::{NfmReport, ReportValue};
+    use crate::utils::clock::FakeClock;
+    use aws_credential_types::provider::SharedCredentialsProvider;
+    use aws_credential_types::Credentials;
+    use nfm_common::network::SockContext;
 
     #[test]
     fn test_snappy_compression() {
@@ -339,31 +348,511 @@ mod tests {
     }
 
     #[test]
-    fn test_k8s_labels_added() {
-        use crate::metadata::k8s_metadata::K8sMetadata;
-        use crate::reports::report::{NfmReport, ReportValue};
-        use crate::utils::clock::RealTimeClock;
+    fn test_new_without_proxy() {
+        let creds = Credentials::new("AKID", "SECRET", Some("TOKEN".into()), None, "test");
+        let provider = SharedCredentialsProvider::new(creds);
+        let clock = FakeClock { now_us: 1000000 };
 
-        // Create report with K8s metadata
+        let publisher = ReportPublisherAmazonManagedPrometheus::new(
+            "https://aps-workspaces.us-east-1.amazonaws.com/workspaces/ws-123/api/v1/remote_write"
+                .to_string(),
+            "us-east-1".to_string(),
+            provider,
+            clock,
+            "".to_string(),
+        );
+
+        assert_eq!(
+            publisher.endpoint,
+            "https://aps-workspaces.us-east-1.amazonaws.com/workspaces/ws-123/api/v1/remote_write"
+        );
+        assert_eq!(publisher.region, "us-east-1");
+    }
+
+    #[test]
+    fn test_new_with_proxy() {
+        let creds = Credentials::new("AKID", "SECRET", Some("TOKEN".into()), None, "test");
+        let provider = SharedCredentialsProvider::new(creds);
+        let clock = FakeClock { now_us: 1000000 };
+
+        let publisher = ReportPublisherAmazonManagedPrometheus::new(
+            "https://aps-workspaces.us-east-1.amazonaws.com/workspaces/ws-123/api/v1/remote_write"
+                .to_string(),
+            "us-east-1".to_string(),
+            provider,
+            clock,
+            "http://proxy.example.com:8080".to_string(),
+        );
+
+        assert_eq!(
+            publisher.endpoint,
+            "https://aps-workspaces.us-east-1.amazonaws.com/workspaces/ws-123/api/v1/remote_write"
+        );
+        assert_eq!(publisher.region, "us-east-1");
+    }
+
+    #[test]
+    fn test_convert_to_timeseries_empty_report() {
+        let creds = Credentials::new("AKID", "SECRET", Some("TOKEN".into()), None, "test");
+        let provider = SharedCredentialsProvider::new(creds);
+        let clock = FakeClock {
+            now_us: 1718716821050,
+        };
+
+        let publisher = ReportPublisherAmazonManagedPrometheus::new(
+            "https://aps-workspaces.us-east-1.amazonaws.com/workspaces/ws-123/api/v1/remote_write"
+                .to_string(),
+            "us-east-1".to_string(),
+            provider,
+            clock,
+            "".to_string(),
+        );
+
+        let report = NfmReport::new();
+        let timeseries =
+            publisher.convert_to_timeseries(&report, "i-1234567890abcdef0".to_string());
+
+        // Should have no timeseries since report has no network stats
+        assert_eq!(timeseries.len(), 0);
+    }
+
+    #[test]
+    fn test_convert_to_timeseries_with_flow() {
+        let creds = Credentials::new("AKID", "SECRET", Some("TOKEN".into()), None, "test");
+        let provider = SharedCredentialsProvider::new(creds);
+        let clock = FakeClock {
+            now_us: 1718716821050,
+        };
+
+        let publisher = ReportPublisherAmazonManagedPrometheus::new(
+            "https://aps-workspaces.us-east-1.amazonaws.com/workspaces/ws-123/api/v1/remote_write"
+                .to_string(),
+            "us-east-1".to_string(),
+            provider,
+            clock,
+            "".to_string(),
+        );
+
+        let mut report = NfmReport::new();
+        let context = SockContext {
+            is_client: false,
+            address_family: libc::AF_INET as u32,
+            local_ipv4: 16909060,
+            remote_ipv4: 84281096,
+            local_ipv6: [0; 16],
+            remote_ipv6: [0; 16],
+            local_port: 443,
+            remote_port: 28015,
+            ..Default::default()
+        };
+
+        let stats = NetworkStats {
+            bytes_received: 1000,
+            bytes_delivered: 2000,
+            segments_received: 10,
+            segments_delivered: 20,
+            retrans_syn: 1,
+            retrans_est: 2,
+            rtos_syn: 0,
+            rtos_est: 1,
+            sockets_established: 5,
+            sockets_completed: 3,
+            ..Default::default()
+        };
+
+        report.set_network_stats(vec![AggregateResults {
+            flow: FlowProperties::try_from(&context).unwrap(),
+            stats,
+        }]);
+
+        let timeseries =
+            publisher.convert_to_timeseries(&report, "i-1234567890abcdef0".to_string());
+
+        // Should have 10 metrics per flow
+        assert_eq!(timeseries.len(), 10);
+
+        // Verify metric names
+        let metric_names: Vec<String> = timeseries
+            .iter()
+            .map(|ts| {
+                ts.labels
+                    .iter()
+                    .find(|l| l.name == "__name__")
+                    .unwrap()
+                    .value
+                    .clone()
+            })
+            .collect();
+
+        assert!(metric_names.contains(&"nfm_bytes_received".to_string()));
+        assert!(metric_names.contains(&"nfm_bytes_delivered".to_string()));
+        assert!(metric_names.contains(&"nfm_segments_received".to_string()));
+        assert!(metric_names.contains(&"nfm_segments_delivered".to_string()));
+        assert!(metric_names.contains(&"nfm_retrans_syn".to_string()));
+        assert!(metric_names.contains(&"nfm_retrans_est".to_string()));
+        assert!(metric_names.contains(&"nfm_rtos_syn".to_string()));
+        assert!(metric_names.contains(&"nfm_rtos_est".to_string()));
+        assert!(metric_names.contains(&"nfm_sockets_established".to_string()));
+        assert!(metric_names.contains(&"nfm_sockets_completed".to_string()));
+
+        // Verify labels are present
+        let first_ts = &timeseries[0];
+        let label_names: Vec<String> = first_ts.labels.iter().map(|l| l.name.clone()).collect();
+        assert!(label_names.contains(&"protocol".to_string()));
+        assert!(label_names.contains(&"local_address".to_string()));
+        assert!(label_names.contains(&"remote_address".to_string()));
+        assert!(label_names.contains(&"local_port".to_string()));
+        assert!(label_names.contains(&"remote_port".to_string()));
+        assert!(label_names.contains(&"instance_id".to_string()));
+
+        // Verify timestamp
+        // FakeClock with now_us=1718716821050 microseconds converts to:
+        // tv_sec=1718716, tv_nsec=821050000
+        // timespec_to_nsec: 1718716 * 1e9 + 821050000 = 1718716821050000 ns
+        // divide by 1e6 for ms: 1718716821050 ms
+        assert!(first_ts.samples[0].timestamp > 0);
+    }
+
+    #[test]
+    fn test_convert_to_timeseries_with_k8s_metadata() {
+        let creds = Credentials::new("AKID", "SECRET", Some("TOKEN".into()), None, "test");
+        let provider = SharedCredentialsProvider::new(creds);
+        let clock = FakeClock {
+            now_us: 1718716821050,
+        };
+
+        let publisher = ReportPublisherAmazonManagedPrometheus::new(
+            "https://aps-workspaces.us-east-1.amazonaws.com/workspaces/ws-123/api/v1/remote_write"
+                .to_string(),
+            "us-east-1".to_string(),
+            provider,
+            clock,
+            "".to_string(),
+        );
+
         let mut report = NfmReport::new();
         report.k8s_metadata = K8sMetadata {
             cluster_name: Some(ReportValue::String("test-cluster".to_string())),
             node_name: Some(ReportValue::String("test-node".to_string())),
         };
 
-        let publisher = ReportPublisherAmazonManagedPrometheus {
-            client: Client::new(),
-            endpoint: "http://localhost:9090".to_string(),
-            region: "us-east-1".to_string(),
-            credentials_provider: aws_credential_types::Credentials::new(
-                "test", "test", None, None, "test",
-            ),
-            clock: RealTimeClock,
+        let context = SockContext {
+            is_client: false,
+            address_family: libc::AF_INET as u32,
+            local_ipv4: 16909060,
+            remote_ipv4: 84281096,
+            local_ipv6: [0; 16],
+            remote_ipv6: [0; 16],
+            local_port: 443,
+            remote_port: 28015,
+            ..Default::default()
         };
 
-        let timeseries = publisher.convert_to_timeseries(&report, "instance-id".to_string());
+        let stats = NetworkStats {
+            bytes_received: 1000,
+            ..Default::default()
+        };
 
-        // Should have no timeseries since report has no network stats
-        assert_eq!(timeseries.len(), 0);
+        let mut flow = FlowProperties::try_from(&context).unwrap();
+        flow.kubernetes_metadata = Some(FlowMetadata {
+            local: Some(PodInfo {
+                name: "nginx-pod".to_string(),
+                namespace: "default".to_string(),
+                service_name: "nginx-service".to_string(),
+            }),
+            remote: Some(PodInfo {
+                name: "backend-pod".to_string(),
+                namespace: "backend".to_string(),
+                service_name: "backend-service".to_string(),
+            }),
+        });
+
+        report.set_network_stats(vec![AggregateResults { flow, stats }]);
+
+        let timeseries =
+            publisher.convert_to_timeseries(&report, "i-1234567890abcdef0".to_string());
+
+        assert_eq!(timeseries.len(), 10);
+
+        // Verify K8s labels are present
+        let first_ts = &timeseries[0];
+        let label_names: Vec<String> = first_ts.labels.iter().map(|l| l.name.clone()).collect();
+        assert!(label_names.contains(&"k8s_cluster".to_string()));
+        assert!(label_names.contains(&"k8s_node".to_string()));
+        assert!(label_names.contains(&"local_pod".to_string()));
+        assert!(label_names.contains(&"local_namespace".to_string()));
+        assert!(label_names.contains(&"local_service".to_string()));
+        assert!(label_names.contains(&"remote_pod".to_string()));
+        assert!(label_names.contains(&"remote_namespace".to_string()));
+        assert!(label_names.contains(&"remote_service".to_string()));
+
+        // Verify label values
+        let k8s_cluster = first_ts
+            .labels
+            .iter()
+            .find(|l| l.name == "k8s_cluster")
+            .unwrap();
+        assert_eq!(k8s_cluster.value, "test-cluster");
+
+        let local_pod = first_ts
+            .labels
+            .iter()
+            .find(|l| l.name == "local_pod")
+            .unwrap();
+        assert_eq!(local_pod.value, "nginx-pod");
+    }
+
+    #[test]
+    fn test_build_request_body() {
+        let creds = Credentials::new("AKID", "SECRET", Some("TOKEN".into()), None, "test");
+        let provider = SharedCredentialsProvider::new(creds);
+        let clock = FakeClock {
+            now_us: 1718716821050,
+        };
+
+        let publisher = ReportPublisherAmazonManagedPrometheus::new(
+            "https://aps-workspaces.us-east-1.amazonaws.com/workspaces/ws-123/api/v1/remote_write"
+                .to_string(),
+            "us-east-1".to_string(),
+            provider,
+            clock,
+            "".to_string(),
+        );
+
+        let mut report = NfmReport::new();
+        report
+            .env_metadata
+            .insert("instance_id".into(), ReportValue::String("i-test".into()));
+
+        let context = SockContext {
+            is_client: false,
+            address_family: libc::AF_INET as u32,
+            local_ipv4: 16909060,
+            remote_ipv4: 84281096,
+            local_ipv6: [0; 16],
+            remote_ipv6: [0; 16],
+            local_port: 443,
+            remote_port: 28015,
+            ..Default::default()
+        };
+
+        let stats = NetworkStats {
+            bytes_received: 1000,
+            ..Default::default()
+        };
+
+        report.set_network_stats(vec![AggregateResults {
+            flow: FlowProperties::try_from(&context).unwrap(),
+            stats,
+        }]);
+
+        let body = publisher.build_request_body(&report);
+
+        // Body should be compressed
+        assert!(!body.is_empty());
+
+        // Decompress and verify it's valid protobuf
+        let decompressed = snap::raw::Decoder::new().decompress_vec(&body).unwrap();
+        let decoded = RemoteWriteV1::decode(decompressed.as_slice()).unwrap();
+
+        // Should have 10 timeseries (one per metric)
+        assert_eq!(decoded.timeseries.len(), 10);
+    }
+
+    #[test]
+    fn test_build_request_body_without_instance_id() {
+        let creds = Credentials::new("AKID", "SECRET", Some("TOKEN".into()), None, "test");
+        let provider = SharedCredentialsProvider::new(creds);
+        let clock = FakeClock {
+            now_us: 1718716821050,
+        };
+
+        let publisher = ReportPublisherAmazonManagedPrometheus::new(
+            "https://aps-workspaces.us-east-1.amazonaws.com/workspaces/ws-123/api/v1/remote_write"
+                .to_string(),
+            "us-east-1".to_string(),
+            provider,
+            clock,
+            "".to_string(),
+        );
+
+        let mut report = NfmReport::new();
+
+        let context = SockContext {
+            is_client: false,
+            address_family: libc::AF_INET as u32,
+            local_ipv4: 16909060,
+            remote_ipv4: 84281096,
+            local_ipv6: [0; 16],
+            remote_ipv6: [0; 16],
+            local_port: 443,
+            remote_port: 28015,
+            ..Default::default()
+        };
+
+        let stats = NetworkStats {
+            bytes_received: 1000,
+            ..Default::default()
+        };
+
+        report.set_network_stats(vec![AggregateResults {
+            flow: FlowProperties::try_from(&context).unwrap(),
+            stats,
+        }]);
+
+        let body = publisher.build_request_body(&report);
+
+        // Should still work with empty instance_id
+        assert!(!body.is_empty());
+
+        let decompressed = snap::raw::Decoder::new().decompress_vec(&body).unwrap();
+        let decoded = RemoteWriteV1::decode(decompressed.as_slice()).unwrap();
+        assert_eq!(decoded.timeseries.len(), 10);
+    }
+
+    #[test]
+    fn test_add_label_with_value() {
+        let mut labels = vec![];
+        add_label(&mut labels, "test_key", "test_value");
+
+        assert_eq!(labels.len(), 1);
+        assert_eq!(labels[0].name, "test_key");
+        assert_eq!(labels[0].value, "test_value");
+    }
+
+    #[test]
+    fn test_add_label_with_empty_value() {
+        let mut labels = vec![];
+        add_label(&mut labels, "test_key", "");
+
+        // Should not add label with empty value
+        assert_eq!(labels.len(), 0);
+    }
+
+    #[test]
+    fn test_add_label_multiple() {
+        let mut labels = vec![];
+        add_label(&mut labels, "key1", "value1");
+        add_label(&mut labels, "key2", "value2");
+        add_label(&mut labels, "key3", "");
+
+        assert_eq!(labels.len(), 2);
+        assert_eq!(labels[0].name, "key1");
+        assert_eq!(labels[1].name, "key2");
+    }
+
+    #[test]
+    fn test_publish_with_k8s_metadata() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        struct MockApsService {
+            listener: TcpListener,
+        }
+
+        impl MockApsService {
+            async fn new(address: String) -> Option<Self> {
+                match TcpListener::bind(address).await {
+                    Ok(listener) => Some(MockApsService { listener }),
+                    Err(_) => None,
+                }
+            }
+
+            async fn respond_ok(&mut self) {
+                let (mut stream, _) = self.listener.accept().await.unwrap();
+                // Read the request (we don't need to parse it)
+                let mut buffer = vec![0u8; 8192];
+                let _ = stream.read(&mut buffer).await;
+                // Send 200 OK response
+                stream.write_all(b"HTTP/1.1 200 OK\r\n\r\n").await.unwrap();
+            }
+        }
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let mut port = 9090;
+        let mut port_attempts = 10;
+        let mut mock_service = None;
+        let mut address = String::new();
+
+        while port_attempts > 0 {
+            address = format!("127.0.0.1:{}", port);
+            mock_service = rt.block_on(async { MockApsService::new(address.clone()).await });
+            if mock_service.is_some() {
+                break;
+            }
+            port_attempts -= 1;
+            port += 1;
+        }
+        assert!(port_attempts > 0, "Failed to find an available port");
+
+        let service_future = rt.spawn(async move { mock_service.unwrap().respond_ok().await });
+
+        let creds = Credentials::new("AKID", "SECRET", Some("TOKEN".into()), None, "test");
+        let provider = SharedCredentialsProvider::new(creds);
+        let clock = FakeClock {
+            now_us: 1718716821050,
+        };
+
+        let publisher = ReportPublisherAmazonManagedPrometheus::new(
+            format!("http://{}/api/v1/remote_write", address),
+            "us-east-1".to_string(),
+            provider,
+            clock,
+            "".to_string(),
+        );
+
+        let mut report = NfmReport::new();
+        report
+            .env_metadata
+            .insert("instance_id".into(), ReportValue::String("i-test".into()));
+        report.k8s_metadata = K8sMetadata {
+            cluster_name: Some(ReportValue::String("test-cluster".to_string())),
+            node_name: Some(ReportValue::String("test-node".to_string())),
+        };
+
+        let context = SockContext {
+            is_client: false,
+            address_family: libc::AF_INET as u32,
+            local_ipv4: 16909060,
+            remote_ipv4: 84281096,
+            local_ipv6: [0; 16],
+            remote_ipv6: [0; 16],
+            local_port: 443,
+            remote_port: 28015,
+            ..Default::default()
+        };
+
+        let stats = NetworkStats {
+            bytes_received: 1000,
+            bytes_delivered: 2000,
+            segments_received: 10,
+            segments_delivered: 20,
+            retrans_syn: 1,
+            retrans_est: 2,
+            ..Default::default()
+        };
+
+        let mut flow = FlowProperties::try_from(&context).unwrap();
+        flow.kubernetes_metadata = Some(FlowMetadata {
+            local: Some(PodInfo {
+                name: "nginx-pod".to_string(),
+                namespace: "default".to_string(),
+                service_name: "nginx-service".to_string(),
+            }),
+            remote: Some(PodInfo {
+                name: "backend-pod".to_string(),
+                namespace: "backend".to_string(),
+                service_name: "backend-service".to_string(),
+            }),
+        });
+
+        report.set_network_stats(vec![AggregateResults { flow, stats }]);
+
+        // Publish the report
+        let result = publisher.publish(&report);
+        assert!(result, "Publish should succeed with K8s metadata");
+
+        // Wait for the mock server to respond
+        rt.block_on(service_future).unwrap();
     }
 }
