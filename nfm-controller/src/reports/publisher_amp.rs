@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::metadata::eni::KEY_INSTANCE_ID;
-use crate::reports::prometheus_remote_write_proto::{Label, RemoteWriteV1, Sample, TimeSeries};
+use crate::reports::publisher_amp_remote_write_proto::{Label, RemoteWriteV1, Sample, TimeSeries};
 use crate::reports::report::{NfmReport, ReportValue};
 use crate::utils::{timespec_to_nsec, Clock};
 use crate::ReportPublisher;
@@ -15,6 +15,7 @@ use tokio::time::Duration;
 
 const APS_SERVICE: &str = "aps";
 
+/// Publisher for Amazon Managed Prometheus service.
 pub struct ReportPublisherAmazonManagedPrometheus<P, C>
 where
     P: ProvideCredentials,

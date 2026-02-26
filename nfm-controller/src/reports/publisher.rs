@@ -8,8 +8,8 @@ use crate::{
 };
 use log::info;
 
+pub use super::publisher_amp::ReportPublisherAmazonManagedPrometheus;
 pub use super::publisher_endpoint::ReportPublisherOTLP;
-pub use super::publisher_prometheus_remote_write::ReportPublisherAmazonManagedPrometheus;
 
 pub trait ReportPublisher {
     /// Publish a report and return true if it was successful.
