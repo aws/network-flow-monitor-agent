@@ -9,6 +9,7 @@ use crate::{
 use log::info;
 
 pub use super::publisher_endpoint::ReportPublisherOTLP;
+pub use super::publisher_prometheus_remote_write::ReportPublisherPrometheusRemoteWrite;
 
 pub trait ReportPublisher {
     /// Publish a report and return true if it was successful.
@@ -67,6 +68,32 @@ impl MultiPublisher {
                 get_credentials_provider(),
                 RealTimeClock {},
                 opt.report_compression,
+                opt.proxy.clone(),
+            )));
+        };
+
+        // Enable Prometheus Remote Write if workspace ID is provided
+        if !opt.prometheus_workspace_id.is_empty() {
+            let region = if !opt.prometheus_region.is_empty() {
+                opt.prometheus_region.clone()
+            } else {
+                opt.endpoint_region.clone()
+            };
+            assert!(
+                !region.is_empty(),
+                "prometheus-region or endpoint-region must be specified when using prometheus-workspace-id"
+            );
+
+            let prometheus_endpoint = format!(
+                "https://aps-workspaces.{}.amazonaws.com/workspaces/{}/api/v1/remote_write",
+                region, opt.prometheus_workspace_id
+            );
+
+            publisher_builder.with_publisher(Box::new(ReportPublisherPrometheusRemoteWrite::new(
+                prometheus_endpoint,
+                region,
+                get_credentials_provider(),
+                RealTimeClock {},
                 opt.proxy.clone(),
             )));
         };
@@ -232,6 +259,8 @@ mod tests {
             report_compression: ReportCompression::None,
             kubernetes_metadata: OnOff::On,
             resolve_nat: OnOff::On,
+            prometheus_workspace_id: String::new(),
+            prometheus_region: String::new(),
         }
     }
 }
