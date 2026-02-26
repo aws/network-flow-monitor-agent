@@ -87,15 +87,11 @@ where
             add_label(&mut base_labels, "instance_id", &instance_id);
 
             // Add Kubernetes metadata labels if available
-            if let Some(ref cluster_name) = report.k8s_metadata.cluster_name {
-                if let ReportValue::String(name) = cluster_name {
-                    add_label(&mut base_labels, "k8s_cluster", &name);
-                }
+            if let Some(ReportValue::String(ref cluster_name)) = report.k8s_metadata.cluster_name {
+                add_label(&mut base_labels, "k8s_cluster", cluster_name);
             }
-            if let Some(ref node_name) = report.k8s_metadata.node_name {
-                if let ReportValue::String(name) = node_name {
-                    add_label(&mut base_labels, "k8s_node", &name);
-                }
+            if let Some(ReportValue::String(ref node_name)) = report.k8s_metadata.node_name {
+                add_label(&mut base_labels, "k8s_node", node_name);
             }
             if let Some(ref pod_info) = flow.flow.kubernetes_metadata {
                 // Local pod info
@@ -180,7 +176,7 @@ where
                 ReportValue::String(s) => Some(s.clone()),
                 _ => None,
             })
-            .unwrap_or_else(|| String::new());
+            .unwrap_or_default();
 
         let timeseries = self.convert_to_timeseries(report, instance_id);
         let write_request = RemoteWriteV1 { timeseries };
@@ -285,7 +281,7 @@ where
 }
 
 fn add_label(labels: &mut Vec<Label>, name: &str, value: &str) {
-    if value != "" {
+    if !value.is_empty() {
         labels.push(Label {
             name: name.to_string(),
             value: value.to_string(),
