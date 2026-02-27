@@ -219,6 +219,53 @@ mod tests {
         assert_eq!(publisher.publishers.len(), 2);
     }
 
+    #[test]
+    fn test_build_multi_publisher_with_prometheus() {
+        // With prometheus workspace ID and prometheus region
+        let mut opt = create_options(OnOff::Off, OnOff::Off);
+        opt.prometheus_workspace_id = "ws-12345".to_string();
+        opt.prometheus_region = "us-west-2".to_string();
+        let publisher = MultiPublisher::from_options(&opt);
+        assert_eq!(publisher.publishers.len(), 1);
+
+        // With prometheus workspace ID and endpoint region (fallback)
+        let mut opt = create_options(OnOff::Off, OnOff::Off);
+        opt.prometheus_workspace_id = "ws-12345".to_string();
+        opt.endpoint_region = "us-east-1".to_string();
+        let publisher = MultiPublisher::from_options(&opt);
+        assert_eq!(publisher.publishers.len(), 1);
+
+        // With prometheus and log
+        let mut opt = create_options(OnOff::On, OnOff::Off);
+        opt.prometheus_workspace_id = "ws-12345".to_string();
+        opt.prometheus_region = "eu-west-1".to_string();
+        let publisher = MultiPublisher::from_options(&opt);
+        assert_eq!(publisher.publishers.len(), 2);
+
+        // With prometheus and endpoint
+        let mut opt = create_options(OnOff::Off, OnOff::On);
+        opt.prometheus_workspace_id = "ws-12345".to_string();
+        opt.prometheus_region = "ap-south-1".to_string();
+        let publisher = MultiPublisher::from_options(&opt);
+        assert_eq!(publisher.publishers.len(), 2);
+
+        // All three publishers
+        let mut opt = create_options(OnOff::On, OnOff::On);
+        opt.prometheus_workspace_id = "ws-12345".to_string();
+        opt.prometheus_region = "us-west-2".to_string();
+        let publisher = MultiPublisher::from_options(&opt);
+        assert_eq!(publisher.publishers.len(), 3);
+    }
+
+    #[test]
+    #[should_panic(expected = "prometheus-region or endpoint-region must be specified")]
+    fn test_build_multi_publisher_prometheus_no_region() {
+        let mut opt = create_options(OnOff::Off, OnOff::Off);
+        opt.prometheus_workspace_id = "ws-12345".to_string();
+        opt.endpoint_region = "".to_string();
+        MultiPublisher::from_options(&opt);
+    }
+
     #[cfg(feature = "open-metrics")]
     fn create_options(with_log: OnOff, with_endpoint: OnOff) -> Options {
         Options {
@@ -240,8 +287,8 @@ mod tests {
             open_metrics: OnOff::Off,
             open_metrics_port: 0,
             open_metrics_address: "127.0.0.1".to_string(),
-            prometheus_workspace_id: "".to_string(),
-            prometheus_region: "".to_string(),
+            prometheus_workspace_id: String::new(),
+            prometheus_region: String::new(),
         }
     }
 

@@ -741,33 +741,33 @@ mod tests {
         assert_eq!(labels[1].name, "key2");
     }
 
+    // Helper struct for mocking APS service in tests
+    struct MockApsService {
+        listener: tokio::net::TcpListener,
+    }
+
+    impl MockApsService {
+        async fn new(address: String) -> Option<Self> {
+            match tokio::net::TcpListener::bind(address).await {
+                Ok(listener) => Some(MockApsService { listener }),
+                Err(_) => None,
+            }
+        }
+
+        async fn respond_with_status(&mut self, response: &str) {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+            let (mut stream, _) = self.listener.accept().await.unwrap();
+            // Read the request (we don't need to parse it)
+            let mut buffer = vec![0u8; 8192];
+            let _ = stream.read(&mut buffer).await;
+            // Send response
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    }
+
     #[test]
     fn test_publish_with_k8s_metadata() {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        use tokio::net::TcpListener;
-
-        struct MockApsService {
-            listener: TcpListener,
-        }
-
-        impl MockApsService {
-            async fn new(address: String) -> Option<Self> {
-                match TcpListener::bind(address).await {
-                    Ok(listener) => Some(MockApsService { listener }),
-                    Err(_) => None,
-                }
-            }
-
-            async fn respond_ok(&mut self) {
-                let (mut stream, _) = self.listener.accept().await.unwrap();
-                // Read the request (we don't need to parse it)
-                let mut buffer = vec![0u8; 8192];
-                let _ = stream.read(&mut buffer).await;
-                // Send 200 OK response
-                stream.write_all(b"HTTP/1.1 200 OK\r\n\r\n").await.unwrap();
-            }
-        }
-
         let rt = tokio::runtime::Runtime::new().unwrap();
         let mut port = 9090;
         let mut port_attempts = 10;
@@ -785,7 +785,12 @@ mod tests {
         }
         assert!(port_attempts > 0, "Failed to find an available port");
 
-        let service_future = rt.spawn(async move { mock_service.unwrap().respond_ok().await });
+        let service_future = rt.spawn(async move {
+            mock_service
+                .unwrap()
+                .respond_with_status("HTTP/1.1 200 OK\r\n\r\n")
+                .await
+        });
 
         let creds = Credentials::new("AKID", "SECRET", Some("TOKEN".into()), None, "test");
         let provider = SharedCredentialsProvider::new(creds);
@@ -851,6 +856,83 @@ mod tests {
         // Publish the report
         let result = publisher.publish(&report);
         assert!(result, "Publish should succeed with K8s metadata");
+
+        // Wait for the mock server to respond
+        rt.block_on(service_future).unwrap();
+    }
+
+    #[test]
+    fn test_publish_non_200_response() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let mut port = 9091;
+        let mut port_attempts = 10;
+        let mut mock_service = None;
+        let mut address = String::new();
+
+        while port_attempts > 0 {
+            address = format!("127.0.0.1:{}", port);
+            mock_service = rt.block_on(async { MockApsService::new(address.clone()).await });
+            if mock_service.is_some() {
+                break;
+            }
+            port_attempts -= 1;
+            port += 1;
+        }
+        assert!(port_attempts > 0, "Failed to find an available port");
+
+        let service_future = rt.spawn(async move {
+            mock_service
+                .unwrap()
+                .respond_with_status(
+                    "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 13\r\n\r\nServer Error!",
+                )
+                .await
+        });
+
+        let creds = Credentials::new("AKID", "SECRET", Some("TOKEN".into()), None, "test");
+        let provider = SharedCredentialsProvider::new(creds);
+        let clock = FakeClock {
+            now_us: 1718716821050,
+        };
+
+        let publisher = ReportPublisherAmazonManagedPrometheus::new(
+            format!("http://{}/api/v1/remote_write", address),
+            "us-east-1".to_string(),
+            provider,
+            clock,
+            "".to_string(),
+        );
+
+        let mut report = NfmReport::new();
+        report
+            .env_metadata
+            .insert("instance_id".into(), ReportValue::String("i-test".into()));
+
+        let context = SockContext {
+            is_client: false,
+            address_family: libc::AF_INET as u32,
+            local_ipv4: 16909060,
+            remote_ipv4: 84281096,
+            local_ipv6: [0; 16],
+            remote_ipv6: [0; 16],
+            local_port: 443,
+            remote_port: 28015,
+            ..Default::default()
+        };
+
+        let stats = NetworkStats {
+            bytes_received: 1000,
+            ..Default::default()
+        };
+
+        report.set_network_stats(vec![AggregateResults {
+            flow: FlowProperties::try_from(&context).unwrap(),
+            stats,
+        }]);
+
+        // Publish the report - should return false for non-200 response
+        let result = publisher.publish(&report);
+        assert!(!result, "Publish should fail with non-200 response");
 
         // Wait for the mock server to respond
         rt.block_on(service_future).unwrap();
