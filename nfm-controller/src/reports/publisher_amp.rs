@@ -1,6 +1,7 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::kubernetes::kubernetes_metadata_collector::PodInfo;
 use crate::metadata::eni::KEY_INSTANCE_ID;
 use crate::reports::publisher_amp_remote_write_proto::{Label, RemoteWriteV1, Sample, TimeSeries};
 use crate::reports::report::{NfmReport, ReportValue};
@@ -94,35 +95,8 @@ where
                 add_label(&mut base_labels, "k8s_node", node_name);
             }
             if let Some(ref pod_info) = flow.flow.kubernetes_metadata {
-                // Local pod info
-                if let Some(ref local_pod_info) = pod_info.local {
-                    add_label(&mut base_labels, "local_pod", &local_pod_info.name);
-                    add_label(
-                        &mut base_labels,
-                        "local_namespace",
-                        &local_pod_info.namespace,
-                    );
-                    add_label(
-                        &mut base_labels,
-                        "local_service",
-                        &local_pod_info.service_name,
-                    );
-                }
-
-                // Remote pod info
-                if let Some(ref remote_pod_info) = pod_info.remote {
-                    add_label(&mut base_labels, "remote_pod", &remote_pod_info.name);
-                    add_label(
-                        &mut base_labels,
-                        "remote_namespace",
-                        &remote_pod_info.namespace,
-                    );
-                    add_label(
-                        &mut base_labels,
-                        "remote_service",
-                        &remote_pod_info.service_name,
-                    );
-                }
+                add_pod_labels(&mut base_labels, "local", pod_info.local.as_ref());
+                add_pod_labels(&mut base_labels, "remote", pod_info.remote.as_ref());
             }
 
             // Add metrics for this flow
@@ -286,6 +260,14 @@ fn add_label(labels: &mut Vec<Label>, name: &str, value: &str) {
             name: name.to_string(),
             value: value.to_string(),
         });
+    }
+}
+
+fn add_pod_labels(labels: &mut Vec<Label>, prefix: &str, pod_info: Option<&PodInfo>) {
+    if let Some(pod) = pod_info {
+        add_label(labels, &format!("{}_pod", prefix), &pod.name);
+        add_label(labels, &format!("{}_namespace", prefix), &pod.namespace);
+        add_label(labels, &format!("{}_service", prefix), &pod.service_name);
     }
 }
 
