@@ -28,13 +28,75 @@ spec:
         {{- end }}
     spec:
       hostNetwork: true
-      dnsPolicy: ClusterFirstWithHostNet
       hostPID: true
+      dnsPolicy: ClusterFirstWithHostNet
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: setup
+          image: {{ include "aws-network-flow-monitor-agent.image" . }}
+          securityContext:
+            privileged: true
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              # Set rmem_max to 12.8MB to hold 10k Netfilter Conntrack Messages
+              CURRENT=$(sysctl -n net.core.rmem_max)
+              REQUIRED=12800000
+              echo "Current rmem_max: $CURRENT"
+              if [ "$CURRENT" -lt "$REQUIRED" ]; then
+                sysctl -w net.core.rmem_max=$REQUIRED
+                echo "Updated rmem_max to: $REQUIRED"
+              else
+                echo "rmem_max "$CURRENT" is already sufficient, keeping current value"
+              fi
+
+              check_cgroupv2() {
+                local path="$1"
+                if ! mountpoint -q "$path" 2>/dev/null; then
+                  return 1
+                fi
+                local fs_type=$(stat -fc %T "$path" 2>/dev/null || echo "unknown")
+                if [ "$fs_type" = "cgroup2fs" ]; then
+                  return 0
+                fi
+                return 1
+              }
+
+              # Mount /cgroup-mount/cgroup-nfm-agent
+              CGROUP_PATH="/cgroup-mount/cgroup-nfm-agent"
+              mkdir -p "$CGROUP_PATH"
+
+              if check_cgroupv2 "$CGROUP_PATH"; then
+                echo "Found cgroupv2 at: $CGROUP_PATH. Will use that"
+                exit 0
+              fi
+
+              # Mount cgroupv2 on /cgroup-mount/cgroup-nfm-agent
+              if ! mount -t cgroup2 none "$CGROUP_PATH"; then
+                echo "ERROR: Failed to mount cgroupv2 at $CGROUP_PATH. NFM agent requires cgroupv2 support."
+                exit 1
+              fi
+
+              echo "Mounted cgroupv2 at: $CGROUP_PATH"
+          volumeMounts:
+            - name: cgroup-mount
+              mountPath: /cgroup-mount
+              mountPropagation: Bidirectional
       containers:
         - name: {{ .Values.daemonSet.name }}
           image: {{ include "aws-network-flow-monitor-agent.image" . }}
           securityContext:
-            privileged: true
+            capabilities:
+              add:
+                - BPF
+                - NET_ADMIN
+                - PERFMON
+              drop:
+                - ALL
           resources: {{ toYaml .Values.resources | nindent 12 }}
           {{- if eq .Values.env.OPEN_METRICS "on" }}
           ports:
@@ -65,21 +127,28 @@ spec:
             - name: SSL_CERT_FILE
               value: {{ .Values.caCerts.mountPath }}/{{ .Values.caCerts.fileName }}
             {{- end }}
-          {{- if .Values.caCerts.enabled }}
           volumeMounts:
+            - name: cgroup-mount
+              mountPath: /cgroup-mount
+              mountPropagation: HostToContainer
+          {{- if .Values.caCerts.enabled }}
             - name: ca-bundle
               mountPath: {{ .Values.caCerts.mountPath }}/{{ .Values.caCerts.fileName }}
               subPath: {{ .Values.caCerts.fileName }}
               readOnly: true
           {{- end }}
-      {{- if .Values.caCerts.enabled }}
       volumes:
+        - name: cgroup-mount
+          emptyDir: {}
+      {{- if .Values.caCerts.enabled }}
         - name: ca-bundle
           secret:
             secretName: {{ .Values.caCerts.secretName }}
+            {{- if .Values.caCerts.secretKey }}
             items:
               - key: {{ .Values.caCerts.secretKey }}
                 path: {{ .Values.caCerts.fileName }}
+            {{- end }}
       {{- end }}
       nodeSelector:
         kubernetes.io/os: linux
