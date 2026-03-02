@@ -8,6 +8,7 @@ use crate::{
 };
 use log::info;
 
+pub use super::publisher_amp::ReportPublisherAmazonManagedPrometheus;
 pub use super::publisher_endpoint::ReportPublisherOTLP;
 
 pub trait ReportPublisher {
@@ -69,6 +70,34 @@ impl MultiPublisher {
                 opt.report_compression,
                 opt.proxy.clone(),
             )));
+        };
+
+        // Enable Prometheus Remote Write if workspace ID is provided
+        if !opt.prometheus_workspace_id.is_empty() {
+            let region = if !opt.prometheus_region.is_empty() {
+                opt.prometheus_region.clone()
+            } else {
+                opt.endpoint_region.clone()
+            };
+            assert!(
+                !region.is_empty(),
+                "prometheus-region or endpoint-region must be specified when using prometheus-workspace-id"
+            );
+
+            let prometheus_endpoint = format!(
+                "https://aps-workspaces.{}.amazonaws.com/workspaces/{}/api/v1/remote_write",
+                region, opt.prometheus_workspace_id
+            );
+
+            publisher_builder.with_publisher(Box::new(
+                ReportPublisherAmazonManagedPrometheus::new(
+                    prometheus_endpoint,
+                    region,
+                    get_credentials_provider(),
+                    RealTimeClock {},
+                    opt.proxy.clone(),
+                ),
+            ));
         };
         publisher_builder.build()
     }
@@ -190,6 +219,53 @@ mod tests {
         assert_eq!(publisher.publishers.len(), 2);
     }
 
+    #[test]
+    fn test_build_multi_publisher_with_prometheus() {
+        // With prometheus workspace ID and prometheus region
+        let mut opt = create_options(OnOff::Off, OnOff::Off);
+        opt.prometheus_workspace_id = "ws-12345".to_string();
+        opt.prometheus_region = "us-west-2".to_string();
+        let publisher = MultiPublisher::from_options(&opt);
+        assert_eq!(publisher.publishers.len(), 1);
+
+        // With prometheus workspace ID and endpoint region (fallback)
+        let mut opt = create_options(OnOff::Off, OnOff::Off);
+        opt.prometheus_workspace_id = "ws-12345".to_string();
+        opt.endpoint_region = "us-east-1".to_string();
+        let publisher = MultiPublisher::from_options(&opt);
+        assert_eq!(publisher.publishers.len(), 1);
+
+        // With prometheus and log
+        let mut opt = create_options(OnOff::On, OnOff::Off);
+        opt.prometheus_workspace_id = "ws-12345".to_string();
+        opt.prometheus_region = "eu-west-1".to_string();
+        let publisher = MultiPublisher::from_options(&opt);
+        assert_eq!(publisher.publishers.len(), 2);
+
+        // With prometheus and endpoint
+        let mut opt = create_options(OnOff::Off, OnOff::On);
+        opt.prometheus_workspace_id = "ws-12345".to_string();
+        opt.prometheus_region = "ap-south-1".to_string();
+        let publisher = MultiPublisher::from_options(&opt);
+        assert_eq!(publisher.publishers.len(), 2);
+
+        // All three publishers
+        let mut opt = create_options(OnOff::On, OnOff::On);
+        opt.prometheus_workspace_id = "ws-12345".to_string();
+        opt.prometheus_region = "us-west-2".to_string();
+        let publisher = MultiPublisher::from_options(&opt);
+        assert_eq!(publisher.publishers.len(), 3);
+    }
+
+    #[test]
+    #[should_panic(expected = "prometheus-region or endpoint-region must be specified")]
+    fn test_build_multi_publisher_prometheus_no_region() {
+        let mut opt = create_options(OnOff::Off, OnOff::Off);
+        opt.prometheus_workspace_id = "ws-12345".to_string();
+        opt.endpoint_region = "".to_string();
+        MultiPublisher::from_options(&opt);
+    }
+
     #[cfg(feature = "open-metrics")]
     fn create_options(with_log: OnOff, with_endpoint: OnOff) -> Options {
         Options {
@@ -211,6 +287,8 @@ mod tests {
             open_metrics: OnOff::Off,
             open_metrics_port: 0,
             open_metrics_address: "127.0.0.1".to_string(),
+            prometheus_workspace_id: String::new(),
+            prometheus_region: String::new(),
         }
     }
 
@@ -232,6 +310,8 @@ mod tests {
             report_compression: ReportCompression::None,
             kubernetes_metadata: OnOff::On,
             resolve_nat: OnOff::On,
+            prometheus_workspace_id: String::new(),
+            prometheus_region: String::new(),
         }
     }
 }

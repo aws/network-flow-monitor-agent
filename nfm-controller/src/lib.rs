@@ -145,6 +145,14 @@ pub struct Options {
     #[cfg(feature = "open-metrics")]
     #[clap(long = "open-metrics-address", default_value = "127.0.0.1")]
     open_metrics_address: String,
+
+    /// AWS Managed Prometheus workspace ID (e.g., ws-12345678-1234-1234-1234-123456789012)
+    #[clap(long = "prometheus-workspace-id", default_value = "")]
+    prometheus_workspace_id: String,
+
+    /// AWS region for Prometheus workspace (defaults to endpoint-region if not specified)
+    #[clap(long = "prometheus-region", default_value = "")]
+    prometheus_region: String,
 }
 
 pub fn check_kernel_version() -> Result<(), anyhow::Error> {
@@ -532,6 +540,8 @@ mod test {
             open_metrics: OnOff::Off,
             open_metrics_port: 80,
             open_metrics_address: "127.0.0.1".to_string(),
+            prometheus_workspace_id: "".to_string(),
+            prometheus_region: "".to_string(),
         }
     }
 
@@ -553,6 +563,8 @@ mod test {
             report_compression: ReportCompression::None,
             kubernetes_metadata: OnOff::On,
             resolve_nat: OnOff::On,
+            prometheus_workspace_id: String::new(),
+            prometheus_region: String::new(),
         }
     }
 
