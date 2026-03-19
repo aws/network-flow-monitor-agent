@@ -5,9 +5,15 @@ set -o pipefail
 set -o nounset
 set -o xtrace
 
-mkdir -p /mnt/cgroup-nfm-agent
-mount -t cgroup2 none /mnt/cgroup-nfm-agent # create a view at root cgroupv2
-sysctl -w net.core.rmem_max=12800000 # Storage for 10k NF conntrack datagrams
+# Get cgroupv2 mount created by the init container
+CGROUP_PATH="/cgroup-mount/cgroup-nfm-agent"
+
+if [[ -z "$CGROUP_PATH" ]]; then
+    echo "ERROR: No cgroupv2 mount found. The cgroupv2 must have been mounted from init container by now on $CGROUP_PATH."
+    exit 1
+fi
+
+echo "Using cgroup path: $CGROUP_PATH"
 cd /usr/local/bin
 
 # Get local region based on locally available EC2 metadata
@@ -49,6 +55,6 @@ if [[ -n "${AMP_WORKSPACE_ID:-}" ]]; then
     PUBLISHING_ARGS+=("--prometheus-workspace-id" "${AMP_WORKSPACE_ID}")
 fi
 
-echo -e "Starting NetworkFlowMonitorAgent with:\n\tendpoint:${endpoint}\n\topen metrics config: ${OPEN_METRICS_ARGS[*]}\n\tpublishing: ${DISABLE_PUBLISHING:-false}"
-./nfm-agent --cgroup /mnt/cgroup-nfm-agent --endpoint-region "${region}" --endpoint "${endpoint}" -k on -n on "${OPEN_METRICS_ARGS[@]}" "${PUBLISHING_ARGS[@]}"
+echo -e "Starting NetworkFlowMonitorAgent with:\n\tcgroup:${CGROUP_PATH}\n\tendpoint:${endpoint}\n\topen metrics config: ${OPEN_METRICS_ARGS[*]}\n\tpublishing: ${DISABLE_PUBLISHING:-false}"
+./nfm-agent --cgroup "$CGROUP_PATH" --endpoint-region "${region}" --endpoint "${endpoint}" -k on -n on "${OPEN_METRICS_ARGS[@]}" "${PUBLISHING_ARGS[@]}"
 echo "Terminating NetworkFlowMonitorAgent"

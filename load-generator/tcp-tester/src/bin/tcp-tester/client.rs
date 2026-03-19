@@ -12,7 +12,7 @@ use aya::programs::{CgroupAttachMode, LinkOrder, SchedClassifier, SockOps, TcAtt
 use aya::Ebpf;
 use log::{debug, error, info};
 use netns_rs::NetNs;
-use rand::{Rng, RngCore};
+use rand::{Rng, RngExt};
 use std::fs::File;
 use std::io::Read;
 use std::net::SocketAddr;

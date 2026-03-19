@@ -171,22 +171,45 @@ pub fn check_kernel_version() -> Result<(), anyhow::Error> {
 
 /// Drop Linux capabilities that are no longer needed after eBPF program initialization
 fn drop_capabilities() -> Result<(), anyhow::Error> {
-    info!("Dropping CAP_SYS_ADMIN and CAP_BPF capabilities");
+    info!("Dropping unnecessary capabilities after eBPF initialization");
 
-    let mut caps = caps::read(None, CapSet::Effective)
-        .map_err(|e| anyhow::anyhow!("Failed to read current capabilities: {}", e))?;
-    caps.remove(&Capability::CAP_SYS_ADMIN);
-    caps::set(None, CapSet::Effective, &caps)
-        .map_err(|e| anyhow::anyhow!("Failed to drop capabilities: {}", e))?;
+    // List of capabilities to drop after initialization
+    // Note: We keep CAP_BPF to continue reading BPF maps
+    let caps_to_drop = vec![
+        Capability::CAP_SYS_ADMIN, // No longer needed after BPF program load
+        Capability::CAP_PERFMON,   // No longer needed after BPF program load
+        Capability::CAP_NET_ADMIN, // No longer needed after subscribing to netfilter conntrack events
+    ];
 
-    // Also drop from permitted capabilities to prevent re-enabling
-    let mut permitted_caps = caps::read(None, CapSet::Permitted)
-        .map_err(|e| anyhow::anyhow!("Failed to read permitted capabilities: {}", e))?;
-    permitted_caps.remove(&Capability::CAP_SYS_ADMIN);
-    caps::set(None, CapSet::Permitted, &permitted_caps)
-        .map_err(|e| anyhow::anyhow!("Failed to drop permitted capabilities: {}", e))?;
+    // Drop from all capability sets to prevent re-enabling
+    for cap_set in [CapSet::Effective, CapSet::Permitted, CapSet::Inheritable] {
+        let mut caps = caps::read(None, cap_set)
+            .map_err(|e| anyhow::anyhow!("Failed to read {:?} capabilities: {}", cap_set, e))?;
 
-    info!("Successfully dropped CAP_SYS_ADMIN and CAP_BPF capabilities");
+        let mut dropped_count = 0;
+        for cap in &caps_to_drop {
+            if caps.remove(cap) {
+                dropped_count += 1;
+            }
+        }
+
+        if dropped_count > 0 {
+            caps::set(None, cap_set, &caps)
+                .map_err(|e| anyhow::anyhow!("Failed to drop {:?} capabilities: {}", cap_set, e))?;
+            info!(
+                "Dropped {} capabilities from {:?} set",
+                dropped_count, cap_set
+            );
+        }
+    }
+
+    // Log remaining capabilities for transparency
+    let remaining_caps = caps::read(None, CapSet::Effective)
+        .map_err(|e| anyhow::anyhow!("Failed to read remaining capabilities: {}", e))?;
+    info!(
+        "Will operate with following effective capabilities: {:?}",
+        remaining_caps
+    );
     Ok(())
 }
 
@@ -209,16 +232,18 @@ pub fn on_load(opt: Options) -> Result<(), anyhow::Error> {
             }
         };
 
-    // Drop capabilities now that eBPF program is loaded and attached
-    if let Err(e) = drop_capabilities() {
-        warn!("Failed to drop capabilities: {e}");
-    }
-
+    // Initialize NAT resolver BEFORE dropping capabilities (needs CAP_NET_ADMIN)
     let nat_resolver: Box<dyn NatResolver> = if opt.resolve_nat == OnOff::On {
         Box::new(NatResolverImpl::initialize())
     } else {
         Box::new(NatResolverNoOp {})
     };
+
+    // Drop capabilities now that eBPF program is loaded and NAT resolver is initialized
+    if let Err(e) = drop_capabilities() {
+        warn!("Failed to drop capabilities: {e}");
+    }
+
     let event_filter = EventFilterTopLoss::new(opt.top_k.try_into().unwrap());
     let publisher = MultiPublisher::from_options(&opt);
     let metadata_provider = MultiMetadataProviderImpl {
@@ -633,49 +658,47 @@ mod test {
         let mut permitted_caps = caps::read(None, CapSet::Permitted)
             .expect("Failed to read current permitted capabilities");
 
-        effective_caps.insert(Capability::CAP_SYS_ADMIN);
-        permitted_caps.insert(Capability::CAP_SYS_ADMIN);
+        let caps_to_drop = vec![
+            Capability::CAP_SYS_ADMIN,
+            Capability::CAP_PERFMON,
+            Capability::CAP_NET_ADMIN,
+        ];
+
+        for cap in &caps_to_drop {
+            effective_caps.insert(*cap);
+            permitted_caps.insert(*cap);
+        }
 
         // Set the capabilities - this must succeed for the test to be valid
-        caps::set(None, CapSet::Effective, &effective_caps)
-            .expect("Failed to set CAP_SYS_ADMIN capability in Effective set. This test requires privileged execution.");
-        caps::set(None, CapSet::Permitted, &permitted_caps)
-            .expect("Failed to set CAP_SYS_ADMIN capability in Permitted set. This test requires privileged execution.");
-
-        // This test verifies that the CAP_SYS_ADMIN capability is dropped after
-        // the eBPF program is loaded and attached
-
-        // Verify that we now have the capability
-        let has_effective = caps::has_cap(None, CapSet::Effective, Capability::CAP_SYS_ADMIN)
-            .expect("Failed to check for CAP_SYS_ADMIN capability in Effective set");
-        let has_permitted = caps::has_cap(None, CapSet::Permitted, Capability::CAP_SYS_ADMIN)
-            .expect("Failed to check for CAP_SYS_ADMIN capability in Permitted set");
-        assert!(
-            has_effective,
-            "CAP_SYS_ADMIN capability was not set after setting it"
+        caps::set(None, CapSet::Effective, &effective_caps).expect(
+            "Failed to set capabilities in Effective set. This test requires privileged execution.",
         );
-        assert!(
-            has_permitted,
-            "CAP_SYS_ADMIN capability was not set after setting it"
+        caps::set(None, CapSet::Permitted, &permitted_caps).expect(
+            "Failed to set capabilities in Permitted set. This test requires privileged execution.",
         );
+
+        // Verify that we now have the capabilities
+        for cap in &caps_to_drop {
+            for cap_set in [CapSet::Effective, CapSet::Permitted, CapSet::Inheritable] {
+                assert!(
+                    caps::has_cap(None, cap_set, *cap).expect("Failed to check capability"),
+                    "{cap} capability was not added to {cap_set:?} set"
+                );
+            }
+        }
 
         // Use our actual capability dropping function
         let result = drop_capabilities();
         assert!(result.is_ok(), "drop_capabilities failed: {:?}", result);
 
-        // Verify that the capability was dropped from both sets
-        let has_effective = caps::has_cap(None, CapSet::Effective, Capability::CAP_SYS_ADMIN)
-            .expect("Failed to check for CAP_SYS_ADMIN capability in Effective set");
-        let has_permitted = caps::has_cap(None, CapSet::Permitted, Capability::CAP_SYS_ADMIN)
-            .expect("Failed to check for CAP_SYS_ADMIN capability in Permitted set");
-
-        assert!(
-            !has_effective,
-            "CAP_SYS_ADMIN capability was not dropped from Effective set"
-        );
-        assert!(
-            !has_permitted,
-            "CAP_SYS_ADMIN capability was not dropped from Permitted set"
-        );
+        // Verify that the capabilities were dropped from all sets
+        for cap in &caps_to_drop {
+            for cap_set in [CapSet::Effective, CapSet::Permitted, CapSet::Inheritable] {
+                assert!(
+                    caps::has_cap(None, cap_set, *cap).expect("Failed to check capability"),
+                    "{cap} capability was not removed from {cap_set:?} set"
+                );
+            }
+        }
     }
 }
