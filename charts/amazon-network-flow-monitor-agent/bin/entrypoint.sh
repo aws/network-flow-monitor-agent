@@ -44,9 +44,15 @@ if [[ "${OPEN_METRICS:-}" == "on" ]]; then
     fi
 fi
 
+# Publishing parameters
 PUBLISHING_ARGS=()
 if [[ "${DISABLE_PUBLISHING:-false}" == "true" ]]; then
     PUBLISHING_ARGS+=("-p" "off")
+fi
+
+# Amazon Managed Prometheus integration
+if [[ -n "${AMP_WORKSPACE_ID:-}" ]]; then
+    PUBLISHING_ARGS+=("--prometheus-workspace-id" "${AMP_WORKSPACE_ID}")
 fi
 
 echo -e "Starting NetworkFlowMonitorAgent with:\n\tcgroup:${CGROUP_PATH}\n\tendpoint:${endpoint}\n\topen metrics config: ${OPEN_METRICS_ARGS[*]}\n\tpublishing: ${DISABLE_PUBLISHING:-false}"
