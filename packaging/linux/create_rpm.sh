@@ -19,6 +19,9 @@ if [[ "$TARGET_ARCH" != "x86_64" && "$TARGET_ARCH" != "aarch64" ]]; then
     exit 1
 fi
 
+AGENT_VERSION=$(grep '^version' nfm-controller/Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+echo "Detected agent version: $AGENT_VERSION"
+
 cargo build --release
 
 echo "***********************************************"
@@ -38,10 +41,27 @@ mkdir -p "${BUILD_ROOT}"
 
 rpmbuild -bb \
          --target $TARGET_ARCH \
-         --define "AGENT_VERSION 0.2.1" \
+         --define "AGENT_VERSION ${AGENT_VERSION}" \
          --define "_topdir ${OUT_DIR}/bin/linux/rpmbuild" \
          --define "_sourcedir $(pwd)" \
          --buildroot "${BUILD_ROOT}" \
          "${SPEC_FILE}"
 cp ${OUT_DIR}/bin/linux/rpmbuild/RPMS/$TARGET_ARCH/*.rpm ${OUT_DIR}/network-flow-monitor-agent.rpm
+rm -rf ${OUT_DIR}/bin/linux/rpmbuild/RPMS/$TARGET_ARCH/*
+
+echo "***********************************************"
+echo "Creating $TARGET_ARCH rpm file for SUSE"
+echo "***********************************************"
+
+# SUSE RPM
+rpmbuild -bb \
+         --target $TARGET_ARCH \
+         --define "AGENT_VERSION ${AGENT_VERSION}" \
+         --define "_topdir ${OUT_DIR}/bin/linux/rpmbuild" \
+         --define "_sourcedir $(pwd)" \
+         --define "suse_version 1" \
+         --buildroot "${BUILD_ROOT}" \
+         "${SPEC_FILE}"
+
+cp ${OUT_DIR}/bin/linux/rpmbuild/RPMS/$TARGET_ARCH/*.rpm ${OUT_DIR}/network-flow-monitor-agent.suse.rpm
 rm -rf ${OUT_DIR}/bin/linux/rpmbuild/RPMS/$TARGET_ARCH/*
