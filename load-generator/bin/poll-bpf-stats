@@ -12,26 +12,59 @@ do
     sleep 1
 done
 
-handle_bpftool_error() {
-    type=$1
-    printf "[ERROR] Sonar $type not found via bpftool\n"
-    exit 1
-}
-
 # Using awk we remove the trailing bytes indicator: "B".
-program_kb=$(bpftool prog show name nfm_sock_ops | awk '$5 == "memlock" {sub(/B/, "", $6); print $6 / 1024}') || handle_bpftool_error program
-map_kb=$(sudo bpftool map show | grep -A1 NFM | awk '$7 == "memlock" {sub(/B/, "", $8); bytes += $8} END {print bytes / 1024}') || handle_bpftool_error maps
-if [[ ! $program_kb -gt 0 ]]; then
-    handle_bpftool_error maps
+# Dynamically find field positions as bpftool format may vary
+if ! program_kb=$(sudo bpftool prog show name nfm_sock_ops | awk '
+    /memlock/ {
+        for(i=1; i<=NF; i++) {
+            if($i == "memlock") {
+                val = $(i+1);
+                sub(/B$/, "", val);
+                print val / 1024;
+                exit;
+            }
+        }
+    }'); then
+    >&2 echo "[ERROR] Failed to get program memory from bpftool"
+    >&2 sudo bpftool prog show name nfm_sock_ops
+    exit 1
 fi
-if [[ ! $map_kb -gt 0 ]]; then
-    handle_bpftool_error maps
+
+if ! map_kb=$(sudo bpftool map show | grep -A1 NFM | awk '
+    /memlock/ {
+        for(i=1; i<=NF; i++) {
+            if($i == "memlock") {
+                val = $(i+1);
+                sub(/B$/, "", val);
+                bytes += val;
+            }
+        }
+    }
+    END {print bytes / 1024}'); then
+    >&2 echo "[ERROR] Failed to get map memory from bpftool"
+    >&2 sudo bpftool map show | grep NFM
+    exit 1
+fi
+
+# Debug output to stderr
+>&2 echo "DEBUG: program_kb=$program_kb, map_kb=$map_kb"
+
+if [[ -z "$program_kb" ]]; then
+    >&2 echo "[ERROR] program_kb is empty after parsing bpftool output:"
+    >&2 sudo bpftool prog show name nfm_sock_ops
+    exit 1
+fi
+if [[ -z "$map_kb" ]]; then
+    >&2 echo "[ERROR] map_kb is empty after parsing bpftool output:"
+    >&2 sudo bpftool map show | grep NFM
+    exit 1
 fi
 
 # No need to poll these repeatedly – the program and data size are static.
 num_cpus=`nproc`
 echo "{\"num_cpus\": $num_cpus}"
-echo "{\"mem_kb\":{\"program\": $program_kb, \"data\": $map_kb, \"total\": $((map_kb + program_kb))}}"
+total_kb=$(awk "BEGIN {printf \"%.2f\", $map_kb + $program_kb}")
+echo "{\"mem_kb\":{\"program\": $program_kb, \"data\": $map_kb, \"total\": $total_kb}}"
 
 # Continually show runtime stats.
 while true
