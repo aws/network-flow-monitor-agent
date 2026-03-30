@@ -48,20 +48,3 @@ rpmbuild -bb \
          "${SPEC_FILE}"
 cp ${OUT_DIR}/bin/linux/rpmbuild/RPMS/$TARGET_ARCH/*.rpm ${OUT_DIR}/network-flow-monitor-agent.rpm
 rm -rf ${OUT_DIR}/bin/linux/rpmbuild/RPMS/$TARGET_ARCH/*
-
-echo "***********************************************"
-echo "Creating $TARGET_ARCH rpm file for SUSE"
-echo "***********************************************"
-
-# SUSE RPM
-rpmbuild -bb \
-         --target $TARGET_ARCH \
-         --define "AGENT_VERSION ${AGENT_VERSION}" \
-         --define "_topdir ${OUT_DIR}/bin/linux/rpmbuild" \
-         --define "_sourcedir $(pwd)" \
-         --define "suse_version 1" \
-         --buildroot "${BUILD_ROOT}" \
-         "${SPEC_FILE}"
-
-cp ${OUT_DIR}/bin/linux/rpmbuild/RPMS/$TARGET_ARCH/*.rpm ${OUT_DIR}/network-flow-monitor-agent.suse.rpm
-rm -rf ${OUT_DIR}/bin/linux/rpmbuild/RPMS/$TARGET_ARCH/*
