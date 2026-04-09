@@ -1,0 +1,113 @@
+name: Version Sync
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - nfm-controller/Cargo.toml
+      - charts/amazon-network-flow-monitor-agent/values.yaml
+      - charts/amazon-network-flow-monitor-agent/Chart.yaml
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    name: Sync eksbuild tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+
+      - name: Read versions
+        id: versions
+        run: |
+          CURRENT_CARGO=$(git show origin/main:nfm-controller/Cargo.toml | grep '^version' | head -1 | sed 's/.*"\(.*\)"/\1/')
+          NEW_CARGO=$(grep '^version' nfm-controller/Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+
+          CURRENT_EKS_TAG=$(git show origin/main:charts/amazon-network-flow-monitor-agent/values.yaml | grep 'tag:' | head -1 | sed 's/.*tag: *\(v[^ ]*\).*/\1/')
+          NEW_EKS_TAG=$(grep 'tag:' charts/amazon-network-flow-monitor-agent/values.yaml | head -1 | sed 's/.*tag: *\(v[^ ]*\).*/\1/')
+
+          CURRENT_EKS_BUILD=$(echo "$CURRENT_EKS_TAG" | sed 's/.*-eksbuild\.\(.*\)/\1/')
+          NEW_EKS_BUILD=$(echo "$NEW_EKS_TAG" | sed 's/.*-eksbuild\.\(.*\)/\1/')
+          NEW_EKS_VERSION=$(echo "$NEW_EKS_TAG" | sed 's/^v\(.*\)-eksbuild\..*/\1/')
+
+          CHART_VERSION=$(grep '^version:' charts/amazon-network-flow-monitor-agent/Chart.yaml | head -1 | sed 's/version: *//')
+
+          echo "current-cargo=$CURRENT_CARGO" >> "$GITHUB_OUTPUT"
+          echo "new-cargo=$NEW_CARGO" >> "$GITHUB_OUTPUT"
+          echo "current-eks-tag=$CURRENT_EKS_TAG" >> "$GITHUB_OUTPUT"
+          echo "new-eks-tag=$NEW_EKS_TAG" >> "$GITHUB_OUTPUT"
+          echo "chart-version=$CHART_VERSION" >> "$GITHUB_OUTPUT"
+          echo "current-eks-build=$CURRENT_EKS_BUILD" >> "$GITHUB_OUTPUT"
+          echo "new-eks-build=$NEW_EKS_BUILD" >> "$GITHUB_OUTPUT"
+          echo "new-eks-version=$NEW_EKS_VERSION" >> "$GITHUB_OUTPUT"
+          if [ "$NEW_CARGO" != "$CURRENT_CARGO" ]; then
+            echo "cargo-changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "cargo-changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "Cargo: $NEW_CARGO (main: $CURRENT_CARGO)"
+          echo "EKS tag: $NEW_EKS_TAG (main: $CURRENT_EKS_TAG)"
+          echo "Chart version: $CHART_VERSION"
+
+      - name: Auto-sync on Cargo version change
+        if: steps.versions.outputs.cargo-changed == 'true'
+        run: |
+          CURRENT="${{ steps.versions.outputs.current-cargo }}"
+          NEW="${{ steps.versions.outputs.new-cargo }}"
+
+          if [ "$(printf '%s\n' "$CURRENT" "$NEW" | sort -V | tail -1)" != "$NEW" ]; then
+            echo "ERROR: New version ($NEW) is not greater than current ($CURRENT)"
+            exit 1
+          fi
+
+          NEW_TAG="v${NEW}-eksbuild.1"
+          echo "Updating values.yaml tag to $NEW_TAG and Chart.yaml version to $NEW"
+          sed -i "s|tag: *v[^ ]*|tag: ${NEW_TAG}|" charts/amazon-network-flow-monitor-agent/values.yaml
+          sed -i "s|^version: .*|version: ${NEW}|" charts/amazon-network-flow-monitor-agent/Chart.yaml
+
+          if git diff --quiet; then
+            echo "Already up to date"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add charts/amazon-network-flow-monitor-agent/values.yaml charts/amazon-network-flow-monitor-agent/Chart.yaml
+            git commit -m "chore: Update eksbuild tag to ${NEW_TAG} and chart version to ${NEW}"
+            git push
+          fi
+
+      - name: Validate manual changes
+        if: steps.versions.outputs.cargo-changed == 'false'
+        run: |
+          CARGO="${{ steps.versions.outputs.new-cargo }}"
+          CHART="${{ steps.versions.outputs.chart-version }}"
+          EKS_VERSION="${{ steps.versions.outputs.new-eks-version }}"
+          CURRENT_BUILD="${{ steps.versions.outputs.current-eks-build }}"
+          NEW_BUILD="${{ steps.versions.outputs.new-eks-build }}"
+
+          if [ "$CHART" != "$CARGO" ]; then
+            echo "ERROR: Chart.yaml version ($CHART) != Cargo.toml version ($CARGO)"
+            exit 1
+          fi
+
+          if [ "$EKS_VERSION" != "$CARGO" ]; then
+            echo "ERROR: EKS tag base version ($EKS_VERSION) != Cargo.toml version ($CARGO)"
+            exit 1
+          fi
+
+          if [ "$NEW_BUILD" = "$CURRENT_BUILD" ]; then
+            echo "No eksbuild change, OK"
+            exit 0
+          fi
+
+          EXPECTED=$((CURRENT_BUILD + 1))
+          if [ "$NEW_BUILD" != "$EXPECTED" ]; then
+            echo "ERROR: eksbuild should be $EXPECTED (was $CURRENT_BUILD), got $NEW_BUILD"
+            exit 1
+          fi
+
+          echo "Validation passed"

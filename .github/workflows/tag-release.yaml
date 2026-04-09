@@ -1,0 +1,35 @@
+name: Tag Release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - nfm-controller/Cargo.toml
+      - charts/amazon-network-flow-monitor-agent/values.yaml
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    name: Create version tags
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-tags: true
+          fetch-depth: 0
+      - name: Create tags
+        run: |
+          VERSION=$(grep '^version' nfm-controller/Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          EKSBUILD_TAG=$(grep 'tag:' charts/amazon-network-flow-monitor-agent/values.yaml | head -1 | sed 's/.*tag: *\(v[^ ]*\).*/\1/')
+
+          for TAG in "v${VERSION}" "$EKSBUILD_TAG"; do
+            if git rev-parse "$TAG" >/dev/null 2>&1; then
+              echo "Tag $TAG already exists, skipping"
+            else
+              git tag "$TAG"
+              git push origin "$TAG"
+              echo "Created tag $TAG"
+            fi
+          done
