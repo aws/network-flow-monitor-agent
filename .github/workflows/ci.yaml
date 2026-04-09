@@ -14,6 +14,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Check version consistency
+        run: |
+          CARGO_VERSION=$(grep '^version' nfm-controller/Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          FILE_VERSION=$(cat VERSION)
+          if [ "$CARGO_VERSION" != "$FILE_VERSION" ]; then
+            echo "ERROR: Cargo.toml ($CARGO_VERSION) != VERSION ($FILE_VERSION)"
+            exit 1
+          fi
       - name: Install Rust
         uses: actions-rs/toolchain@v1
         with:

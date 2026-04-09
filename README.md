@@ -71,6 +71,32 @@ sudo -E cargo test --features privileged
 ### Distributions
 You can download the official release from our permanent URLs. For more information, refer to [link](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch-NetworkFlowMonitor-agents-download-agent-commandline.html)
 
+## Versioning
+
+This project follows [Semantic Versioning](https://semver.org/) with tags in the format `vX.Y.Z`:
+
+- `X` (major): Incompatible changes (e.g., breaking config format, removed features)
+- `Y` (minor): New functionality in a backward-compatible manner (e.g., new metrics, new CLI flags)
+- `Z` (patch): Backward-compatible bug fixes and minor improvements
+
+The agent version is defined in two places that must stay in sync:
+- `VERSION` — source of truth for external consumers (CDK pipelines, packaging scripts)
+- `nfm-controller/Cargo.toml` — used by the Rust binary at runtime
+
+CI validates both match on every PR. The RPM build (`create_rpm.sh`) also fails if they diverge.
+
+### Release Tags
+
+When `VERSION` is updated on `main`, a GitHub Action automatically creates a `vX.Y.Z` tag.
+EKS releases use separate `vX.Y.Z-eksbuild.N` tags that may point to different commits
+(e.g., helm chart changes without agent code changes).
+
+### Bumping the Version
+
+1. Update `VERSION` and `nfm-controller/Cargo.toml` to the same value
+2. Merge to `main`
+3. The `tag-release` workflow creates the tag automatically
+
 ## License
 
 This project is licensed under the Apache 2.0 License.

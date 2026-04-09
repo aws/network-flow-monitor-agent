@@ -1,0 +1,46 @@
+name: Tag Release
+
+on:
+  push:
+    branches: [main]
+    paths: [VERSION]
+
+jobs:
+  tag:
+    name: Create version tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-tags: true
+          fetch-depth: 0
+      - name: Validate and tag
+        run: |
+          VERSION=$(cat VERSION)
+          CARGO_VERSION=$(grep '^version' nfm-controller/Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+
+          if [ "$VERSION" != "$CARGO_VERSION" ]; then
+            echo "ERROR: VERSION ($VERSION) != Cargo.toml ($CARGO_VERSION)"
+            exit 1
+          fi
+
+          TAG="v${VERSION}"
+
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists, skipping"
+            exit 0
+          fi
+
+          # Validate new version is greater than latest tag
+          LATEST=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)
+          if [ -n "$LATEST" ]; then
+            echo "Latest tag: $LATEST, new tag: $TAG"
+            if [ "$(printf '%s\n' "$LATEST" "$TAG" | sort -V | tail -1)" != "$TAG" ]; then
+              echo "ERROR: $TAG is not greater than $LATEST"
+              exit 1
+            fi
+          fi
+
+          git tag "$TAG"
+          git push origin "$TAG"
+          echo "Created tag $TAG"
