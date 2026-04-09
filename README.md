@@ -79,23 +79,37 @@ This project follows [Semantic Versioning](https://semver.org/) with tags in the
 - `Y` (minor): New functionality in a backward-compatible manner (e.g., new metrics, new CLI flags)
 - `Z` (patch): Backward-compatible bug fixes and minor improvements
 
-The agent version is defined in two places that must stay in sync:
-- `VERSION` — source of truth for external consumers (CDK pipelines, packaging scripts)
-- `nfm-controller/Cargo.toml` — used by the Rust binary at runtime
-
-CI validates both match on every PR. The RPM build (`create_rpm.sh`) also fails if they diverge.
+The agent version is defined in `nfm-controller/Cargo.toml` and used by the Rust binary at runtime.
 
 ### Release Tags
 
-When `VERSION` is updated on `main`, a GitHub Action automatically creates a `vX.Y.Z` tag.
+When the version in `Cargo.toml` is updated on `main`, a GitHub Action automatically creates a `vX.Y.Z` tag.
 EKS releases use separate `vX.Y.Z-eksbuild.N` tags that may point to different commits
 (e.g., helm chart changes without agent code changes).
 
 ### Bumping the Version
 
-1. Update `VERSION` and `nfm-controller/Cargo.toml` to the same value
+1. Update the version in `nfm-controller/Cargo.toml`
 2. Merge to `main`
 3. The `tag-release` workflow creates the tag automatically
+
+### Version Sync
+
+The following files are kept in sync automatically via the `version-sync` workflow:
+
+| File | Field | Updated by |
+|---|---|---|
+| `nfm-controller/Cargo.toml` | `version` | Developer (source of truth) |
+| `charts/.../Chart.yaml` | `version` | Auto-synced from Cargo.toml |
+| `charts/.../values.yaml` | `image.tag` | Auto-synced or manual bump |
+
+When `Cargo.toml` version changes in a PR:
+- `Chart.yaml` version is updated automatically
+- `values.yaml` tag is reset to `vX.Y.Z-eksbuild.1`
+
+When only `values.yaml` tag changes (e.g., helm chart fix):
+- The `eksbuild` number must increment by exactly 1
+- The base version must match `Cargo.toml`
 
 ## License
 
