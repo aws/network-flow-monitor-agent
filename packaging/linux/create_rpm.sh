@@ -19,8 +19,13 @@ if [[ "$TARGET_ARCH" != "x86_64" && "$TARGET_ARCH" != "aarch64" ]]; then
     exit 1
 fi
 
-AGENT_VERSION=$(grep '^version' nfm-controller/Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
-echo "Detected agent version: $AGENT_VERSION"
+AGENT_VERSION=$(cat VERSION)
+CARGO_VERSION=$(grep '^version' nfm-controller/Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+if [ "$AGENT_VERSION" != "$CARGO_VERSION" ]; then
+    echo "ERROR: VERSION ($AGENT_VERSION) does not match Cargo.toml ($CARGO_VERSION)"
+    exit 1
+fi
+echo "Agent version: $AGENT_VERSION"
 
 cargo build --release
 
