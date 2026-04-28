@@ -43,10 +43,12 @@ spec:
             - -c
             - |
               set -e
-              # Set rmem_max to 12.8MB to hold 10k Netfilter Conntrack Messages
+              # Configure rmem_max and aim to hold more Netfilter Conntrack Messages
               CURRENT=$(sysctl -n net.core.rmem_max)
-              REQUIRED=12800000
+              REQUIRED={{ int .Values.rmemMax }}
               echo "Current rmem_max: $CURRENT"
+              # Save original value for restoration on pod exit
+              echo $CURRENT > /config/rmem_max_original
               if [ "$CURRENT" -lt "$REQUIRED" ]; then
                 sysctl -w net.core.rmem_max=$REQUIRED
                 echo "Updated rmem_max to: $REQUIRED"
@@ -86,7 +88,51 @@ spec:
             - name: cgroup-mount
               mountPath: /cgroup-mount
               mountPropagation: Bidirectional
+            - name: config
+              mountPath: /config
       containers:
+        - name: cleanup
+          # This privileged sidecar exists solely to restore host state on pod termination.
+          # The main container cannot do this because:
+          # 1. sysctl requires SYS_ADMIN or privileged
+          # 2. umount with Bidirectional propagation requires privileged
+          # On SIGTERM it restores rmem_max to its original value and unmounts the cgroup2 filesystem.
+          image: {{ include "aws-network-flow-monitor-agent.image" . }}
+          securityContext:
+            privileged: true
+            readOnlyRootFilesystem: true
+          command:
+            - sh
+            - -c
+            - |
+              trap '
+                if [ -f /config/rmem_max_original ]; then
+                  ORIGINAL=$(cat /config/rmem_max_original)
+                  echo "Restoring rmem_max to: $ORIGINAL"
+                  sysctl -w net.core.rmem_max=$ORIGINAL && echo "Restored rmem_max" || echo "Failed to restore rmem_max"
+                fi
+                if umount /cgroup-mount/cgroup-nfm-agent; then
+                  echo "Unmounted cgroup"
+                else
+                  echo "Failed to unmount cgroup (may not have been mounted)"
+                fi
+              ' TERM
+              sleep infinity &
+              wait
+          resources:
+            limits:
+              cpu: 10m
+              memory: 16Mi
+            requests:
+              cpu: 1m
+              memory: 8Mi
+          volumeMounts:
+            - name: cgroup-mount
+              mountPath: /cgroup-mount
+              mountPropagation: Bidirectional
+            - name: config
+              mountPath: /config
+              readOnly: true
         - name: {{ .Values.daemonSet.name }}
           image: {{ include "aws-network-flow-monitor-agent.image" . }}
           securityContext:
@@ -139,6 +185,8 @@ spec:
           {{- end }}
       volumes:
         - name: cgroup-mount
+          emptyDir: {}
+        - name: config
           emptyDir: {}
       {{- if .Values.caCerts.enabled }}
         - name: ca-bundle

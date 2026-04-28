@@ -1,6 +1,6 @@
 image:
   override: '' # if defined, this value is used as the canonical image name ("{image_repo}{image_name}:{tag}")
-  tag: v1.1.3-eksbuild.3  # this is the default image tag. It might be overwritten at runtime
+  tag: v1.1.3-eksbuild.4  # this is the default image tag. It might be overwritten at runtime
   containerRegistry: '' # this gets overriden at runtime with the correct Docker Image Registry
   name: aws-network-sonar-agent # this determines the ecr folder to look for in the target ecr registry
 
@@ -52,6 +52,12 @@ caCerts:
   mountPath: "/etc/ssl/certs"
   # File name in the container for the CA certificate bundle
   fileName: "ca-bundle.crt"
+
+# Used to set maximum possible receive buffer allowed for all networking protocols.
+# Value of 12800000 will provide room for 10k NetFilter Conntrack event messages
+# Lesser values are also acceptable but might reduce NFM Agent NAT resolution precision, especially on very high throughput (>50k new tcp conn persec) hosts.
+# Which might result in Kubernetes internal IPs (such as cluster-ip of services) to appear in flow reports (because of them not being un-NATed).
+rmemMax: 12800000
 
 resources:
   limits:

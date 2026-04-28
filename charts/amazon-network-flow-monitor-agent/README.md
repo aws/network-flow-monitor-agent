@@ -9,7 +9,7 @@ You can use the publicly available images, or build the agent and upload to your
 ECR_REPO_CONTAINING_NFM_IMAGE="602401143452.dkr.ecr.eu-west-1.amazonaws.com"
 
 #### Set an image tag
-IMAGE_TAG_SUFFIX="v1.1.3-eksbuild.3"
+IMAGE_TAG_SUFFIX="v1.1.3-eksbuild.4"
 IMAGE_TAG="aws-network-sonar-agent:$IMAGE_TAG_SUFFIX"
 
 #### Build Docker image and publish it to your repo (SKIP if using 602401143452 (public ECR))
