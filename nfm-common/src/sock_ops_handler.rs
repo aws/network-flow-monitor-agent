@@ -586,7 +586,11 @@ mod test {
             sock_key: cookie,
             cpu_id: MOCK_CPU_ID,
         };
-        let _ = mock_ebpf_maps.NFM_SK_PROPS.iter().find(|e| e.sock_key == cookie).unwrap();
+        let _ = mock_ebpf_maps
+            .NFM_SK_PROPS
+            .iter()
+            .find(|e| e.sock_key == cookie)
+            .unwrap();
         let sock_stats = mock_ebpf_maps.sock_stats(&composite_key);
         assert_eq!(sock_stats.connect_start_us, mock_ktime_us);
         assert_eq!(sock_stats.connect_end_us, mock_ktime_us + 10);

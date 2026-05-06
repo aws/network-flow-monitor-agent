@@ -8,9 +8,7 @@
  */
 
 use crate::constants::{MAX_ENTRIES_SK_STATS_LO, NFM_SK_PROPS_RB_BYTE_SIZE};
-use crate::network::{
-    ControlData, CpuSockKey, EventCounters, SockOpsStats, SockStats,
-};
+use crate::network::{ControlData, CpuSockKey, EventCounters, SockOpsStats, SockStats};
 
 use aya_ebpf::helpers::{bpf_get_smp_processor_id, bpf_get_socket_cookie, bpf_ktime_get_boot_ns};
 

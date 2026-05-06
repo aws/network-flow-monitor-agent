@@ -51,7 +51,11 @@ pub fn lookup_batch<K: Pod + Default, V: Pod + Default>(
     loop {
         let batch_size = max_entries.min(keys.len()) as u32;
         let mut attr = BatchAttr {
-            in_batch: if first_call { 0 } else { &in_batch as *const u64 as u64 },
+            in_batch: if first_call {
+                0
+            } else {
+                &in_batch as *const u64 as u64
+            },
             out_batch: &mut out_batch as *mut u64 as u64,
             keys: keys.as_mut_ptr() as u64,
             values: values.as_mut_ptr() as u64,

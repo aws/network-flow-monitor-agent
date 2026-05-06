@@ -9,7 +9,7 @@
  * [a] https://github.com/aya-rs/aya/issues/36 Support Unit Testing of BPF Programs
  */
 
-use crate::constants::{MAX_ENTRIES_SK_STATS_HI};
+use crate::constants::MAX_ENTRIES_SK_STATS_HI;
 use crate::network::{
     ControlData, CpuSockKey, EventCounters, SockOpsStats, SockPropsEntry, SockStats,
 };
@@ -326,12 +326,8 @@ macro_rules! bpf_get_rand_u32 {
 #[macro_export]
 macro_rules! bpf_ringbuf_output {
     ($self:ident, $map_name:ident, $val:expr) => {{
-        let rb = &mut $self
-            .mock_ebpf_maps
-            .as_mut()
-            .unwrap()
-            .$map_name;
-        if rb.len() >= crate::constants::MAX_ENTRIES_SK_PROPS_HI as usize {
+        let rb = &mut $self.mock_ebpf_maps.as_mut().unwrap().$map_name;
+        if rb.len() >= $crate::constants::MAX_ENTRIES_SK_PROPS_HI as usize {
             Err(-1i64)
         } else {
             rb.push(*$val);

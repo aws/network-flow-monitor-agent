@@ -3,7 +3,7 @@
     "limits": {
       "User CPU": 2.5,
       "User+BPF CPU 1-Core p90": 20.0,
-      "Memory": 30000,
+      "Memory": 35000,
       "BPF CPU": 5.0
     }
   },
@@ -11,7 +11,7 @@
     "limits": {
       "User CPU": 2.5,
       "User+BPF CPU 1-Core p90": 30.0,
-      "Memory": 35000,
+      "Memory": 40000,
       "BPF CPU": 4.0
     }
   },
@@ -19,7 +19,7 @@
     "limits": {
       "User CPU": 2.5,
       "User+BPF CPU 1-Core p90": 40.0,
-      "Memory": 40000,
+      "Memory": 45000,
       "BPF CPU": 3.0
     }
   },
@@ -27,7 +27,7 @@
     "limits": {
       "User CPU": 2.5,
       "User+BPF CPU 1-Core p90": 60.0,
-      "Memory": 60000,
+      "Memory": 65000,
       "BPF CPU": 2.5
     }
   },
@@ -35,7 +35,7 @@
     "limits": {
       "User CPU": 2.5,
       "User+BPF CPU 1-Core p90": 80.0,
-      "Memory": 75000,
+      "Memory": 80000,
       "BPF CPU": 3.0
     }
   },
@@ -43,7 +43,7 @@
     "limits": {
       "User CPU": 2.5,
       "User+BPF CPU 1-Core p90": 100.0,
-      "Memory": 75000,
+      "Memory": 85000,
       "BPF CPU": 1.5
     }
   }

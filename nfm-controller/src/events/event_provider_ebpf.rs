@@ -19,9 +19,7 @@ use nfm_common::network::{
 use anyhow::{Context, Result};
 use aya::{
     include_bytes_aligned,
-    maps::{
-        Array as SharedArray, HashMap as SharedHashMap, MapData, PerCpuArray, RingBuf,
-    },
+    maps::{Array as SharedArray, HashMap as SharedHashMap, MapData, PerCpuArray, RingBuf},
     programs::{CgroupAttachMode, SockOps},
     Ebpf, EbpfLoader, VerifierLogLevel,
 };
@@ -114,8 +112,7 @@ impl<C: Clock> EventProvider for EventProviderEbpf<C> {
             if item.len() < size_of::<SockPropsEntry>() {
                 continue;
             }
-            let entry: &SockPropsEntry =
-                unsafe { &*(item.as_ptr() as *const SockPropsEntry) };
+            let entry: &SockPropsEntry = unsafe { &*(item.as_ptr() as *const SockPropsEntry) };
             let result =
                 self.sock_cache
                     .add_context(entry.sock_key, entry.context, context_timestamp);
@@ -196,7 +193,8 @@ impl<C: Clock> EventProvider for EventProviderEbpf<C> {
 
     // Returns and resets aggregated network stats.
     fn network_stats(&mut self) -> Vec<AggregateResults> {
-        let results: Vec<AggregateResults> = mem::take(&mut self.flow_cache).into_values().collect();
+        let results: Vec<AggregateResults> =
+            mem::take(&mut self.flow_cache).into_values().collect();
         // Pre-allocate capacity based on previous cycle to reduce rehashing.
         self.flow_cache.reserve(results.len());
         results
@@ -266,8 +264,7 @@ impl<C: Clock> EventProviderEbpf<C> {
                 .context(format!("Failed to load BPF map {NFM_CONTROL_MAP_NAME}"))?;
 
         let max_concurrent_socks = sock_props_max_entries;
-        let ebpf_allocated_mem_kb =
-            calculate_ebpf_memory_usage(sock_stats_max_entries);
+        let ebpf_allocated_mem_kb = calculate_ebpf_memory_usage(sock_stats_max_entries);
 
         info!(ebpf_allocated_mem_kb; "Calculated BPF maps approximate memory usage");
 
@@ -391,7 +388,8 @@ impl SocketQueries {
             let sock_last_read = sock_cache.get_last_touched(&composite_key.sock_key);
             agg_stats.stats.add_from(&new_stats, sock_last_read);
             agg_stats
-                .cpus.push(composite_key.cpu_id.try_into().unwrap());
+                .cpus
+                .push(composite_key.cpu_id.try_into().unwrap());
         }
     }
 
@@ -470,7 +468,6 @@ mod test {
         AF_INET,
     };
 
-    use aya::maps::MapError;
     use hashbrown::HashMap;
     use std::net::{IpAddr, Ipv4Addr};
     use std::str::FromStr;
