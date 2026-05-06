@@ -11,6 +11,14 @@ pub type SockKey = u64;
 pub type SingletonKey = u64;
 pub type Ipv6Bytes = [u8; 16];
 
+/// Entry written to the NFM_SK_PROPS ringbuf by BPF and read by userspace.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SockPropsEntry {
+    pub sock_key: SockKey,
+    pub context: SockContext,
+}
+
 pub const AF_INET: u32 = 2;
 pub const AF_INET6: u32 = 10;
 
@@ -73,7 +81,7 @@ bitflags! {
     #[repr(C)]
     #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
     #[cfg_attr(not(feature = "bpf"), derive(serde::Serialize))]
-    pub struct SockStateFlags: u32 {
+    pub struct SockStateFlags: u8 {
         // Types of states the socket has been in.
         const ENTERED_ESTABLISH = 1 << 1;
         const STARTED_CLOSURE = 1 << 2;
@@ -130,7 +138,7 @@ pub struct SockStats {
 
     // Keep the struct size a multiple of 8 bytes to allow the eBPF verifier to confirm all bytes
     // are initialized.
-    pub _pad: [u8; 6],
+    pub _pad: [u8; 1],
 }
 
 impl SockStats {
