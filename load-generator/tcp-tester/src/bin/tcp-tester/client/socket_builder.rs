@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 use std::os::fd::AsFd;
+use std::time::Duration;
 use std::{borrow::BorrowMut, os::fd::AsRawFd};
 
 use aya::maps::{HashMap, MapData};
@@ -7,9 +8,9 @@ use netns_rs::NetNs;
 use nix::sys::socket::{self as sockopt};
 use tcp_tester::os;
 use tcp_tester_common::{Direction, FlowConfig, SocketKey};
-use tokio::net::TcpSocket;
+use tokio::net::{TcpSocket, TcpStream};
 
-use super::{client_socket_error::ClientSocketError, conditioned_tcp_stream::ConditionedTcpStream};
+use super::client_socket_error::ClientSocketError;
 
 pub struct ClientSocketBuilder<T> {
     netns: NetNs,
@@ -19,14 +20,20 @@ pub struct ClientSocketBuilder<T> {
 // Initiates a TCP connection without traffic control.  Thus, the socket's traffic is not tracked
 // by a separate sock_ops program, nor rate-limited by tc.
 pub async fn connect_sans_tc(
-    netns: NetNs,
+    netns: &NetNs,
     addr: SocketAddr,
-) -> Result<ConditionedTcpStream, ClientSocketError> {
-    let socket = netns.run(|_| TcpSocket::new_v4().unwrap())?;
-    socket.set_reuseaddr(true)?;
-    socket.set_reuseport(true)?;
+) -> Result<TcpStream, ClientSocketError> {
+    let socket = netns
+        .run(|_| {
+            let s = TcpSocket::new_v4().unwrap();
+            s.set_reuseaddr(true).unwrap();
+            s.set_reuseport(true).unwrap();
+            s.set_linger(Some(Duration::from_secs(0))).unwrap();
+            s
+        })
+        .map_err(|e| ClientSocketError::NsError(e))?;
     let stream = socket.connect(addr).await?;
-    Ok(ConditionedTcpStream { stream })
+    Ok(stream)
 }
 
 impl<T> ClientSocketBuilder<T>
@@ -45,7 +52,7 @@ where
         addr: SocketAddr,
         egress_config: FlowConfig,
         ingress_config: FlowConfig,
-    ) -> Result<ConditionedTcpStream, ClientSocketError> {
+    ) -> Result<TcpStream, ClientSocketError> {
         let socket = self.netns.run(|_| TcpSocket::new_v4().unwrap())?;
         let fd = socket.as_fd();
         let clone_fd = fd.try_clone_to_owned()?;
@@ -70,6 +77,6 @@ where
 
         let stream = socket.connect(addr).await?;
 
-        Ok(ConditionedTcpStream { stream })
+        Ok(stream)
     }
 }

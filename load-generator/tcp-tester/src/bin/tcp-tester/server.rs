@@ -46,13 +46,17 @@ pub async fn server(port: u16, response_delay_ms: u64) {
     server_socket.bind(server_address).unwrap();
     server_socket.set_reuseaddr(true).unwrap();
 
-    let listener = server_socket.listen(1024).unwrap();
+    let listener = server_socket.listen(65535).unwrap();
     info!("Server listening on port {}", port);
 
     loop {
-        debug!("waiting for connection...");
-        let (stream, _) = listener.accept().await.unwrap();
-        debug!("incoming message");
-        tokio::spawn(handle_client(stream, response_delay_ms));
+        match listener.accept().await {
+            Ok((stream, _)) => {
+                tokio::spawn(handle_client(stream, response_delay_ms));
+            }
+            Err(e) => {
+                debug!("Accept error: {}", e);
+            }
+        }
     }
 }

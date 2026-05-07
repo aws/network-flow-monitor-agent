@@ -42,7 +42,7 @@ pub struct Params {
     #[arg(short = 't', long, default_value_t = OnOff::Off)]
     pub traffic_shaping: OnOff,
 
-    /// Controls whether traffic shaping is enabled.
+    /// Controls whether to send data for each socket.
     #[arg(short = 'd', long, default_value_t = OnOff::Off)]
     pub send_data: OnOff,
 

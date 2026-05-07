@@ -69,3 +69,11 @@ ip netns exec $(name server) ethtool -K i4 tx-tcp-segmentation off || true
 
 ip netns exec $(name client) sysctl -w net.ipv4.tcp_sack=1
 ip netns exec $(name server) sysctl -w net.ipv4.tcp_sack=1
+
+# Expand ephemeral port range and enable TIME_WAIT reuse for high connection rates
+ip netns exec $(name client) sysctl -w net.ipv4.ip_local_port_range="1024 65535"
+ip netns exec $(name client) sysctl -w net.ipv4.tcp_tw_reuse=1
+
+# Increase accept backlog for high connection rates
+ip netns exec $(name server) sysctl -w net.core.somaxconn=65535
+ip netns exec $(name server) sysctl -w net.ipv4.tcp_max_syn_backlog=65535
