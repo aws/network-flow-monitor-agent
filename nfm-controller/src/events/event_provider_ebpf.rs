@@ -43,6 +43,7 @@ pub struct EventProviderEbpf<C: Clock> {
     ebpf_counters_latest: EventCounters,
     ebpf_counters_published: EventCounters,
     ebpf_allocated_mem_kb: u32,
+    sock_stats_max_entries: usize,
 
     process_counters: ProcessCounters,
     notrack_us: u64,
@@ -60,13 +61,15 @@ fn instantiate_ebpf_object(
 ) -> Result<Ebpf> {
     // Embed the eBPF raw bytes at compile time, and load them into the kernel at runtime.
     let ebpf_bytes = include_bytes_aligned!(env!("BPF_OBJECT_PATH"));
-    info!(sock_props_max_entries, sock_stats_max_entries; "Loading eBPF program");
+    let ringbuf_size = nfm_common::constants::ringbuf_byte_size(sock_props_max_entries);
+    info!(sock_props_max_entries, sock_stats_max_entries, ringbuf_size; "Loading eBPF program");
     EbpfLoader::new()
         .verifier_log_level(VerifierLogLevel::VERBOSE | VerifierLogLevel::STATS)
         .set_max_entries(
             NFM_SK_STATS_MAP_NAME,
             sock_stats_max_entries.try_into().unwrap(),
         )
+        .set_max_entries(NFM_SK_PROPS_RB_MAP_NAME, ringbuf_size)
         .load(ebpf_bytes)
         .context("Failed to parse eBPF program")
 }
@@ -77,16 +80,18 @@ pub fn map_max_entries(mem_total_bytes: u64) -> (u64, u64) {
 
     // This divisor was chosen arbitrarily based on experimentation.
     let divisor: u64 = 5_000_000_000;
-    let sock_props_max_entries = (mem_total_bytes / divisor * MAX_ENTRIES_SK_PROPS_LO)
+    let mut sock_props_max_entries = (mem_total_bytes / divisor * MAX_ENTRIES_SK_PROPS_LO)
         .clamp(MAX_ENTRIES_SK_PROPS_LO, MAX_ENTRIES_SK_PROPS_HI);
+    // shape sock_props_max_entries. as ringbuf must be power of two
+    sock_props_max_entries = nfm_common::constants::ringbuf_entry_capacity(sock_props_max_entries);
     let sock_stats_max_entries = (sock_props_max_entries * SK_STATS_TO_PROPS_RATIO)
         .clamp(MAX_ENTRIES_SK_STATS_LO, MAX_ENTRIES_SK_STATS_HI);
 
     (sock_props_max_entries, sock_stats_max_entries)
 }
 
-fn calculate_ebpf_memory_usage(sock_stats_max_entries: u64) -> u32 {
-    let ringbuf_size = nfm_common::constants::NFM_SK_PROPS_RB_BYTE_SIZE as u64;
+fn calculate_ebpf_memory_usage(sock_props_max_entries: u64, sock_stats_max_entries: u64) -> u32 {
+    let ringbuf_size = nfm_common::constants::ringbuf_byte_size(sock_props_max_entries) as u64;
     let sock_stats_size = size_of::<CpuSockKey>() + size_of::<SockStats>();
     ((ringbuf_size + (sock_stats_max_entries * sock_stats_size as u64)) as f64 / 1000.0).ceil()
         as u32
@@ -98,7 +103,8 @@ impl<C: Clock> EventProvider for EventProviderEbpf<C> {
         debug!("Aggregating across sockets");
 
         // Apply adaptive sampling if we're receiving events faster than we can process.
-        if self.ebpf_counters().map_insertion_errors > 0 {
+        let ebpf_delta = self.ebpf_counters();
+        if ebpf_delta.map_insertion_errors > 0 {
             self.increase_sampling_interval();
         } else {
             self.decrease_sampling_interval();
@@ -123,10 +129,8 @@ impl<C: Clock> EventProvider for EventProviderEbpf<C> {
         }
 
         // Aggregate stats across CPU cores, then take the delta from the previous aggregation cycle.
-        let stats_batch = bpf_batch::lookup_batch(
-            &self.ebpf_sock_stats,
-            self.sock_cache.max_entries() * 3, // stats map is ~3x props map
-        );
+        let stats_batch =
+            bpf_batch::lookup_batch(&self.ebpf_sock_stats, self.sock_stats_max_entries);
         SocketQueries::aggregate_sock_stats(
             stats_batch.into_iter(),
             &self.sock_cache,
@@ -188,6 +192,23 @@ impl<C: Clock> EventProvider for EventProviderEbpf<C> {
             cpus_per_sock_avg = num_cpus_avg,
             cpus_per_sock_max = num_cpus_max;
             "Aggregation complete"
+        );
+
+        info!(
+            ebpf_events = ebpf_delta.socket_events,
+            ebpf_connects = ebpf_delta.active_connect_events + ebpf_delta.passive_established_events,
+            ebpf_rb_drops = ebpf_delta.map_insertion_errors,
+            socks_added = sock_add_result.completed,
+            socks_evicted = sock_eviction_result.completed,
+            deltas = sock_delta_result.completed,
+            flows_agg = flow_aggregation_result.completed,
+            flows_agg_fail = flow_aggregation_result.failed,
+            flows_agg_part = flow_aggregation_result.partial,
+            sock_cache_len = self.sock_cache.len(),
+            flow_cache_len = self.flow_cache.len(),
+            stale = num_stale,
+            sampling = self.ebpf_control_data.sampling_interval;
+            "cycle_stats"
         );
     }
 
@@ -263,9 +284,8 @@ impl<C: Clock> EventProviderEbpf<C> {
             SharedArray::try_from(ebpf_handle.take_map(NFM_CONTROL_MAP_NAME).unwrap())
                 .context(format!("Failed to load BPF map {NFM_CONTROL_MAP_NAME}"))?;
 
-        let max_concurrent_socks = sock_props_max_entries;
-        let ebpf_allocated_mem_kb = calculate_ebpf_memory_usage(sock_stats_max_entries);
-
+        let ebpf_allocated_mem_kb =
+            calculate_ebpf_memory_usage(sock_props_max_entries, sock_stats_max_entries);
         info!(ebpf_allocated_mem_kb; "Calculated BPF maps approximate memory usage");
 
         let mut provider = EventProviderEbpf {
@@ -278,13 +298,14 @@ impl<C: Clock> EventProviderEbpf<C> {
             ebpf_counters_latest: EventCounters::default(),
             ebpf_counters_published: EventCounters::default(),
             ebpf_allocated_mem_kb,
+            sock_stats_max_entries: sock_stats_max_entries as usize,
             process_counters: ProcessCounters {
                 restarts: 1,
                 ..Default::default()
             },
             notrack_us: notrack_secs * 1_000_000,
             clock,
-            sock_cache: SockCache::with_max_entries(max_concurrent_socks.try_into().unwrap()),
+            sock_cache: SockCache::with_max_entries(sock_props_max_entries.try_into().unwrap()),
             sock_stream: HashMap::new(),
             flow_cache: HashMap::new(),
             agg_socks_handled: 0,
@@ -350,7 +371,7 @@ impl<C: Clock> EventProviderEbpf<C> {
         delta_counts
     }
 
-    // Evicts from the sock_stats map.
+    // Evicts from the sock_stats map via single bpf batch delete syscall.
     fn perform_bpf_eviction(
         &mut self,
         to_evict: Vec<(SockKey, SockWrapper)>,
@@ -440,7 +461,8 @@ impl SocketQueries {
 
                 flow_agg.stats.add_from(&agg_stats.stats);
                 if sock_wrapper.should_evict() {
-                    flow_agg.stats.sockets_completed += 1;
+                    flow_agg.stats.sockets_completed =
+                        flow_agg.stats.sockets_completed.saturating_add(1);
                 }
                 result.completed += 1;
             } else {
@@ -461,7 +483,7 @@ mod test {
     use crate::events::{AggSockStats, SockCache, SockOperationResult};
     use nfm_common::constants::{
         AGG_FLOWS_MAX_ENTRIES, MAX_ENTRIES_SK_PROPS_HI, MAX_ENTRIES_SK_PROPS_LO,
-        MAX_ENTRIES_SK_STATS_HI, MAX_ENTRIES_SK_STATS_LO,
+        MAX_ENTRIES_SK_STATS_HI, MAX_ENTRIES_SK_STATS_LO, SK_STATS_TO_PROPS_RATIO,
     };
     use nfm_common::{
         network::{CpuSockKey, SockContext, SockKey, SockStats},
@@ -772,32 +794,50 @@ mod test {
     fn test_map_max_entries_low_mem() {
         let mem_total_bytes: u64 = 1;
         let (max_sk_props, max_sk_stats) = map_max_entries(mem_total_bytes);
-        assert_eq!(max_sk_props, MAX_ENTRIES_SK_PROPS_LO);
-        assert_eq!(max_sk_stats, MAX_ENTRIES_SK_STATS_LO);
+        // sock_props is ringbuf_entry_capacity(MAX_ENTRIES_SK_PROPS_LO)
+        let expected_props = nfm_common::constants::ringbuf_entry_capacity(MAX_ENTRIES_SK_PROPS_LO);
+        assert_eq!(max_sk_props, expected_props);
+        assert_eq!(
+            max_sk_stats,
+            (expected_props * SK_STATS_TO_PROPS_RATIO)
+                .clamp(MAX_ENTRIES_SK_STATS_LO, MAX_ENTRIES_SK_STATS_HI)
+        );
     }
 
     #[test]
     fn test_map_max_entries_lowish_mem() {
         let mem_total_bytes: u64 = 400_000_000;
         let (max_sk_props, max_sk_stats) = map_max_entries(mem_total_bytes);
-        assert_eq!(max_sk_props, MAX_ENTRIES_SK_PROPS_LO);
-        assert_eq!(max_sk_stats, MAX_ENTRIES_SK_STATS_LO);
+        let expected_props = nfm_common::constants::ringbuf_entry_capacity(MAX_ENTRIES_SK_PROPS_LO);
+        assert_eq!(max_sk_props, expected_props);
+        assert_eq!(
+            max_sk_stats,
+            (expected_props * SK_STATS_TO_PROPS_RATIO)
+                .clamp(MAX_ENTRIES_SK_STATS_LO, MAX_ENTRIES_SK_STATS_HI)
+        );
     }
 
     #[test]
     fn test_map_max_entries_medium_mem() {
         let mem_total_bytes: u64 = 1_000_000_000;
         let (max_sk_props, max_sk_stats) = map_max_entries(mem_total_bytes);
-        assert_eq!(max_sk_props, MAX_ENTRIES_SK_PROPS_LO);
-        assert_eq!(max_sk_stats, MAX_ENTRIES_SK_STATS_LO);
+        let expected_props = nfm_common::constants::ringbuf_entry_capacity(MAX_ENTRIES_SK_PROPS_LO);
+        assert_eq!(max_sk_props, expected_props);
+        assert_eq!(
+            max_sk_stats,
+            (expected_props * SK_STATS_TO_PROPS_RATIO)
+                .clamp(MAX_ENTRIES_SK_STATS_LO, MAX_ENTRIES_SK_STATS_HI)
+        );
     }
 
     #[test]
     fn test_map_max_entries_highish_mem() {
         let mem_total_bytes: u64 = 34_000_000_000;
         let (max_sk_props, max_sk_stats) = map_max_entries(mem_total_bytes);
-        assert!(max_sk_props > MAX_ENTRIES_SK_PROPS_LO);
-        assert!(max_sk_props < MAX_ENTRIES_SK_PROPS_HI);
+        let lo_cap = nfm_common::constants::ringbuf_entry_capacity(MAX_ENTRIES_SK_PROPS_LO);
+        let hi_cap = nfm_common::constants::ringbuf_entry_capacity(MAX_ENTRIES_SK_PROPS_HI);
+        assert!(max_sk_props > lo_cap);
+        assert!(max_sk_props < hi_cap);
 
         assert!(max_sk_stats > MAX_ENTRIES_SK_STATS_LO);
         assert!(max_sk_stats < MAX_ENTRIES_SK_STATS_HI);
@@ -807,7 +847,8 @@ mod test {
     fn test_map_max_entries_highest_mem() {
         let mem_total_bytes: u64 = u64::MAX;
         let (max_sk_props, max_sk_stats) = map_max_entries(mem_total_bytes);
-        assert_eq!(max_sk_props, MAX_ENTRIES_SK_PROPS_HI);
+        let expected_props = nfm_common::constants::ringbuf_entry_capacity(MAX_ENTRIES_SK_PROPS_HI);
+        assert_eq!(max_sk_props, expected_props);
         assert_eq!(max_sk_stats, MAX_ENTRIES_SK_STATS_HI);
     }
 
@@ -884,7 +925,7 @@ mod test {
     #[test]
     fn test_calculate_ebpf_memory_usage_max() {
         // Will deliberately break at sock struct changes and provide a manual review step
-        let result = calculate_ebpf_memory_usage(MAX_ENTRIES_SK_STATS_HI);
-        assert_eq!(result, 8338);
+        let result = calculate_ebpf_memory_usage(MAX_ENTRIES_SK_PROPS_HI, MAX_ENTRIES_SK_STATS_HI);
+        assert_eq!(result, 7858);
     }
 }

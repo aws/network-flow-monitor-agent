@@ -12,11 +12,30 @@ pub const MAX_ENTRIES_SK_STATS_HI: u64 = SK_STATS_TO_PROPS_RATIO * MAX_ENTRIES_S
 pub const AGG_FLOWS_MAX_ENTRIES: u32 = 10_000;
 
 /// Ringbuf size for NFM_SK_PROPS_RB. Must be a power of 2 (kernel requirement).
-/// Ringbuf pre-allocates the full 2 MiB at map creation. The advantage over HashMap is zero-syscall reads (mmap-ed) and lock-free writes from BPF.
-/// Sized to hold MAX_ENTRIES_SK_PROPS_HI (20000) entries:
-///   (sizeof(SockPropsEntry) + 8-byte ringbuf header) * 20000 = 68 * 20000 = 1,360,000
-///   → next power of 2 = 2,097,152 (2 MiB)
-pub const NFM_SK_PROPS_RB_BYTE_SIZE: u32 = 2 * 1024 * 1024;
+/// Ringbuf pre-allocates the full buffer at map creation. The advantage over HashMap
+/// is zero-syscall reads (mmap-ed) and lock-free writes from BPF.
+/// This constant is used as the default in the eBPF object; at load time it is
+/// overridden dynamically via `set_max_entries` based on available memory.
+pub const NFM_SK_PROPS_RB_BYTE_SIZE: u32 = 1024 * 1024;
+
+/// BPF ringbuf record header overhead (per entry).
+const RINGBUF_RECORD_HEADER_SIZE: u64 = 8;
+
+/// Size of a single ringbuf entry including the record header.
+const RINGBUF_ENTRY_SIZE: u64 =
+    core::mem::size_of::<crate::network::SockPropsEntry>() as u64 + RINGBUF_RECORD_HEADER_SIZE;
+
+/// Computes the ringbuf byte size needed to hold `sock_props_max_entries` entries.
+/// Returns a power-of-2 value as required by the kernel.
+pub fn ringbuf_byte_size(sock_props_max_entries: u64) -> u32 {
+    (RINGBUF_ENTRY_SIZE * sock_props_max_entries).next_power_of_two() as u32
+}
+
+/// Returns the number of entries that fit in the ringbuf after the power-of-2 roundup.
+/// This will be used to size the sock_cache so it matches the actual ringbuf capacity.
+pub fn ringbuf_entry_capacity(sock_props_max_entries: u64) -> u64 {
+    ringbuf_byte_size(sock_props_max_entries) as u64 / RINGBUF_ENTRY_SIZE
+}
 
 pub const EBPF_PROGRAM_NAME: &str = "nfm_sock_ops";
 pub const NFM_CONTROL_MAP_NAME: &str = "NFM_CONTROL";

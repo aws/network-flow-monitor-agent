@@ -186,7 +186,8 @@ impl<'a> TcpSockOpsHandler<'a> {
 
                 if new_state == BPF_TCP_ESTABLISHED {
                     new_flags |= SockStateFlags::ENTERED_ESTABLISH;
-                    sock_stats.connect_end_us = self.now_us;
+                    sock_stats.connect_duration_us =
+                        (self.now_us - sock_stats.connect_start_us) as u32;
 
                     if old_state == BPF_TCP_SYN_SENT {
                         self.counters.active_established_events += 1;
@@ -275,11 +276,11 @@ impl<'a> TcpSockOpsHandler<'a> {
                 match nfm_get_sock_state(self.ctx) {
                     BPF_TCP_ESTABLISHED => sock_stats.retrans_est += retrans_segments,
                     BPF_TCP_SYN_SENT => {
-                        sock_stats.retrans_syn += retrans_segments;
+                        sock_stats.retrans_syn += retrans_segments as u16;
                         sock_stats.connect_attempts += retrans_segments as u8;
                     }
-                    BPF_TCP_SYN_RECV => sock_stats.retrans_syn += retrans_segments,
-                    _ => sock_stats.retrans_close += retrans_segments,
+                    BPF_TCP_SYN_RECV => sock_stats.retrans_syn += retrans_segments as u16,
+                    _ => sock_stats.retrans_close += retrans_segments as u16,
                 };
 
                 Ok(())
@@ -418,7 +419,7 @@ mod test {
             sock_state,
             op: op_code,
             args,
-            family: AF_INET,
+            family: AF_INET as u32,
             ..Default::default()
         };
 
@@ -537,7 +538,7 @@ mod test {
         let cookie: u64 = 197;
         let ctx = SockOpsContext {
             op: BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB,
-            family: AF_INET,
+            family: AF_INET as u32,
             cookie,
             ..Default::default()
         };
@@ -557,6 +558,7 @@ mod test {
     #[test]
     fn test_ebpf_sock_op_active_established() {
         let mock_ktime_us: u64 = 99;
+        let connect_delta: u32 = 10;
         let cookie: u64 = 197;
         let mut mock_ebpf_maps = MockEbpfMaps::new();
 
@@ -574,7 +576,7 @@ mod test {
             BPF_SOCK_OPS_STATE_CB,
             [BPF_TCP_SYN_SENT, BPF_TCP_ESTABLISHED],
             &mut mock_ebpf_maps,
-            mock_ktime_us + 10,
+            mock_ktime_us + connect_delta as u64,
             Ok(()),
         );
 
@@ -593,7 +595,7 @@ mod test {
             .unwrap();
         let sock_stats = mock_ebpf_maps.sock_stats(&composite_key);
         assert_eq!(sock_stats.connect_start_us, mock_ktime_us);
-        assert_eq!(sock_stats.connect_end_us, mock_ktime_us + 10);
+        assert_eq!(sock_stats.connect_duration_us, connect_delta);
     }
 
     #[test]

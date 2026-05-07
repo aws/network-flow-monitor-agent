@@ -10,11 +10,10 @@
 use aya::maps::{HashMap as SharedHashMap, IterableMap, MapData};
 use aya::Pod;
 use aya_obj::generated::bpf_cmd;
-use log::debug;
 use std::os::fd::AsFd;
 
-/// Attr struct matching kernel's `struct bpf_attr` batch fields.
-/// Must match the layout in linux/bpf.h.
+/// Attr struct matching the batch fields of the kernel's `struct bpf_attr`.
+/// Layout must match `linux/bpf.h` for the batch commands.
 #[repr(C)]
 #[derive(Default)]
 struct BatchAttr {
@@ -23,14 +22,23 @@ struct BatchAttr {
     keys: u64,      // pointer to keys buffer
     values: u64,    // pointer to values buffer
     count: u32,     // in: max entries to read, out: entries actually read
-    map_fd: u32,
+    map_fd: u32,    // fd of bpf hashmap
     elem_flags: u64,
     flags: u64,
 }
 
-/// Reads all entries from a BPF HashMap using BPF_MAP_LOOKUP_BATCH.
-/// Returns a Vec of (key, value) pairs. Much faster than iterating with
-/// BPF_MAP_GET_NEXT_KEY + BPF_MAP_LOOKUP_ELEM per entry (2 syscalls/entry → ~1 syscall total).
+/// Reads all entries from a BPF HashMap using `BPF_MAP_LOOKUP_BATCH`.
+///
+/// Iterates through the map in batches of up to `max_entries` per syscall,
+/// collecting all key-value pairs. Stops when the kernel returns `ENOENT`
+/// (indicating the end of the map) or when a batch returns zero entries.
+///
+/// # Arguments
+/// * `map` - Reference to the aya `HashMap` to read from.
+/// * `max_entries` - Maximum number of entries to fetch per batch syscall. Kernel will return less if there are less entries.
+///
+/// # Returns
+/// A `Vec` of all `(key, value)` pairs currently in the map.
 pub fn lookup_batch<K: Pod + Default, V: Pod + Default>(
     map: &SharedHashMap<MapData, K, V>,
     max_entries: usize,
@@ -42,8 +50,6 @@ pub fn lookup_batch<K: Pod + Default, V: Pod + Default>(
     let mut values: Vec<V> = vec![V::default(); max_entries];
     let mut results = Vec::new();
 
-    // The batch cursor is opaque to userspace; kernel writes to out_batch,
-    // we pass it back as in_batch on the next call.
     let mut in_batch: u64 = 0;
     let mut out_batch: u64 = 0;
     let mut first_call = true;
@@ -79,20 +85,32 @@ pub fn lookup_batch<K: Pod + Default, V: Pod + Default>(
             results.push((keys[i], values[i]));
         }
 
-        // ret == 0 means more entries; ret == -1 with ENOENT means we've read all entries
-        if ret != 0 || count == 0 {
+        if ret != 0 {
+            let errno = unsafe { *libc::__errno_location() };
+            if errno != libc::ENOENT {
+                log::error!("BPF Batch lookup error: {errno}");
+            }
+            break;
+        }
+        if count == 0 {
             break;
         }
         in_batch = out_batch;
         first_call = false;
     }
 
-    debug!("lookup_batch: read {} entries", results.len());
     results
 }
 
-/// Deletes multiple entries from a BPF HashMap in one syscall using BPF_MAP_DELETE_BATCH.
-/// Returns the number of entries successfully deleted.
+/// Deletes multiple entries from a BPF HashMap in a single syscall using
+/// `BPF_MAP_DELETE_BATCH`.
+///
+/// # Arguments
+/// * `map` - Mutable reference to the aya `HashMap` to delete from.
+/// * `keys` - Slice of keys to delete.
+///
+/// # Returns
+/// The number of entries successfully deleted by the kernel.
 pub fn delete_batch<K: Pod + Default, V: Pod + Default>(
     map: &mut SharedHashMap<MapData, K, V>,
     keys: &[K],

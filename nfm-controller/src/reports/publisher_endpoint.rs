@@ -339,7 +339,7 @@ mod tests {
 
         let context = SockContext {
             is_client: false,
-            address_family: AF_INET as u32,
+            address_family: AF_INET as u16,
             local_ipv4: 16909060,
             remote_ipv4: 84281096,
             local_ipv6: [0; 16],
@@ -609,7 +609,7 @@ mod tests {
         for flow_idx in 0..num_flows {
             let context = SockContext {
                 is_client: true,
-                address_family: address_family as u32,
+                address_family: address_family as u16,
                 local_ipv4: rng.next_u32(),
                 remote_ipv4: rng.next_u32(),
                 local_ipv6: rand_ipv6(&mut rng),
@@ -729,14 +729,14 @@ mod tests {
 
     fn build_random_network_stats(rng: &mut ThreadRng) -> NetworkStats {
         NetworkStats {
-            sockets_connecting: rand_cxn_count(rng),
-            sockets_established: rand_cxn_count(rng),
-            sockets_closing: rand_cxn_count(rng),
-            sockets_closed: rand_cxn_count(rng),
-            sockets_completed: rand_cxn_count(rng),
-            severed_connect: rand_cxn_count(rng),
-            severed_establish: rand_cxn_count(rng),
-            connect_attempts: rand_cxn_count(rng),
+            sockets_connecting: rand_cxn_count(rng) as u16,
+            sockets_established: rand_cxn_count(rng) as u16,
+            sockets_closing: rand_cxn_count(rng) as u16,
+            sockets_closed: rand_cxn_count(rng) as u16,
+            sockets_completed: rand_cxn_count(rng) as u8,
+            severed_connect: rand_cxn_count(rng) as u16,
+            severed_establish: rand_cxn_count(rng) as u16,
+            connect_attempts: rand_cxn_count(rng) as u16,
             bytes_received: rand_byte_segment_count(rng),
             bytes_delivered: rand_byte_segment_count(rng),
             segments_received: rand_byte_segment_count(rng),
@@ -744,9 +744,9 @@ mod tests {
             retrans_syn: rand_retrans_count(rng),
             retrans_est: rand_retrans_count(rng),
             retrans_close: rand_retrans_count(rng),
-            rtos_syn: rand_retrans_count(rng),
+            rtos_syn: rand_retrans_count(rng) as u16,
             rtos_est: rand_retrans_count(rng),
-            rtos_close: rand_retrans_count(rng),
+            rtos_close: rand_retrans_count(rng) as u16,
             connect_us: MetricHistogram {
                 count: rand_cxn_count(rng),
                 min: rand_duration_us(rng),
