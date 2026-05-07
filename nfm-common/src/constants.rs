@@ -3,7 +3,7 @@
 
 pub const SK_STATS_TO_PROPS_RATIO: u64 = 3;
 
-pub const MAX_ENTRIES_SK_PROPS_LO: u64 = 250;
+pub const MAX_ENTRIES_SK_PROPS_LO: u64 = 256;
 pub const MAX_ENTRIES_SK_STATS_LO: u64 = SK_STATS_TO_PROPS_RATIO * MAX_ENTRIES_SK_PROPS_LO;
 
 pub const MAX_ENTRIES_SK_PROPS_HI: u64 = 20000;
@@ -11,7 +11,7 @@ pub const MAX_ENTRIES_SK_STATS_HI: u64 = SK_STATS_TO_PROPS_RATIO * MAX_ENTRIES_S
 
 pub const AGG_FLOWS_MAX_ENTRIES: u32 = 10_000;
 
-/// Ringbuf size for NFM_SK_PROPS_RB. Must be a power of 2 (kernel requirement).
+/// Ringbuf size for NFM_SK_PROPS_RB. Must be a power of 2 (kernel requirement - or buffer wont work!!).
 /// Ringbuf pre-allocates the full buffer at map creation. The advantage over HashMap
 /// is zero-syscall reads (mmap-ed) and lock-free writes from BPF.
 /// This constant is used as the default in the eBPF object; at load time it is
@@ -26,9 +26,10 @@ const RINGBUF_ENTRY_SIZE: u64 =
     core::mem::size_of::<crate::network::SockPropsEntry>() as u64 + RINGBUF_RECORD_HEADER_SIZE;
 
 /// Computes the ringbuf byte size needed to hold `sock_props_max_entries` entries.
-/// Returns a power-of-2 value as required by the kernel.
+/// Returns a power-of-2 value (nearest lower power of two) as required by the kernel.
+/// This will mean that the buffer will actually hold lesser entries (or equal) than 'sock_props_max_entries'.
 pub fn ringbuf_byte_size(sock_props_max_entries: u64) -> u32 {
-    (RINGBUF_ENTRY_SIZE * sock_props_max_entries).next_power_of_two() as u32
+    ((RINGBUF_ENTRY_SIZE * sock_props_max_entries).next_power_of_two() / 2) as u32
 }
 
 /// Returns the number of entries that fit in the ringbuf after the power-of-2 roundup.

@@ -17,6 +17,8 @@ function load_ini_section() {
     declare -g cgroup="default"
     declare -g region="default"
     declare -g endpoint="default"
+    declare -g aggregate_msecs="default"
+    declare -g max_sock_props="default"
 
     while IFS='=' read -r key value; do
         # Skip empty lines, comments, and section headers
@@ -94,4 +96,14 @@ echo "cgroup: ${CGROUP}"
 echo "endpoint: ${ENDPOINT}"
 echo "endpoint-region: ${REGION}"
 
-/opt/aws/network-flow-monitor/network-flow-monitor-agent --cgroup ${CGROUP} --endpoint ${ENDPOINT} --endpoint-region ${REGION}
+EXTRA_ARGS=""
+if [ "$aggregate_msecs" != "default" ]; then
+    EXTRA_ARGS="${EXTRA_ARGS} --aggregate-msecs ${aggregate_msecs}"
+fi
+if [ "$max_sock_props" != "default" ]; then
+    EXTRA_ARGS="${EXTRA_ARGS} --max-sock-props ${max_sock_props}"
+fi
+
+echo "extra args: ${EXTRA_ARGS}"
+
+/opt/aws/network-flow-monitor/network-flow-monitor-agent --cgroup ${CGROUP} --endpoint ${ENDPOINT} --endpoint-region ${REGION} ${EXTRA_ARGS}

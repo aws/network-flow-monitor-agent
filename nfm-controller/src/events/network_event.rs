@@ -226,26 +226,26 @@ impl NetworkStats {
                 .state_flags
                 .contains(SockStateFlags::ENTERED_ESTABLISH)
             {
-                self.sockets_established += 1;
+                self.sockets_established = self.sockets_established.saturating_add(1);
             } else {
-                self.sockets_connecting += 1;
+                self.sockets_connecting = self.sockets_connecting.saturating_add(1);
             }
         } else {
             if sock_stats.state_flags.contains(SockStateFlags::CLOSED) {
-                self.sockets_closed += 1;
+                self.sockets_closed = self.sockets_closed.saturating_add(1);
             } else {
-                self.sockets_closing += 1;
+                self.sockets_closing = self.sockets_closing.saturating_add(1);
             }
             if sock_stats
                 .state_flags
                 .contains(SockStateFlags::TERMINATED_FROM_SYN)
             {
-                self.severed_connect += 1;
+                self.severed_connect = self.severed_connect.saturating_add(1);
             } else if sock_stats
                 .state_flags
                 .contains(SockStateFlags::TERMINATED_FROM_EST)
             {
-                self.severed_establish += 1;
+                self.severed_establish = self.severed_establish.saturating_add(1);
             }
         }
     }
