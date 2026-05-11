@@ -50,6 +50,11 @@ if [[ "${DISABLE_PUBLISHING:-false}" == "true" ]]; then
     PUBLISHING_ARGS+=("-p" "off")
 fi
 
+# Configure logging flow report contents to stdout
+if [[ "${LOG_REPORTS:-}" == "on" ]]; then
+    PUBLISHING_ARGS+=("--log-reports" "on")
+fi
+
 # Amazon Managed Prometheus integration
 if [[ -n "${AMP_WORKSPACE_ID:-}" ]]; then
     PUBLISHING_ARGS+=("--prometheus-workspace-id" "${AMP_WORKSPACE_ID}")
