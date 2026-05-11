@@ -10,4 +10,6 @@ pub mod nat_resolver;
 pub mod network_event;
 pub mod sock_cache;
 
+pub mod bpf_batch;
+
 pub use sock_cache::{AggSockStats, SockCache, SockOperationResult, SockWrapper};

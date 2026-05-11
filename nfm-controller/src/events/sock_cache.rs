@@ -12,7 +12,7 @@ use serde::Serialize;
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
 pub struct AggSockStats {
     pub stats: SockStats,
-    pub cpus: Vec<u32>,
+    pub cpus: Vec<u16>,
 }
 
 #[derive(Debug, Default, Eq, PartialEq, Serialize)]
@@ -262,12 +262,12 @@ impl SockCache {
         result
     }
 
-    // Evicts all closed and stale sockets from this cache.  Returns a map of all evicted entries,
+    // Evicts all closed and stale sockets from this cache.  Returns a list of all evicted entries,
     // and the count of those that were stale.
-    pub fn perform_eviction(&mut self) -> (HashMap<SockKey, SockWrapper>, u64) {
+    pub fn perform_eviction(&mut self) -> (Vec<(SockKey, SockWrapper)>, u64) {
         let mut num_stale: u64 = 0;
 
-        let socks_evicted = self
+        let socks_evicted: Vec<(SockKey, SockWrapper)> = self
             .cache
             .extract_if(|_key, sock_wrap| {
                 if sock_wrap.is_stale {
@@ -440,7 +440,7 @@ mod test {
             sock_stream.insert(
                 *sock_key,
                 AggSockStats {
-                    cpus: vec![*sock_key as u32 % 2, 100],
+                    cpus: vec![*sock_key as u16 % 2, 100],
                     stats: SockStats {
                         last_touched_us: sock_key * 3,
                         bytes_delivered: sock_key * 4,
@@ -496,7 +496,7 @@ mod test {
             sock_stream.insert(
                 *sock_key,
                 AggSockStats {
-                    cpus: vec![*sock_key as u32 % 2, 100],
+                    cpus: vec![*sock_key as u16 % 2, 100],
                     stats: SockStats {
                         last_touched_us: sock_key * 3,
                         bytes_delivered: sock_key * 4,
@@ -532,7 +532,7 @@ mod test {
             sock_stream.insert(
                 *sock_key,
                 AggSockStats {
-                    cpus: vec![*sock_key as u32 % 2, 100],
+                    cpus: vec![*sock_key as u16 % 2, 100],
                     stats: SockStats {
                         bytes_delivered: sock_key * 4,
                         ..Default::default()
@@ -580,7 +580,7 @@ mod test {
                     bytes_delivered: sock_key * 3,
                     ..Default::default()
                 },
-                cpus: vec![*sock_key as u32 % 2, 100],
+                cpus: vec![*sock_key as u16 % 2, 100],
             };
             assert_eq!(*actual_delta, expected_delta);
         }
@@ -597,7 +597,7 @@ mod test {
             sock_stream.insert(
                 *sock_key,
                 AggSockStats {
-                    cpus: vec![*sock_key as u32 % 2, 100],
+                    cpus: vec![*sock_key as u16 % 2, 100],
                     stats: SockStats {
                         bytes_delivered: sock_key * 4,
                         ..Default::default()
@@ -654,7 +654,7 @@ mod test {
                     bytes_delivered: sock_key * delta_factor,
                     ..Default::default()
                 },
-                cpus: vec![*sock_key as u32 % 2, 100],
+                cpus: vec![*sock_key as u16 % 2, 100],
             };
             assert_eq!(*actual_delta, expected_delta);
         }
@@ -671,7 +671,7 @@ mod test {
             sock_stream.insert(
                 *sock_key,
                 AggSockStats {
-                    cpus: vec![*sock_key as u32 % 2, 100],
+                    cpus: vec![*sock_key as u16 % 2, 100],
                     stats: SockStats {
                         bytes_delivered: sock_key * 4,
                         ..Default::default()
@@ -727,7 +727,7 @@ mod test {
             sock_stream.insert(
                 *sock_key,
                 AggSockStats {
-                    cpus: vec![cpu_id as u32],
+                    cpus: vec![cpu_id as u16],
                     stats: SockStats {
                         last_touched_us: now_us - (notrack_us / 2),
                         ..Default::default()
@@ -767,7 +767,7 @@ mod test {
             sock_stream.insert(
                 *sock_key,
                 AggSockStats {
-                    cpus: vec![cpu_id as u32],
+                    cpus: vec![cpu_id as u16],
                     stats: SockStats {
                         last_touched_us: now_us - (notrack_us / 2),
                         ..Default::default()
@@ -814,12 +814,13 @@ mod test {
         assert_eq!(socks_evicted.len(), 2);
         assert_eq!(num_stale, 0);
         assert_eq!(sock_cache.len(), sock_keys.len() - 2);
+        let evicted_map: HashMap<SockKey, SockWrapper> = socks_evicted.into_iter().collect();
         assert_eq!(
-            &socks_evicted.get(&sock_keys[0]).unwrap().agg_stats,
+            &evicted_map.get(&sock_keys[0]).unwrap().agg_stats,
             sock_stream.get(&sock_keys[0]).unwrap()
         );
         assert_eq!(
-            &socks_evicted.get(&sock_keys[1]).unwrap().agg_stats,
+            &evicted_map.get(&sock_keys[1]).unwrap().agg_stats,
             sock_stream.get(&sock_keys[1]).unwrap()
         );
     }
@@ -838,7 +839,7 @@ mod test {
             sock_stream.insert(
                 *sock_key,
                 AggSockStats {
-                    cpus: vec![cpu_id as u32],
+                    cpus: vec![cpu_id as u16],
                     stats: SockStats {
                         last_touched_us: now_us - (notrack_us / 2),
                         ..Default::default()
@@ -876,12 +877,13 @@ mod test {
         assert_eq!(socks_evicted.len(), 2);
         assert_eq!(num_stale, 2);
         assert_eq!(sock_cache.len(), sock_keys.len() - 2);
+        let evicted_map: HashMap<SockKey, SockWrapper> = socks_evicted.into_iter().collect();
         assert_eq!(
-            &socks_evicted.get(&sock_keys[2]).unwrap().agg_stats,
+            &evicted_map.get(&sock_keys[2]).unwrap().agg_stats,
             sock_stream.get(&sock_keys[2]).unwrap()
         );
         assert_eq!(
-            &socks_evicted.get(&sock_keys[5]).unwrap().agg_stats,
+            &evicted_map.get(&sock_keys[5]).unwrap().agg_stats,
             sock_stream.get(&sock_keys[5]).unwrap()
         );
     }
@@ -900,7 +902,7 @@ mod test {
             sock_stream.insert(
                 *sock_key,
                 AggSockStats {
-                    cpus: vec![cpu_id as u32],
+                    cpus: vec![cpu_id as u16],
                     stats: SockStats {
                         last_touched_us: now_us - (notrack_us / 2),
                         state_flags: SockStateFlags::CLOSED,
@@ -944,7 +946,7 @@ mod test {
 
         assert_eq!(socks_evicted.len(), sock_keys.len());
         for key in sock_keys.iter() {
-            assert!(socks_evicted.get(key).is_some());
+            assert!(socks_evicted.iter().any(|(k, _)| k == key));
         }
     }
 
@@ -1254,7 +1256,7 @@ mod test {
                     state_flags: SockStateFlags::CLOSED,
                     ..Default::default()
                 },
-                cpus: vec![],
+                ..Default::default()
             },
         );
         sock2.update_status(staleness_ts);
@@ -1308,11 +1310,11 @@ mod test {
         // Check results.
         assert_eq!(evicted.len(), 3); // Sockets 2, 4, and 5 should be evicted.
         assert_eq!(num_stale, 1); // Only socket 5 is stale.
-        assert!(evicted.contains_key(&2)); // Eviction reason: Closed socket.
-        assert!(evicted.contains_key(&4)); // Eviction reason: Partially initialized for 2 cycles.
-        assert!(evicted.contains_key(&5)); // Eviction reason: Stale socket.
-        assert!(!evicted.contains_key(&1)); // Retention reason: Valid, not closed.
-        assert!(!evicted.contains_key(&3)); // Retention reason: Partially initialized for only 1 cycle.
+        assert!(evicted.iter().any(|(k, _)| *k == 2)); // Eviction reason: Closed socket.
+        assert!(evicted.iter().any(|(k, _)| *k == 4)); // Eviction reason: Partially initialized for 2 cycles.
+        assert!(evicted.iter().any(|(k, _)| *k == 5)); // Eviction reason: Stale socket.
+        assert!(!evicted.iter().any(|(k, _)| *k == 1)); // Retention reason: Valid, not closed.
+        assert!(!evicted.iter().any(|(k, _)| *k == 3)); // Retention reason: Partially initialized for only 1 cycle.
 
         // Check remaining sockets.
         assert_eq!(sock_cache.len(), 2);

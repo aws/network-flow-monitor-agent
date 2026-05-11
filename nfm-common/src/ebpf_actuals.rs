@@ -7,10 +7,8 @@
  * `ebpf_mocks` module.
  */
 
-use crate::constants::{MAX_ENTRIES_SK_PROPS_LO, MAX_ENTRIES_SK_STATS_LO};
-use crate::network::{
-    ControlData, CpuSockKey, EventCounters, SockContext, SockOpsStats, SockStats,
-};
+use crate::constants::{MAX_ENTRIES_SK_STATS_LO, NFM_SK_PROPS_RB_BYTE_SIZE};
+use crate::network::{ControlData, CpuSockKey, EventCounters, SockOpsStats, SockStats};
 
 use aya_ebpf::helpers::{bpf_get_smp_processor_id, bpf_get_socket_cookie, bpf_ktime_get_boot_ns};
 
@@ -39,7 +37,7 @@ pub use aya_ebpf::{
 
     // The BPF_MAP interface we depend on from `aya-ebpf`.
     macros::map,
-    maps::{Array as SharedArray, HashMap as SharedHashMap, PerCpuArray, PerCpuHashMap},
+    maps::{Array as SharedArray, HashMap as SharedHashMap, PerCpuArray, PerCpuHashMap, RingBuf},
 
     // The context passed into our eBPF SOCK_OPS program by the kernel.
     programs::SockOpsContext,
@@ -60,11 +58,10 @@ pub static NFM_CONTROL: SharedArray<ControlData> = SharedArray::with_max_entries
 #[map]
 pub static NFM_COUNTERS: PerCpuArray<EventCounters> = PerCpuArray::with_max_entries(1, 0);
 
-// SK_PROPS communicates the properties of a newly established socket to user-space. It is used as
-// a signaling channel; entries are deleted by user-space once read.
+// SK_PROPS communicates the properties of a newly established socket to user-space via a
+// lock-free ring buffer. BPF writes SockPropsEntry, userspace drains on each aggregation cycle.
 #[map]
-pub static NFM_SK_PROPS: SharedHashMap<CpuSockKey, SockContext> =
-    SharedHashMap::with_max_entries(MAX_ENTRIES_SK_PROPS_LO as u32, BPF_F_NO_PREALLOC);
+pub static NFM_SK_PROPS: RingBuf = RingBuf::with_byte_size(NFM_SK_PROPS_RB_BYTE_SIZE, 0);
 
 // SK_STATS is where the BPF program writes socket statistics in response to sock_ops events for
 // tracked sockets. Entries are deleted by user-space upon socket closure.
@@ -91,6 +88,13 @@ macro_rules! bpf_map_get_ptr_mut {
 macro_rules! bpf_map_insert {
     ($self:ident, $map_name:expr, $key:expr, $val:expr, $flags:expr) => {
         $map_name.insert($key, $val, <u32 as Into<u64>>::into($flags))
+    };
+}
+
+#[macro_export]
+macro_rules! bpf_ringbuf_output {
+    ($self:ident, $map_name:expr, $val:expr) => {
+        $map_name.output($val, 1 /* BPF_RB_NO_WAKEUP */)
     };
 }
 

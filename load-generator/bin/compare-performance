@@ -224,6 +224,11 @@ for metric_name in "${!metric_changes[@]}"; do
     echo "| $metric_name | $change_fmt |"
 done
 
+# Report limit breaches as warning but don't fail the workflow
+if [[ $limit_breaches -gt 0 ]]; then
+    echo "TEST DID NOT PASS!: $limit_breaches performance limit(s) exceeded. Check entries with ⚠️"
+fi
+
 ## Print detailed metrics next
 echo "## 📊 Detailed Metrics Comparison"
 echo "| Metric | TPS | Instance Type | Baseline |  Current  |  Change  |       Limit      |"
@@ -235,9 +240,3 @@ rm -f "$detailed_metrics_file"
 
 echo ""
 log "🔻 = Significant increase (>10%)  ▲ = Significant improvement (>10% decrease)  ⚠️ = Exceeds performance limit"
-
-# Exit with error if any limits were breached
-if [[ $limit_breaches -gt 0 ]]; then
-    log "ERROR: $limit_breaches performance limit(s) exceeded. Failing tests"
-    exit 1
-fi

@@ -418,7 +418,7 @@ mod tests {
         let mut report = NfmReport::new();
         let context = SockContext {
             is_client: false,
-            address_family: libc::AF_INET as u32,
+            address_family: libc::AF_INET as u16,
             local_ipv4: 16909060,
             remote_ipv4: 84281096,
             local_ipv6: [0; 16],
@@ -520,7 +520,7 @@ mod tests {
 
         let context = SockContext {
             is_client: false,
-            address_family: libc::AF_INET as u32,
+            address_family: libc::AF_INET as u16,
             local_ipv4: 16909060,
             remote_ipv4: 84281096,
             local_ipv6: [0; 16],
@@ -608,7 +608,7 @@ mod tests {
 
         let context = SockContext {
             is_client: false,
-            address_family: libc::AF_INET as u32,
+            address_family: libc::AF_INET as u16,
             local_ipv4: 16909060,
             remote_ipv4: 84281096,
             local_ipv6: [0; 16],
@@ -662,7 +662,7 @@ mod tests {
 
         let context = SockContext {
             is_client: false,
-            address_family: libc::AF_INET as u32,
+            address_family: libc::AF_INET as u16,
             local_ipv4: 16909060,
             remote_ipv4: 84281096,
             local_ipv6: [0; 16],
@@ -799,7 +799,7 @@ mod tests {
 
         let context = SockContext {
             is_client: false,
-            address_family: libc::AF_INET as u32,
+            address_family: libc::AF_INET as u16,
             local_ipv4: 16909060,
             remote_ipv4: 84281096,
             local_ipv6: [0; 16],
@@ -892,7 +892,7 @@ mod tests {
 
         let context = SockContext {
             is_client: false,
-            address_family: libc::AF_INET as u32,
+            address_family: libc::AF_INET as u16,
             local_ipv4: 16909060,
             remote_ipv4: 84281096,
             local_ipv6: [0; 16],

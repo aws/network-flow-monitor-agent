@@ -4,27 +4,27 @@
 use crate::events::event_provider::EventProvider;
 use crate::events::nat_resolver::NatResolver;
 use crate::events::network_event::{AggregateResults, FlowProperties, NetworkStats};
-use crate::events::{AggSockStats, SockCache, SockOperationResult, SockWrapper};
+use crate::events::{bpf_batch, AggSockStats, SockCache, SockOperationResult, SockWrapper};
 use crate::reports::{CountersOverall, ProcessCounters};
 use crate::utils::Clock;
 use nfm_common::constants::{
     AGG_FLOWS_MAX_ENTRIES, EBPF_PROGRAM_NAME, MAX_ENTRIES_SK_PROPS_HI, MAX_ENTRIES_SK_PROPS_LO,
     MAX_ENTRIES_SK_STATS_HI, MAX_ENTRIES_SK_STATS_LO, NFM_CONTROL_MAP_NAME, NFM_COUNTERS_MAP_NAME,
-    NFM_SK_PROPS_MAP_NAME, NFM_SK_STATS_MAP_NAME, SK_STATS_TO_PROPS_RATIO,
+    NFM_SK_PROPS_RB_MAP_NAME, NFM_SK_STATS_MAP_NAME, SK_STATS_TO_PROPS_RATIO,
 };
 use nfm_common::network::{
-    ControlData, CpuSockKey, EventCounters, SockContext, SockKey, SockStats,
+    ControlData, CpuSockKey, EventCounters, SockKey, SockPropsEntry, SockStats,
 };
 
 use anyhow::{Context, Result};
 use aya::{
     include_bytes_aligned,
-    maps::{Array as SharedArray, HashMap as SharedHashMap, MapData, MapError, PerCpuArray},
+    maps::{Array as SharedArray, HashMap as SharedHashMap, MapData, PerCpuArray, RingBuf},
     programs::{CgroupAttachMode, SockOps},
     Ebpf, EbpfLoader, VerifierLogLevel,
 };
 use aya_obj::generated::BPF_ANY;
-use hashbrown::{hash_map::Entry, HashMap, HashSet};
+use hashbrown::{hash_map::Entry, HashMap};
 use log::{debug, info};
 use procfs::{Current, Meminfo};
 use std::cmp::min;
@@ -33,13 +33,17 @@ use std::mem;
 use std::mem::size_of;
 
 pub struct EventProviderEbpf<C: Clock> {
+    #[allow(dead_code)]
     ebpf_handle: Ebpf,
-    ebpf_sock_props: SharedHashMap<MapData, CpuSockKey, SockContext>,
+    ebpf_sock_props_rb: RingBuf<MapData>,
     ebpf_sock_stats: SharedHashMap<MapData, CpuSockKey, SockStats>,
+    ebpf_counters_map: PerCpuArray<MapData, EventCounters>,
+    ebpf_control_map: SharedArray<MapData, ControlData>,
     ebpf_control_data: ControlData,
     ebpf_counters_latest: EventCounters,
     ebpf_counters_published: EventCounters,
     ebpf_allocated_mem_kb: u32,
+    sock_stats_max_entries: usize,
 
     process_counters: ProcessCounters,
     notrack_us: u64,
@@ -57,17 +61,15 @@ fn instantiate_ebpf_object(
 ) -> Result<Ebpf> {
     // Embed the eBPF raw bytes at compile time, and load them into the kernel at runtime.
     let ebpf_bytes = include_bytes_aligned!(env!("BPF_OBJECT_PATH"));
-    info!(sock_props_max_entries, sock_stats_max_entries; "Loading eBPF program");
+    let ringbuf_size = nfm_common::constants::ringbuf_byte_size(sock_props_max_entries);
+    info!(sock_props_max_entries, sock_stats_max_entries, ringbuf_size; "Loading eBPF program");
     EbpfLoader::new()
         .verifier_log_level(VerifierLogLevel::VERBOSE | VerifierLogLevel::STATS)
-        .set_max_entries(
-            NFM_SK_PROPS_MAP_NAME,
-            sock_props_max_entries.try_into().unwrap(),
-        )
         .set_max_entries(
             NFM_SK_STATS_MAP_NAME,
             sock_stats_max_entries.try_into().unwrap(),
         )
+        .set_max_entries(NFM_SK_PROPS_RB_MAP_NAME, ringbuf_size)
         .load(ebpf_bytes)
         .context("Failed to parse eBPF program")
 }
@@ -80,6 +82,7 @@ pub fn map_max_entries(mem_total_bytes: u64) -> (u64, u64) {
     let divisor: u64 = 5_000_000_000;
     let sock_props_max_entries = (mem_total_bytes / divisor * MAX_ENTRIES_SK_PROPS_LO)
         .clamp(MAX_ENTRIES_SK_PROPS_LO, MAX_ENTRIES_SK_PROPS_HI);
+
     let sock_stats_max_entries = (sock_props_max_entries * SK_STATS_TO_PROPS_RATIO)
         .clamp(MAX_ENTRIES_SK_STATS_LO, MAX_ENTRIES_SK_STATS_HI);
 
@@ -87,12 +90,10 @@ pub fn map_max_entries(mem_total_bytes: u64) -> (u64, u64) {
 }
 
 fn calculate_ebpf_memory_usage(sock_props_max_entries: u64, sock_stats_max_entries: u64) -> u32 {
-    let sock_context_size = size_of::<CpuSockKey>() + size_of::<SockContext>();
+    let ringbuf_size = nfm_common::constants::ringbuf_byte_size(sock_props_max_entries) as u64;
     let sock_stats_size = size_of::<CpuSockKey>() + size_of::<SockStats>();
-    (((sock_props_max_entries * sock_context_size as u64)
-        + (sock_stats_max_entries * sock_stats_size as u64)) as f64
-        / 1000.0)
-        .ceil() as u32
+    ((ringbuf_size + (sock_stats_max_entries * sock_stats_size as u64)) as f64 / 1000.0).ceil()
+        as u32
 }
 
 impl<C: Clock> EventProvider for EventProviderEbpf<C> {
@@ -101,39 +102,36 @@ impl<C: Clock> EventProvider for EventProviderEbpf<C> {
         debug!("Aggregating across sockets");
 
         // Apply adaptive sampling if we're receiving events faster than we can process.
-        if self.ebpf_counters().map_insertion_errors > 0 {
+        let ebpf_delta = self.ebpf_counters();
+        if ebpf_delta.map_insertion_errors > 0 {
             self.increase_sampling_interval();
         } else {
             self.decrease_sampling_interval();
         }
 
-        // Retrieve properties of newly initiated sockets.
-        let mut new_cpu_sock_keys = HashSet::<CpuSockKey>::new();
+        // Drain socket properties from the ringbuf (zero syscalls — memory-mapped).
         let now_us = self.clock.now_us();
         let context_timestamp = now_us.saturating_sub(self.notrack_us / 2);
         let mut sock_add_result = SockOperationResult::default();
-        for (cpu_sock_key, sock_context) in self.ebpf_sock_props.iter().flatten() {
+        while let Some(item) = self.ebpf_sock_props_rb.next() {
+            if item.len() < size_of::<SockPropsEntry>() {
+                continue;
+            }
+            let entry: &SockPropsEntry = unsafe { &*(item.as_ptr() as *const SockPropsEntry) };
             let result =
                 self.sock_cache
-                    .add_context(cpu_sock_key.sock_key, sock_context, context_timestamp);
+                    .add_context(entry.sock_key, entry.context, context_timestamp);
             sock_add_result.add(&result);
             if result.failed > 0 {
                 break;
             }
-            new_cpu_sock_keys.insert(cpu_sock_key);
-        }
-
-        // Free the now no-longer needed contexts from BPF.  Thus, cycles are not spent re-reading
-        // these each iteration.
-        for cpu_sock_key in new_cpu_sock_keys.iter() {
-            if self.ebpf_sock_props.remove(cpu_sock_key).is_err() {
-                self.process_counters.socket_eviction_failed += 1;
-            }
         }
 
         // Aggregate stats across CPU cores, then take the delta from the previous aggregation cycle.
+        let stats_batch =
+            bpf_batch::lookup_batch(&self.ebpf_sock_stats, self.sock_stats_max_entries);
         SocketQueries::aggregate_sock_stats(
-            self.ebpf_sock_stats.iter(),
+            stats_batch.into_iter(),
             &self.sock_cache,
             &mut self.sock_stream,
         );
@@ -198,7 +196,11 @@ impl<C: Clock> EventProvider for EventProviderEbpf<C> {
 
     // Returns and resets aggregated network stats.
     fn network_stats(&mut self) -> Vec<AggregateResults> {
-        mem::take(&mut self.flow_cache).into_values().collect()
+        let results: Vec<AggregateResults> =
+            mem::take(&mut self.flow_cache).into_values().collect();
+        // Pre-allocate capacity based on previous cycle to reduce rehashing.
+        self.flow_cache.reserve(results.len());
+        results
     }
 
     // Returns and resets tracked counters.
@@ -226,7 +228,12 @@ impl<C: Clock> EventProvider for EventProviderEbpf<C> {
 }
 
 impl<C: Clock> EventProviderEbpf<C> {
-    pub fn new(cgroup: &String, notrack_secs: u64, clock: C) -> Result<Self> {
+    pub fn new(
+        cgroup: &String,
+        notrack_secs: u64,
+        max_sock_props_override: Option<u64>,
+        clock: C,
+    ) -> Result<Self> {
         let cgroup_file = File::open(cgroup).context(format!("cgroup file not found: {cgroup}"))?;
 
         let mem_total_bytes = match Meminfo::current() {
@@ -235,7 +242,15 @@ impl<C: Clock> EventProviderEbpf<C> {
                 panic!("Unable to determine total memory: {e}");
             }
         };
-        let (sock_props_max_entries, sock_stats_max_entries) = map_max_entries(mem_total_bytes);
+        let (sock_props_max_entries, sock_stats_max_entries) = match max_sock_props_override {
+            Some(v) => {
+                let sk_props_size = v.clamp(MAX_ENTRIES_SK_PROPS_LO, MAX_ENTRIES_SK_PROPS_HI);
+                let sk_stats_size = (sk_props_size * SK_STATS_TO_PROPS_RATIO)
+                    .clamp(MAX_ENTRIES_SK_STATS_LO, MAX_ENTRIES_SK_STATS_HI);
+                (sk_props_size, sk_stats_size)
+            }
+            None => map_max_entries(mem_total_bytes),
+        };
         let mut ebpf_handle =
             instantiate_ebpf_object(sock_props_max_entries, sock_stats_max_entries)?;
 
@@ -251,34 +266,41 @@ impl<C: Clock> EventProviderEbpf<C> {
             .attach(cgroup_file, CgroupAttachMode::Single)
             .context(format!("Failed to attach to cgroup: {cgroup}"))?;
 
-        let ebpf_sock_props =
-            SharedHashMap::try_from(ebpf_handle.take_map(NFM_SK_PROPS_MAP_NAME).unwrap())
-                .context(format!("Failed to load BPF map {NFM_SK_PROPS_MAP_NAME}"))?;
+        let ebpf_sock_props_rb =
+            RingBuf::try_from(ebpf_handle.take_map(NFM_SK_PROPS_RB_MAP_NAME).unwrap())
+                .context(format!("Failed to load BPF map {NFM_SK_PROPS_RB_MAP_NAME}"))?;
         let ebpf_sock_stats =
             SharedHashMap::try_from(ebpf_handle.take_map(NFM_SK_STATS_MAP_NAME).unwrap())
                 .context(format!("Failed to load BPF map {NFM_SK_STATS_MAP_NAME}"))?;
+        let ebpf_counters_map =
+            PerCpuArray::try_from(ebpf_handle.take_map(NFM_COUNTERS_MAP_NAME).unwrap())
+                .context(format!("Failed to load BPF map {NFM_COUNTERS_MAP_NAME}"))?;
+        let ebpf_control_map =
+            SharedArray::try_from(ebpf_handle.take_map(NFM_CONTROL_MAP_NAME).unwrap())
+                .context(format!("Failed to load BPF map {NFM_CONTROL_MAP_NAME}"))?;
 
-        let max_concurrent_socks = sock_props_max_entries;
         let ebpf_allocated_mem_kb =
             calculate_ebpf_memory_usage(sock_props_max_entries, sock_stats_max_entries);
-
         info!(ebpf_allocated_mem_kb; "Calculated BPF maps approximate memory usage");
 
         let mut provider = EventProviderEbpf {
             ebpf_handle,
-            ebpf_sock_props,
+            ebpf_sock_props_rb,
             ebpf_sock_stats,
+            ebpf_counters_map,
+            ebpf_control_map,
             ebpf_control_data: ControlData::default(),
             ebpf_counters_latest: EventCounters::default(),
             ebpf_counters_published: EventCounters::default(),
             ebpf_allocated_mem_kb,
+            sock_stats_max_entries: sock_stats_max_entries as usize,
             process_counters: ProcessCounters {
                 restarts: 1,
                 ..Default::default()
             },
             notrack_us: notrack_secs * 1_000_000,
             clock,
-            sock_cache: SockCache::with_max_entries(max_concurrent_socks.try_into().unwrap()),
+            sock_cache: SockCache::with_max_entries(sock_props_max_entries as usize),
             sock_stream: HashMap::new(),
             flow_cache: HashMap::new(),
             agg_socks_handled: 0,
@@ -314,11 +336,8 @@ impl<C: Clock> EventProviderEbpf<C> {
     }
 
     fn send_control_data(&mut self) {
-        let mut data =
-            SharedArray::try_from(self.ebpf_handle.map_mut(NFM_CONTROL_MAP_NAME).unwrap())
-                .unwrap_or_else(|_| panic!("Failed to load BPF map {NFM_CONTROL_MAP_NAME}"));
-
-        data.set(0, self.ebpf_control_data, BPF_ANY.into())
+        self.ebpf_control_map
+            .set(0, self.ebpf_control_data, BPF_ANY.into())
             .unwrap_or_else(|e| panic!("Failed to write control data: {e:?}"))
     }
 
@@ -330,14 +349,10 @@ impl<C: Clock> EventProviderEbpf<C> {
     }
 
     fn ebpf_counters(&mut self) -> EventCounters {
-        let data: PerCpuArray<&MapData, EventCounters> =
-            PerCpuArray::try_from(self.ebpf_handle.map(NFM_COUNTERS_MAP_NAME).unwrap())
-                .unwrap_or_else(|_| panic!("Failed to load BPF map {NFM_COUNTERS_MAP_NAME}"));
-
         let mut new_counters = EventCounters::default();
         const EMPTY_FLAGS: u64 = 0;
         const KEY: u32 = 0;
-        if let Ok(counters_per_cpu) = data.get(&KEY, EMPTY_FLAGS) {
+        if let Ok(counters_per_cpu) = self.ebpf_counters_map.get(&KEY, EMPTY_FLAGS) {
             for counters in (*counters_per_cpu).iter() {
                 new_counters.add_from(counters);
             }
@@ -351,43 +366,40 @@ impl<C: Clock> EventProviderEbpf<C> {
         delta_counts
     }
 
-    // Evicts from the sock_stats map.
+    // Evicts from the sock_stats map via single bpf batch delete syscall.
     fn perform_bpf_eviction(
         &mut self,
-        to_evict: HashMap<SockKey, SockWrapper>,
+        to_evict: Vec<(SockKey, SockWrapper)>,
     ) -> SockOperationResult {
-        let mut result = SockOperationResult::default();
-        'sock_loop: for (sock_key, sock_wrap) in to_evict.iter() {
+        let mut keys_to_delete: Vec<CpuSockKey> = Vec::new();
+        for (sock_key, sock_wrap) in &to_evict {
             for cpu_id in &sock_wrap.agg_stats.cpus {
-                let composite_key = CpuSockKey {
+                keys_to_delete.push(CpuSockKey {
                     cpu_id: (*cpu_id).into(),
                     sock_key: *sock_key,
-                };
-                if self.ebpf_sock_stats.remove(&composite_key).is_err() {
-                    result.failed += 1;
-                    continue 'sock_loop;
-                }
+                });
             }
-
-            result.completed += 1;
         }
 
-        result
+        let deleted = bpf_batch::delete_batch(&mut self.ebpf_sock_stats, &keys_to_delete);
+        SockOperationResult {
+            completed: deleted.into(),
+            failed: (keys_to_delete.len() as u64).saturating_sub(deleted.into()),
+            ..Default::default()
+        }
     }
 }
 
 // A private set of helper methods for running queries over collections of sockets.
 struct SocketQueries;
 impl SocketQueries {
-    fn aggregate_sock_stats<T>(
-        sock_stats_map: T,
+    fn aggregate_sock_stats(
+        sock_stats: impl Iterator<Item = (CpuSockKey, SockStats)>,
         sock_cache: &SockCache,
         agg_stats_by_sock: &mut HashMap<SockKey, AggSockStats>,
-    ) where
-        T: Iterator<Item = Result<(CpuSockKey, SockStats), MapError>>,
-    {
+    ) {
         // Retrieve sock stats from the eBPF map and sum results across CPU cores.
-        for (composite_key, new_stats) in sock_stats_map.flatten() {
+        for (composite_key, new_stats) in sock_stats {
             let agg_stats = agg_stats_by_sock.entry(composite_key.sock_key).or_default();
             let sock_last_read = sock_cache.get_last_touched(&composite_key.sock_key);
             agg_stats.stats.add_from(&new_stats, sock_last_read);
@@ -444,7 +456,8 @@ impl SocketQueries {
 
                 flow_agg.stats.add_from(&agg_stats.stats);
                 if sock_wrapper.should_evict() {
-                    flow_agg.stats.sockets_completed += 1;
+                    flow_agg.stats.sockets_completed =
+                        flow_agg.stats.sockets_completed.saturating_add(1);
                 }
                 result.completed += 1;
             } else {
@@ -472,7 +485,6 @@ mod test {
         AF_INET,
     };
 
-    use aya::maps::MapError;
     use hashbrown::HashMap;
     use std::net::{IpAddr, Ipv4Addr};
     use std::str::FromStr;
@@ -481,7 +493,7 @@ mod test {
 
     #[test]
     pub fn test_result_aggregation_into_flows() {
-        let mut ebpf_sk_stats: Vec<Result<(CpuSockKey, SockStats), MapError>> = Vec::new();
+        let mut ebpf_sk_stats: Vec<(CpuSockKey, SockStats)> = Vec::new();
 
         const NUM_CPUS: usize = 16;
         let sock_keys: Vec<usize> = vec![99, 101, 4, 55, 19, 79];
@@ -516,7 +528,7 @@ mod test {
                 rtt_latest_us: 99,
                 ..Default::default()
             };
-            ebpf_sk_stats.push(Ok((composite_key, sk_stats)));
+            ebpf_sk_stats.push((composite_key, sk_stats));
 
             let cpu_id = (sock_key + 4) % NUM_CPUS;
             let composite_key = CpuSockKey {
@@ -530,7 +542,7 @@ mod test {
                 rtt_latest_us: 100,
                 ..Default::default()
             };
-            ebpf_sk_stats.push(Ok((composite_key, sk_stats)));
+            ebpf_sk_stats.push((composite_key, sk_stats));
         }
 
         // Aggregate results.
@@ -625,7 +637,7 @@ mod test {
                         bytes_received: 1,
                         ..Default::default()
                     },
-                    cpus: vec![],
+                    ..Default::default()
                 },
             );
         }
@@ -678,7 +690,7 @@ mod test {
                         bytes_received: i as u64,
                         ..Default::default()
                     },
-                    cpus: vec![],
+                    ..Default::default()
                 },
             );
         }
@@ -726,7 +738,7 @@ mod test {
                         bytes_received: i as u64,
                         ..Default::default()
                     },
-                    cpus: vec![],
+                    ..Default::default()
                 },
             );
         }
@@ -839,7 +851,7 @@ mod test {
                         bytes_received: 1,
                         ..Default::default()
                     },
-                    cpus: vec![],
+                    ..Default::default()
                 },
             );
         }
@@ -890,6 +902,6 @@ mod test {
     fn test_calculate_ebpf_memory_usage_max() {
         // Will deliberately break at sock struct changes and provide a manual review step
         let result = calculate_ebpf_memory_usage(MAX_ENTRIES_SK_PROPS_HI, MAX_ENTRIES_SK_STATS_HI);
-        assert!(result == 8080);
+        assert_eq!(result, 6809);
     }
 }

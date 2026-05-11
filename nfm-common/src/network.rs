@@ -11,8 +11,16 @@ pub type SockKey = u64;
 pub type SingletonKey = u64;
 pub type Ipv6Bytes = [u8; 16];
 
-pub const AF_INET: u32 = 2;
-pub const AF_INET6: u32 = 10;
+/// Entry written to the NFM_SK_PROPS ringbuf by BPF and read by userspace.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SockPropsEntry {
+    pub sock_key: SockKey,
+    pub context: SockContext,
+}
+
+pub const AF_INET: u16 = 2;
+pub const AF_INET6: u16 = 10;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
@@ -62,18 +70,18 @@ pub struct SockContext {
     pub remote_ipv6: Ipv6Bytes,
     pub local_port: u16,
     pub remote_port: u16,
-    pub address_family: u32,
+    pub address_family: u16,
     pub is_client: bool,
 
     // Pad the struct length to a multiple of 8 to appease the verifier.
-    pub _pad: [u8; 3],
+    pub _pad: [u8; 1],
 }
 
 bitflags! {
     #[repr(C)]
     #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
     #[cfg_attr(not(feature = "bpf"), derive(serde::Serialize))]
-    pub struct SockStateFlags: u32 {
+    pub struct SockStateFlags: u8 {
         // Types of states the socket has been in.
         const ENTERED_ESTABLISH = 1 << 1;
         const STARTED_CLOSURE = 1 << 2;
@@ -104,7 +112,7 @@ pub struct SockOpsStats {
 pub struct SockStats {
     pub last_touched_us: u64,
     pub connect_start_us: u64,
-    pub connect_end_us: u64,
+    pub connect_duration_us: u32,
 
     pub bytes_received: u64,
     pub bytes_delivered: u64,
@@ -115,22 +123,18 @@ pub struct SockStats {
     pub rtt_latest_us: u32,
     pub rtt_smoothed_us: u32,
 
-    pub retrans_syn: u32,
+    pub retrans_syn: u16, // potential retrans during close or syn are low in amounts.
     pub retrans_est: u32,
-    pub retrans_close: u32,
+    pub retrans_close: u16, // potential retrans during close or syn are low in amounts.
 
-    pub rtos_syn: u32,
+    pub rtos_syn: u8, // potential rtos during close or syn are low in amounts.
     pub rtos_est: u32,
-    pub rtos_close: u32,
+    pub rtos_close: u8,
 
     pub state_flags: SockStateFlags,
 
     pub connect_attempts: u8,
     pub connect_successes: u8,
-
-    // Keep the struct size a multiple of 8 bytes to allow the eBPF verifier to confirm all bytes
-    // are initialized.
-    pub _pad: [u8; 6],
 }
 
 impl SockStats {
@@ -156,7 +160,7 @@ impl SockStats {
         // Timestamps and flags represent latest observations, so we take the max or the union.
         self.last_touched_us = self.last_touched_us.max(other.last_touched_us);
         self.connect_start_us = self.connect_start_us.max(other.connect_start_us);
-        self.connect_end_us = self.connect_end_us.max(other.connect_end_us);
+        self.connect_duration_us = self.connect_duration_us.max(other.connect_duration_us);
         self.state_flags |= other.state_flags;
 
         // Certain counters are accumulated per socket by the kernel, so no summation needed.
@@ -166,17 +170,19 @@ impl SockStats {
         self.segments_delivered = self.segments_delivered.max(other.segments_delivered);
 
         // Other counters are accumulated by our BPF layer, and must be summed across CPU cores.
-        self.retrans_syn += other.retrans_syn;
-        self.retrans_est += other.retrans_est;
-        self.retrans_close += other.retrans_close;
+        self.retrans_syn = self.retrans_syn.saturating_add(other.retrans_syn);
+        self.retrans_est = self.retrans_est.saturating_add(other.retrans_est);
+        self.retrans_close = self.retrans_close.saturating_add(other.retrans_close);
 
-        self.rtos_syn += other.rtos_syn;
-        self.rtos_est += other.rtos_est;
-        self.rtos_close += other.rtos_close;
+        self.rtos_syn = self.rtos_syn.saturating_add(other.rtos_syn);
+        self.rtos_est = self.rtos_est.saturating_add(other.rtos_est);
+        self.rtos_close = self.rtos_close.saturating_add(other.rtos_close);
 
-        self.rtt_count += other.rtt_count;
-        self.connect_attempts += other.connect_attempts;
-        self.connect_successes += other.connect_successes;
+        self.rtt_count = self.rtt_count.saturating_add(other.rtt_count);
+        self.connect_attempts = self.connect_attempts.saturating_add(other.connect_attempts);
+        self.connect_successes = self
+            .connect_successes
+            .saturating_add(other.connect_successes);
     }
 
     pub fn subtract(&self, rhs: &SockStats) -> SockStats {
@@ -184,7 +190,7 @@ impl SockStats {
             // Preserve values that are not counters.
             last_touched_us: self.last_touched_us,
             connect_start_us: self.connect_start_us,
-            connect_end_us: self.connect_end_us,
+            connect_duration_us: self.connect_duration_us,
             state_flags: self.state_flags,
             rtt_latest_us: self.rtt_latest_us,
             rtt_smoothed_us: self.rtt_smoothed_us,
@@ -206,14 +212,12 @@ impl SockStats {
 
             connect_attempts: self.connect_attempts.wrapping_sub(rhs.connect_attempts),
             connect_successes: self.connect_successes.wrapping_sub(rhs.connect_successes),
-
-            ..Default::default()
         }
     }
 
     pub fn connect_us(&self) -> Option<u32> {
-        if self.connect_start_us > 0 && self.connect_end_us > self.connect_start_us {
-            Some((self.connect_end_us - self.connect_start_us) as u32)
+        if self.connect_duration_us > 0 {
+            Some(self.connect_duration_us)
         } else {
             None
         }
@@ -232,7 +236,7 @@ impl SockContext {
 
         SockContext {
             is_client,
-            address_family: ctx.family(),
+            address_family: ctx.family() as u16,
             local_ipv4: u32::from_be(ctx.local_ip4()),
             remote_ipv4: u32::from_be(ctx.remote_ip4()),
             local_ipv6: SockContext::ipv6_to_bytes(ctx.local_ip6()),
@@ -452,7 +456,7 @@ mod tests {
         let stats1 = SockStats {
             last_touched_us: 105,
             connect_start_us: 97,
-            connect_end_us: 0,
+            connect_duration_us: 0,
 
             bytes_received: 59,
             bytes_delivered: 61,
@@ -480,7 +484,7 @@ mod tests {
         let stats2 = SockStats {
             last_touched_us: 415,
             connect_start_us: 0,
-            connect_end_us: 101,
+            connect_duration_us: 4,
 
             bytes_received: 67,
             bytes_delivered: 71,
@@ -508,7 +512,7 @@ mod tests {
         let expected = SockStats {
             last_touched_us: 415,
             connect_start_us: 97,
-            connect_end_us: 101,
+            connect_duration_us: 4,
 
             bytes_received: 67,
             bytes_delivered: 71,
@@ -678,7 +682,7 @@ mod tests {
         let stats_a = SockStats {
             last_touched_us: 10,
             connect_start_us: 20,
-            connect_end_us: 30,
+            connect_duration_us: 30,
             bytes_received: 40,
             bytes_delivered: 50,
             segments_received: 150,
@@ -700,7 +704,7 @@ mod tests {
         let stats_b = SockStats {
             last_touched_us: 1,
             connect_start_us: 2,
-            connect_end_us: 3,
+            connect_duration_us: 3,
             bytes_received: 4,
             bytes_delivered: 5,
             segments_received: 15,
@@ -747,12 +751,12 @@ mod tests {
             segments_received: u32::MAX - expected_diff.segments_received + 1,
             segments_delivered: u32::MAX - expected_diff.segments_delivered + 1,
             rtt_count: u32::MAX - expected_diff.rtt_count + 1,
-            retrans_syn: u32::MAX - expected_diff.retrans_syn + 1,
+            retrans_syn: u16::MAX - expected_diff.retrans_syn + 1,
             retrans_est: u32::MAX - expected_diff.retrans_est + 1,
-            retrans_close: u32::MAX - expected_diff.retrans_close + 1,
-            rtos_syn: u32::MAX - expected_diff.rtos_syn + 1,
+            retrans_close: u16::MAX - expected_diff.retrans_close + 1,
+            rtos_syn: u8::MAX - expected_diff.rtos_syn + 1,
             rtos_est: u32::MAX - expected_diff.rtos_est + 1,
-            rtos_close: u32::MAX - expected_diff.rtos_close + 1,
+            rtos_close: u8::MAX - expected_diff.rtos_close + 1,
             connect_attempts: u8::MAX - expected_diff.connect_attempts + 1,
             connect_successes: u8::MAX - expected_diff.connect_successes + 1,
             ..stats_b
@@ -821,5 +825,59 @@ mod tests {
         assert!(!multicast.is_link_local());
         assert!(!almost_link_local_1.is_link_local());
         assert!(!almost_link_local_2.is_link_local());
+    }
+
+    #[test]
+    fn test_sock_stats_narrowed_fields_saturate_on_add() {
+        let mut stats = SockStats {
+            retrans_syn: u16::MAX - 1,
+            retrans_close: u16::MAX - 1,
+            rtos_syn: u8::MAX - 1,
+            rtos_close: u8::MAX - 1,
+            connect_attempts: u8::MAX - 1,
+            ..Default::default()
+        };
+        let other = SockStats {
+            retrans_syn: 10,
+            retrans_close: 10,
+            rtos_syn: 10,
+            rtos_close: 10,
+            connect_attempts: 10,
+            ..Default::default()
+        };
+
+        stats.add_from(&other, 0);
+
+        assert_eq!(stats.retrans_syn, u16::MAX);
+        assert_eq!(stats.retrans_close, u16::MAX);
+        assert_eq!(stats.rtos_syn, u8::MAX);
+        assert_eq!(stats.rtos_close, u8::MAX);
+        assert_eq!(stats.connect_attempts, u8::MAX);
+    }
+
+    #[test]
+    fn test_sock_stats_narrowed_fields_wrapping_subtract() {
+        // Simulate counter wrap-around: current < previous due to overflow in BPF.
+        let current = SockStats {
+            retrans_syn: 5,
+            retrans_close: 3,
+            rtos_syn: 2,
+            rtos_close: 1,
+            ..Default::default()
+        };
+        let previous = SockStats {
+            retrans_syn: u16::MAX,
+            retrans_close: u16::MAX,
+            rtos_syn: u8::MAX,
+            rtos_close: u8::MAX,
+            ..Default::default()
+        };
+
+        let delta = current.subtract(&previous);
+
+        assert_eq!(delta.retrans_syn, 6);
+        assert_eq!(delta.retrans_close, 4);
+        assert_eq!(delta.rtos_syn, 3);
+        assert_eq!(delta.rtos_close, 2);
     }
 }

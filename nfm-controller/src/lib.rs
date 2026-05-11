@@ -153,6 +153,12 @@ pub struct Options {
     /// AWS region for Prometheus workspace (defaults to endpoint-region if not specified)
     #[clap(long = "prometheus-region", default_value = "")]
     prometheus_region: String,
+
+    /// Maximum number of new connections tracked per aggregate_msecs. If not specified, scales with available memory.
+    /// User space side socket buffer size will be set to this value.
+    /// BPF side ring buffer will be set to closest power-of-two value to this value (lesser & closest).
+    #[clap(long = "max-sock-props")]
+    max_sock_props: Option<u64>,
 }
 
 pub fn check_kernel_version() -> Result<(), anyhow::Error> {
@@ -224,13 +230,17 @@ pub fn on_load(opt: Options) -> Result<(), anyhow::Error> {
     info!(args:serde = opt; "Starting up");
 
     // Load NFM objects
-    let event_provider =
-        match EventProviderEbpf::new(&opt.cgroup, opt.notrack_secs, SystemBootClock {}) {
-            Ok(prov) => prov,
-            Err(e) => {
-                return Err(e);
-            }
-        };
+    let event_provider = match EventProviderEbpf::new(
+        &opt.cgroup,
+        opt.notrack_secs,
+        opt.max_sock_props,
+        SystemBootClock {},
+    ) {
+        Ok(prov) => prov,
+        Err(e) => {
+            return Err(e);
+        }
+    };
 
     // Initialize NAT resolver BEFORE dropping capabilities (needs CAP_NET_ADMIN)
     let nat_resolver: Box<dyn NatResolver> = if opt.resolve_nat == OnOff::On {
@@ -567,6 +577,7 @@ mod test {
             open_metrics_address: "127.0.0.1".to_string(),
             prometheus_workspace_id: "".to_string(),
             prometheus_region: "".to_string(),
+            max_sock_props: None,
         }
     }
 
@@ -590,6 +601,7 @@ mod test {
             resolve_nat: OnOff::On,
             prometheus_workspace_id: String::new(),
             prometheus_region: String::new(),
+            max_sock_props: None,
         }
     }
 

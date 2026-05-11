@@ -9,9 +9,9 @@
  * [a] https://github.com/aya-rs/aya/issues/36 Support Unit Testing of BPF Programs
  */
 
-use crate::constants::{MAX_ENTRIES_SK_PROPS_HI, MAX_ENTRIES_SK_STATS_HI};
+use crate::constants::MAX_ENTRIES_SK_STATS_HI;
 use crate::network::{
-    ControlData, CpuSockKey, EventCounters, SockContext, SockOpsStats, SockStats,
+    ControlData, CpuSockKey, EventCounters, SockOpsStats, SockPropsEntry, SockStats,
 };
 
 use libc::{EINVAL, ENOMEM};
@@ -148,7 +148,7 @@ pub type PerCpuArray<T> = SharedArray<T>;
 pub struct MockEbpfMaps {
     pub NFM_CONTROL: SharedArray<ControlData>,
     pub NFM_COUNTERS: PerCpuArray<EventCounters>,
-    pub NFM_SK_PROPS: SharedHashMap<CpuSockKey, SockContext>,
+    pub NFM_SK_PROPS: Vec<SockPropsEntry>,
     pub NFM_SK_STATS: SharedHashMap<CpuSockKey, SockStats>,
     pub mock_rand: u32,
 }
@@ -158,9 +158,7 @@ impl MockEbpfMaps {
         Self {
             NFM_CONTROL: SharedArray::<ControlData>::with_max_entries(1),
             NFM_COUNTERS: PerCpuArray::<EventCounters>::with_max_entries(1),
-            NFM_SK_PROPS: SharedHashMap::<CpuSockKey, SockContext>::with_max_entries(
-                MAX_ENTRIES_SK_PROPS_HI.try_into().unwrap(),
-            ),
+            NFM_SK_PROPS: Vec::new(),
             NFM_SK_STATS: SharedHashMap::<CpuSockKey, SockStats>::with_max_entries(
                 MAX_ENTRIES_SK_STATS_HI.try_into().unwrap(),
             ),
@@ -178,10 +176,6 @@ impl MockEbpfMaps {
 
     pub fn counters_mut_ptr(&mut self) -> *mut EventCounters {
         self.NFM_COUNTERS.get_ptr_mut(0).unwrap()
-    }
-
-    pub fn sock_props(&self, key: &CpuSockKey) -> &SockContext {
-        self.NFM_SK_PROPS.data.get(key).unwrap()
     }
 
     pub fn sock_stats(&self, key: &CpuSockKey) -> &SockStats {
@@ -327,6 +321,19 @@ macro_rules! bpf_get_rand_u32 {
     ($self:ident) => {
         $self.mock_ebpf_maps.mock_rand
     };
+}
+
+#[macro_export]
+macro_rules! bpf_ringbuf_output {
+    ($self:ident, $map_name:ident, $val:expr) => {{
+        let rb = &mut $self.mock_ebpf_maps.as_mut().unwrap().$map_name;
+        if rb.len() >= $crate::constants::MAX_ENTRIES_SK_PROPS_HI as usize {
+            Err(-1i64)
+        } else {
+            rb.push(*$val);
+            Ok::<(), i64>(())
+        }
+    }};
 }
 
 // BPF helper functions.

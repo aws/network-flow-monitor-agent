@@ -289,6 +289,7 @@ mod tests {
             open_metrics_address: "127.0.0.1".to_string(),
             prometheus_workspace_id: String::new(),
             prometheus_region: String::new(),
+            max_sock_props: None,
         }
     }
 
@@ -312,6 +313,7 @@ mod tests {
             resolve_nat: OnOff::On,
             prometheus_workspace_id: String::new(),
             prometheus_region: String::new(),
+            max_sock_props: None,
         }
     }
 }

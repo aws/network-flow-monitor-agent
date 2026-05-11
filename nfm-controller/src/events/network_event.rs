@@ -59,17 +59,17 @@ impl FlowProperties {
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, PartialOrd, Serialize)]
 pub struct NetworkStats {
     // These are levels that represent states at a single point in time.
-    pub sockets_connecting: u32,
-    pub sockets_established: u32,
-    pub sockets_closing: u32,
-    pub sockets_closed: u32,
+    pub sockets_connecting: u16,
+    pub sockets_established: u16,
+    pub sockets_closing: u16,
+    pub sockets_closed: u16,
 
     // These are counters that accumulate throughout a publishing window.
-    pub sockets_completed: u32,
-    pub severed_connect: u32,
-    pub severed_establish: u32,
+    pub sockets_completed: u8,  // informatic stat, low numeric value
+    pub severed_connect: u16, // max 2^16 realistic severes during connect in a single publishing window for a single flow.
+    pub severed_establish: u16, // max 2^16 realistic severes during establish in a single publishing window for a single flow.
 
-    pub connect_attempts: u32,
+    pub connect_attempts: u16, // max 2^16 realistic connect attempts in a single publishing window for a single flow.
     pub bytes_received: u64,
     pub bytes_delivered: u64,
     pub segments_received: u64,
@@ -79,9 +79,9 @@ pub struct NetworkStats {
     pub retrans_est: u32,
     pub retrans_close: u32,
 
-    pub rtos_syn: u32,
+    pub rtos_syn: u16,
     pub rtos_est: u32,
-    pub rtos_close: u32,
+    pub rtos_close: u16,
 
     // These are timing statistics based on events across sockets within the publishing window.
     pub connect_us: MetricHistogram,
@@ -110,9 +110,9 @@ impl NetworkStats {
     }
 
     pub fn rtos_total(&self) -> u32 {
-        self.rtos_syn
-            .saturating_add(self.rtos_est)
-            .saturating_add(self.rtos_close)
+        self.rtos_est
+            .saturating_add(self.rtos_syn as u32)
+            .saturating_add(self.rtos_close as u32)
     }
 
     pub fn quantify_loss(&self) -> u32 {
@@ -120,7 +120,7 @@ impl NetworkStats {
         self.retrans_total()
             .saturating_add(self.rtos_total().saturating_mul(SCALE_FACTOR))
             .saturating_add(
-                (self.severed_connect.saturating_add(self.severed_establish))
+                (self.severed_connect.saturating_add(self.severed_establish) as u32)
                     .saturating_mul(SCALE_FACTOR * SCALE_FACTOR),
             )
     }
@@ -156,13 +156,17 @@ impl NetworkStats {
             .segments_delivered
             .saturating_add(sock_stats.segments_delivered.into());
 
-        self.retrans_syn = self.retrans_syn.saturating_add(sock_stats.retrans_syn);
+        self.retrans_syn = self
+            .retrans_syn
+            .saturating_add(sock_stats.retrans_syn as u32);
         self.retrans_est = self.retrans_est.saturating_add(sock_stats.retrans_est);
-        self.retrans_close = self.retrans_close.saturating_add(sock_stats.retrans_close);
+        self.retrans_close = self
+            .retrans_close
+            .saturating_add(sock_stats.retrans_close as u32);
 
-        self.rtos_syn = self.rtos_syn.saturating_add(sock_stats.rtos_syn);
+        self.rtos_syn = self.rtos_syn.saturating_add(sock_stats.rtos_syn as u16);
         self.rtos_est = self.rtos_est.saturating_add(sock_stats.rtos_est);
-        self.rtos_close = self.rtos_close.saturating_add(sock_stats.rtos_close);
+        self.rtos_close = self.rtos_close.saturating_add(sock_stats.rtos_close as u16);
 
         // Carry forward timing measurements only if the socket actually saw their corresponding
         // events during this period.
@@ -222,26 +226,26 @@ impl NetworkStats {
                 .state_flags
                 .contains(SockStateFlags::ENTERED_ESTABLISH)
             {
-                self.sockets_established += 1;
+                self.sockets_established = self.sockets_established.saturating_add(1);
             } else {
-                self.sockets_connecting += 1;
+                self.sockets_connecting = self.sockets_connecting.saturating_add(1);
             }
         } else {
             if sock_stats.state_flags.contains(SockStateFlags::CLOSED) {
-                self.sockets_closed += 1;
+                self.sockets_closed = self.sockets_closed.saturating_add(1);
             } else {
-                self.sockets_closing += 1;
+                self.sockets_closing = self.sockets_closing.saturating_add(1);
             }
             if sock_stats
                 .state_flags
                 .contains(SockStateFlags::TERMINATED_FROM_SYN)
             {
-                self.severed_connect += 1;
+                self.severed_connect = self.severed_connect.saturating_add(1);
             } else if sock_stats
                 .state_flags
                 .contains(SockStateFlags::TERMINATED_FROM_EST)
             {
-                self.severed_establish += 1;
+                self.severed_establish = self.severed_establish.saturating_add(1);
             }
         }
     }
@@ -590,7 +594,7 @@ mod tests {
         let sock_stats = SockStats {
             last_touched_us: 451,
             connect_start_us: 101,
-            connect_end_us: 127,
+            connect_duration_us: 127,
             bytes_received: 67,
             bytes_delivered: 71,
             segments_received: 83,
@@ -635,8 +639,8 @@ mod tests {
             connect_us: MetricHistogram {
                 count: 64,
                 min: 20,
-                max: 26,
-                sum: 1276,
+                max: 127,
+                sum: 1377,
             },
             rtt_us: MetricHistogram {
                 count: 12,
@@ -667,7 +671,7 @@ mod tests {
             net_stats.bytes_delivered,
             sock_stats.bytes_delivered * 2 + 61
         );
-        assert_eq!(net_stats.connect_us.max, 26);
+        assert_eq!(net_stats.connect_us.max, 127);
     }
 
     #[test]
@@ -721,5 +725,57 @@ mod tests {
         assert_eq!(loss_a3, loss_a1);
         assert_eq!(loss_b2, loss_b1);
         assert_eq!(loss_b3, loss_b1);
+    }
+
+    #[test]
+    fn test_network_stats_saturation() {
+        let mut stats = NetworkStats {
+            sockets_connecting: u16::MAX - 1,
+            connect_attempts: u16::MAX - 1,
+            retrans_syn: u32::MAX - 1,
+            rtos_syn: u16::MAX - 1,
+            ..Default::default()
+        };
+
+        // A socket with no state flags (not established, not closing) increments sockets_connecting.
+        let sock_stats = SockStats {
+            retrans_syn: u16::MAX,
+            rtos_syn: u8::MAX,
+            connect_attempts: u8::MAX,
+            ..Default::default()
+        };
+        stats.add_from(&sock_stats);
+
+        // Verify saturation (not wrap-around).
+        assert_eq!(stats.retrans_syn, u32::MAX);
+        assert_eq!(stats.rtos_syn, u16::MAX);
+        assert_eq!(stats.connect_attempts, u16::MAX);
+        assert_eq!(stats.sockets_connecting, u16::MAX - 1 + 1);
+    }
+
+    #[test]
+    fn test_network_stats_narrowed_fields_accumulate() {
+        let mut stats = NetworkStats::default();
+
+        // Accumulate many sockets to verify widening works correctly.
+        let sock_stats = SockStats {
+            retrans_syn: 100,
+            retrans_close: 50,
+            rtos_syn: 10,
+            rtos_close: 5,
+            state_flags: SockStateFlags::ENTERED_ESTABLISH,
+            ..Default::default()
+        };
+
+        for _ in 0..1000 {
+            stats.add_from(&sock_stats);
+        }
+
+        // u16 fields widen to u32 in NetworkStats.
+        assert_eq!(stats.retrans_syn, 100_000);
+        assert_eq!(stats.retrans_close, 50_000);
+        assert_eq!(stats.rtos_syn, 10_000);
+        assert_eq!(stats.rtos_close, 5_000);
+        assert_eq!(stats.sockets_established, 1000);
     }
 }
