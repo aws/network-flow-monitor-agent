@@ -46,8 +46,12 @@ pub fn lookup_batch<K: Pod + Default, V: Pod + Default>(
     let fd = map.map().fd().as_fd();
     let raw_fd = std::os::fd::AsRawFd::as_raw_fd(&fd);
 
-    let mut keys: Vec<K> = vec![K::default(); max_entries];
-    let mut values: Vec<V> = vec![V::default(); max_entries];
+    let mut keys: Vec<K> = Vec::with_capacity(max_entries);
+    let mut values: Vec<V> = Vec::with_capacity(max_entries);
+    unsafe {
+        keys.set_len(max_entries);
+        values.set_len(max_entries);
+    }
     let mut results = Vec::new();
 
     let mut in_batch: u64 = 0;
@@ -55,7 +59,6 @@ pub fn lookup_batch<K: Pod + Default, V: Pod + Default>(
     let mut first_call = true;
 
     loop {
-        let batch_size = max_entries.min(keys.len()) as u32;
         let mut attr = BatchAttr {
             in_batch: if first_call {
                 0
@@ -65,7 +68,7 @@ pub fn lookup_batch<K: Pod + Default, V: Pod + Default>(
             out_batch: &mut out_batch as *mut u64 as u64,
             keys: keys.as_mut_ptr() as u64,
             values: values.as_mut_ptr() as u64,
-            count: batch_size,
+            count: max_entries as u32,
             map_fd: raw_fd as u32,
             elem_flags: 0,
             flags: 0,
