@@ -5,11 +5,14 @@ set -o pipefail
 set -o nounset
 set -o xtrace
 
-# Get cgroupv2 mount created by the init container
-CGROUP_PATH="/cgroup-mount/cgroup-nfm-agent"
-
-if [[ -z "$CGROUP_PATH" ]]; then
-    echo "ERROR: No cgroupv2 mount found. The cgroupv2 must have been mounted from init container by now on $CGROUP_PATH."
+# Auto-detect cgroupv2 path from host mount. Cgroupv2 is default since kubernetes 1.25 (covers all NFM supported versions)
+# So it must be readily available on the host.
+if [[ $(stat -fc %T /host-cgroup 2>/dev/null) == "cgroup2fs" ]]; then
+    CGROUP_PATH="/host-cgroup"
+elif [[ $(stat -fc %T /host-cgroup/unified 2>/dev/null) == "cgroup2fs" ]]; then
+    CGROUP_PATH="/host-cgroup/unified"
+else
+    echo "ERROR: No cgroupv2 filesystem found at /sys/fs/cgroup or /sys/fs/cgroup/unified."
     exit 1
 fi
 
