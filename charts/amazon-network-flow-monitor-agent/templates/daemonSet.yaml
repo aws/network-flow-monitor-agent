@@ -55,87 +55,15 @@ spec:
               else
                 echo "rmem_max "$CURRENT" is already sufficient, keeping current value"
               fi
-
-              check_cgroupv2() {
-                local path="$1"
-                if ! mountpoint -q "$path" 2>/dev/null; then
-                  return 1
-                fi
-                local fs_type=$(stat -fc %T "$path" 2>/dev/null || echo "unknown")
-                if [ "$fs_type" = "cgroup2fs" ]; then
-                  return 0
-                fi
-                return 1
-              }
-
-              # Mount /cgroup-mount/cgroup-nfm-agent
-              CGROUP_PATH="/cgroup-mount/cgroup-nfm-agent"
-              mkdir -p "$CGROUP_PATH"
-
-              if check_cgroupv2 "$CGROUP_PATH"; then
-                echo "Found cgroupv2 at: $CGROUP_PATH. Will use that"
-                exit 0
-              fi
-
-              # Mount cgroupv2 on /cgroup-mount/cgroup-nfm-agent
-              if ! mount -t cgroup2 none "$CGROUP_PATH"; then
-                echo "ERROR: Failed to mount cgroupv2 at $CGROUP_PATH. NFM agent requires cgroupv2 support."
-                exit 1
-              fi
-
-              echo "Mounted cgroupv2 at: $CGROUP_PATH"
           volumeMounts:
-            - name: cgroup-mount
-              mountPath: /cgroup-mount
-              mountPropagation: Bidirectional
             - name: config
               mountPath: /config
       containers:
-        - name: cleanup
-          # This privileged sidecar exists solely to restore host state on pod termination.
-          # The main container cannot do this because:
-          # 1. sysctl requires SYS_ADMIN or privileged
-          # 2. umount with Bidirectional propagation requires privileged
-          # On SIGTERM it restores rmem_max to its original value and unmounts the cgroup2 filesystem.
-          image: {{ include "aws-network-flow-monitor-agent.image" . }}
-          securityContext:
-            privileged: true
-            readOnlyRootFilesystem: true
-          command:
-            - sh
-            - -c
-            - |
-              trap '
-                if [ -f /config/rmem_max_original ]; then
-                  ORIGINAL=$(cat /config/rmem_max_original)
-                  echo "Restoring rmem_max to: $ORIGINAL"
-                  sysctl -w net.core.rmem_max=$ORIGINAL && echo "Restored rmem_max" || echo "Failed to restore rmem_max"
-                fi
-                if umount /cgroup-mount/cgroup-nfm-agent; then
-                  echo "Unmounted cgroup"
-                else
-                  echo "Failed to unmount cgroup (may not have been mounted)"
-                fi
-              ' TERM
-              sleep infinity &
-              wait
-          resources:
-            limits:
-              cpu: 10m
-              memory: 16Mi
-            requests:
-              cpu: 1m
-              memory: 8Mi
-          volumeMounts:
-            - name: cgroup-mount
-              mountPath: /cgroup-mount
-              mountPropagation: Bidirectional
-            - name: config
-              mountPath: /config
-              readOnly: true
         - name: {{ .Values.daemonSet.name }}
           image: {{ include "aws-network-flow-monitor-agent.image" . }}
           securityContext:
+            seLinuxOptions:
+              type: control_t
             capabilities:
               add:
                 - BPF
@@ -178,18 +106,50 @@ spec:
               value: {{ .Values.caCerts.mountPath }}/{{ .Values.caCerts.fileName }}
             {{- end }}
           volumeMounts:
-            - name: cgroup-mount
-              mountPath: /cgroup-mount
-              mountPropagation: HostToContainer
+            - name: host-cgroup
+              mountPath: /host-cgroup
+              readOnly: true
           {{- if .Values.caCerts.enabled }}
             - name: ca-bundle
               mountPath: {{ .Values.caCerts.mountPath }}/{{ .Values.caCerts.fileName }}
               subPath: {{ .Values.caCerts.fileName }}
               readOnly: true
           {{- end }}
+        - name: cleanup
+          # Restores net.core.rmem_max on pod termination.
+          image: {{ include "aws-network-flow-monitor-agent.image" . }}
+          securityContext:
+            privileged: true
+            readOnlyRootFilesystem: true
+          command:
+            - sh
+            - -c
+            - |
+              trap '
+                if [ -f /config/rmem_max_original ]; then
+                  ORIGINAL=$(cat /config/rmem_max_original)
+                  echo "Restoring rmem_max to: $ORIGINAL"
+                  sysctl -w net.core.rmem_max=$ORIGINAL && echo "Restored rmem_max" || echo "Failed to restore rmem_max"
+                fi
+              ' TERM
+              sleep infinity &
+              wait
+          resources:
+            limits:
+              cpu: 10m
+              memory: 16Mi
+            requests:
+              cpu: 1m
+              memory: 8Mi
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
       volumes:
-        - name: cgroup-mount
-          emptyDir: {}
+        - name: host-cgroup
+          hostPath:
+            path: /sys/fs/cgroup
+            type: Directory
         - name: config
           emptyDir: {}
       {{- if .Values.caCerts.enabled }}
@@ -204,7 +164,7 @@ spec:
       {{- end }}
       nodeSelector:
         kubernetes.io/os: linux
-      terminationGracePeriodSeconds: 5
+      terminationGracePeriodSeconds: 30
       serviceAccountName: {{ .Values.serviceAccount.name }}
       {{- with .Values.priorityClassName }}
       priorityClassName: {{ . }}
