@@ -15,7 +15,6 @@ Vendor:     Amazon Web Services, Inc
 %define _build_id_links none
 %define PKG_ROOT_DIR /opt/aws/network-flow-monitor
 %define NFM_CGROUP_DIR /mnt/cgroup-nfm
-%define PACKAGES_LEFT "$1"
 %define PACKAGE_COMMAND "$1"
 %define MIN_KERNEL_VERSION 5.8
 %define AGENT_LOG_DESCRIPTION "Network Flow Monitor Agent %{AGENT_VERSION}"
@@ -42,10 +41,7 @@ if [ $(version $HOST_KERNEL_VERSION) -lt $(version %MIN_KERNEL_VERSION) ]; then
     exit 1
 fi
 
-# Existing pre-install scripts...
-getent group %{NFM_GROUP} >/dev/null || groupadd -r %{NFM_GROUP}
-getent passwd %{NFM_USER} >/dev/null || useradd -r -g %{NFM_GROUP} -d %{PKG_ROOT_DIR} -s /sbin/nologin %{NFM_USER}
-
+# Create system user and group
 getent group %{NFM_GROUP} >/dev/null || groupadd -r %{NFM_GROUP}
 getent passwd %{NFM_USER} >/dev/null || useradd -r -g %{NFM_GROUP} -d %{PKG_ROOT_DIR} -s /sbin/nologin %{NFM_USER}
 
@@ -66,7 +62,20 @@ cp %{_sourcedir}/target/release/network-flow-monitor-agent %{buildroot}%{PKG_ROO
 
 #### Post-install scripts
 %post
-%systemd_post network-flow-monitor.service
+# Dual RPM/DEB helper: returns 0 (true) if this is an upgrade (not fresh install)
+# RPM: $1 = 1 for fresh install, $1 >= 2 for upgrade
+# DEB: $1 = "configure" with $2 = old-version for upgrade
+# https://docs.fedoraproject.org/en-US/packaging-guidelines/Scriptlets/
+is_upgrade() {
+    case "$1" in
+        configure)
+            [ -n "${2:-}" ] && return 0
+            return 1
+            ;;
+        *[!0-9]*) return 1 ;;
+        *) [ "$1" -ge 2 ] ;;
+    esac
+}
 
 ## Capabilities
 # Giving the agent capabilities so that we can perform e/BPF actions
@@ -75,10 +84,9 @@ if ! setcap cap_sys_admin,cap_bpf=eip %{PKG_ROOT_DIR}/network-flow-monitor-agent
     setcap cap_sys_admin,39=eip %{PKG_ROOT_DIR}/network-flow-monitor-agent
 fi
 
-# Only create mount points on install or if the mountpoint doesn't exists
-if [ %PACKAGES_LEFT = 1 ] || ! mountpoint -q %{NFM_CGROUP_DIR}; then
+# Only create mount points on fresh install or if the mountpoint doesn't exist
+if ! is_upgrade %PACKAGE_COMMAND "${2:-}" || ! mountpoint -q %{NFM_CGROUP_DIR}; then
     echo "creating cgroupv2 mount point"
-    ## CGROUP
     mkdir -p %{NFM_CGROUP_DIR}
     chown %{NFM_USER}:%{NFM_GROUP} %{NFM_CGROUP_DIR}
     mount -t cgroup2 networkflowmonitor-cgroup %{NFM_CGROUP_DIR}
@@ -86,10 +94,7 @@ if [ %PACKAGES_LEFT = 1 ] || ! mountpoint -q %{NFM_CGROUP_DIR}; then
 fi
 
 ## Service start + enable on startup
-# $1 = 1 for fresh install
-# $1 >= 2 for upgrade
-# https://docs.fedoraproject.org/en-US/packaging-guidelines/Scriptlets/
-if [ $1 -ge 2 ]; then
+if is_upgrade %PACKAGE_COMMAND "${2:-}"; then
     echo "Restarting network-flow-monitor-agent"
     systemctl try-restart network-flow-monitor.service
 else
@@ -101,12 +106,21 @@ echo "%{AGENT_LOG_DESCRIPTION} installed successfully."
 
 ### Pre-Uninstall Scripts
 %preun
-%systemd_preun network-flow-monitor.service
+# Dual RPM/DEB helper: returns 0 (true) if this is a full removal (not upgrade)
+# RPM passes numeric $1: 0 = removal, >= 1 = upgrade
+# DEB passes string $1: "remove", "purge" = removal; "upgrade" = upgrade
+is_removal() {
+    case "$1" in
+        remove|purge|0) return 0 ;;
+        *) return 1 ;;
+    esac
+}
 
-# Only remove mount points on uninstall
-if [ %PACKAGES_LEFT = 0 ] || [ %PACKAGE_COMMAND = "remove" ]; then
+if is_removal %PACKAGE_COMMAND; then
+    systemctl --no-reload disable network-flow-monitor.service > /dev/null 2>&1 || :
+    systemctl stop network-flow-monitor.service > /dev/null 2>&1 || :
+
     echo "removing cgroupv2 mount point"
-    ## CGROUP
     if mountpoint -q %{NFM_CGROUP_DIR}; then
         umount %{NFM_CGROUP_DIR}
         sed -i.bak "\@^networkflowmonitor-cgroup@d" /etc/fstab
@@ -118,11 +132,22 @@ echo "%{AGENT_LOG_DESCRIPTION} uninstalled successfully."
 
 ### Post-Uninstall Scripts
 %postun
-# The agent needs to be restarted upon upgrade to pick up the new binary
-%systemd_postun_with_restart network-flow-monitor.service
-if [ %PACKAGES_LEFT = 0 ] || [ %PACKAGE_COMMAND = "remove" ]; then
-    userdel %{NFM_USER}
-    groupdel %{NFM_GROUP}
+# Dual RPM/DEB helper: returns 0 (true) if this is a full removal (not upgrade)
+is_removal() {
+    case "$1" in
+        remove|purge|0) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+systemctl daemon-reload > /dev/null 2>&1 || :
+
+if is_removal %PACKAGE_COMMAND; then
+    userdel %{NFM_USER} 2>/dev/null || :
+    groupdel %{NFM_GROUP} 2>/dev/null || :
+else
+    # Package upgrade: restart to pick up the new binary
+    systemctl try-restart network-flow-monitor.service > /dev/null 2>&1 || :
 fi
 
 %files
