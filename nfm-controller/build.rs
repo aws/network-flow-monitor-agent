@@ -22,10 +22,11 @@ fn main() {
 }
 
 fn set_up_toolchain() {
-    Command::new("rustup")
+    // In offline/vendored builds rustup might not be available
+    // and rust-src might be provided via different manners.
+    let _ = Command::new("rustup")
         .args(["component", "add", "rust-src"])
-        .status()
-        .expect("Failed to add rust-src");
+        .status();
 
     if Command::new("bpf-linker")
         .arg("--version")
@@ -78,6 +79,7 @@ fn build_ebpf(release: bool) {
     let status = Command::new("cargo")
         .env("RUSTC_BOOTSTRAP", "1")
         .env("RUSTFLAGS", "")
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
         .args(&args)
         .status()
         .expect("Failed to build eBPF program");
