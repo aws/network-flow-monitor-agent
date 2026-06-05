@@ -3,6 +3,7 @@
 
 //! Simple Prometheus metrics server for testing integration.
 
+use log::info;
 use prometheus::Registry;
 
 use std::sync::Arc;
@@ -11,6 +12,7 @@ use crate::{
     kubernetes::kubernetes_metadata_collector::KubernetesMetadataCollector,
     metadata::runtime_environment_metadata::ComputePlatform,
     open_metrics::providers::{
+        efa_metrics_provider::EfaMetricsProvider,
         interface_metrics_provider::InterfaceMetricsProvider,
         system_metrics_provider::SystemMetricsProvider,
     },
@@ -20,13 +22,20 @@ pub fn get_open_metric_providers(
     compute_platform: ComputePlatform,
     k8s_collector: Option<Arc<KubernetesMetadataCollector>>,
 ) -> Vec<Box<dyn OpenMetricProvider>> {
-    vec![
+    let mut providers: Vec<Box<dyn OpenMetricProvider>> = vec![
         Box::new(SystemMetricsProvider::new(&compute_platform)),
         Box::new(InterfaceMetricsProvider::new(
             &compute_platform,
             k8s_collector.clone(),
         )),
-    ]
+    ];
+
+    if EfaMetricsProvider::efa_devices_present() {
+        info!("EFA devices detected, enabling EFA metrics collection");
+        providers.push(Box::new(EfaMetricsProvider::new(&compute_platform)));
+    }
+
+    providers
 }
 
 pub trait OpenMetricProvider {
