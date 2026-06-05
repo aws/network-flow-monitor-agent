@@ -104,7 +104,7 @@ def main():
     server.shutdown()
 
     # Validate the results.
-    success = count_logged_connections(file_path='/test-context/agent.log', expected_count=request_count, timeout_secs=15)
+    success = count_logged_connections(file_path=args.log_path, expected_count=request_count, timeout_secs=15)
     exit(0 if success else 1)
 
 if __name__ == '__main__':

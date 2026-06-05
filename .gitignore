@@ -3,3 +3,4 @@ out/
 target/
 **/Cargo.lock
 cobertura.xml
+.idea/
