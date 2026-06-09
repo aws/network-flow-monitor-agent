@@ -320,19 +320,34 @@ TcpAttemptFails                 5                  0.0";
         let mut fake_runner = FakeCommandRunner::new();
         fake_runner.add_expectation(
             "nsenter",
-            &["-t", "1234", "-n", "nstat", "-a"],
+            &["--net", "/proc/4294967295/ns/net", "nstat", "-a"],
             Err(Error::new(ErrorKind::NotFound, "nsenter not found")),
         );
 
         let collector = NetNsStats::new(Box::new(fake_runner));
         let ns_info = NamespaceInfo {
-            pid: ProcessId::new(1234),
-            ns_file: None,
+            pid: ProcessId::new(4294967295),
+            ns_file: Some("/proc/4294967295/ns/net".to_string()),
             ip_addresses: vec![],
         };
         let result = collector.get_namespace_flow_stats(&ns_info);
 
         // Should return error on command failure
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_get_namespace_flow_stats_proc_not_found() {
+        // When ns_file is None and PID doesn't exist, reading /proc/{pid}/net/snmp fails
+        let fake_runner = FakeCommandRunner::new();
+        let collector = NetNsStats::new(Box::new(fake_runner));
+        let ns_info = NamespaceInfo {
+            pid: ProcessId::new(4294967295), // PID that will never exist
+            ns_file: None,
+            ip_addresses: vec![],
+        };
+        let result = collector.get_namespace_flow_stats(&ns_info);
+
         assert!(result.is_err());
     }
 

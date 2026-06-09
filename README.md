@@ -68,6 +68,52 @@ Some unit tests need privileges to run:
 ```
 sudo -E cargo test --features privileged
 ```
+### Multi-Distro Integration Tests
+
+The workflow `.github/workflows/integration-tests.yml` runs the agent on real EC2 instances across multiple distributions. Each instance builds the agent natively and runs the test suite.
+
+**Tested distributions:**
+
+| Distro | Kernel | Package |
+|--------|--------|---------|
+| Amazon Linux 2 | 5.10 (Amazon) | RPM |
+| Amazon Linux 2023 | 6.1, 6.12 (Amazon) | RPM |
+| RHEL 9 | 5.14 (Red Hat) | RPM |
+| SUSE 15 SP6 | 6.4 | RPM |
+| Debian 11 | 5.10 (cloud) | Binary |
+| Debian 12 | 6.1 | Binary |
+| Ubuntu 22.04 | 6.x (HWE) | Binary |
+| Ubuntu 24.04 | 6.8 | Binary |
+
+#### Known Incompatible Distributions
+
+The following distributions are **not supported** due to BPF license restrictions in their kernels:
+
+| Distro | Kernel | Issue |
+|--------|--------|-------|
+| SUSE 15 SP5 | 5.14.21 (stock) | Kernel enforces GPL-only on BPF helpers used by the agent |
+| Ubuntu 20.04 | 5.15 (AWS) | Same GPL restriction + GCC 9 `memcmp` bug blocks build |
+
+**Root cause:** The agent's eBPF program declares `license="Apache-2.0"`. Certain BPF helpers (used in the `sock_ops` program) are marked `gpl_only=true` in kernels that haven't backported relaxations from upstream 6.x.
+
+- **RHEL 9 (5.14)** works because Red Hat backports BPF helper relaxations from newer kernels.
+- **SUSE SP5 (5.14)** fails because SUSE stays closer to upstream, which retains restrictions until kernel 6.x.
+- **Amazon Linux 2 (5.10)** works because Amazon patches their kernel to allow non-GPL BPF programs.
+
+**Recommended fix:** Change the eBPF program's license declaration in [`nfm-bpf/src/main.rs`](nfm-bpf/src/main.rs#L30-L31):
+
+```rust
+// Current (line 30-31):
+#[link_section = "license"]
+pub static LICENSE: [u8; 11] = *b"Apache-2.0\0";
+
+// Recommended change:
+#[link_section = "license"]
+pub static LICENSE: [u8; 14] = *b"Dual BSD/GPL\0";
+```
+
+This is the industry standard for commercial eBPF agents (Cilium, Falco, Datadog, Tetragon all use this pattern). The kernel explicitly allows GPL-licensed BPF bytecode to coexist with Apache-2.0 userspace in the same package — there is no license "contamination" across the syscall boundary.
+
 ### Distributions
 You can download the official release from our permanent URLs. For more information, refer to [link](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch-NetworkFlowMonitor-agents-download-agent-commandline.html)
 
