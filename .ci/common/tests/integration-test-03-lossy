@@ -2,8 +2,6 @@
 
 import argparse
 import subprocess
-import socket
-import time
 from concurrent.futures import ThreadPoolExecutor
 from test_common import (
     start_http_server, send_http_request, find_free_port

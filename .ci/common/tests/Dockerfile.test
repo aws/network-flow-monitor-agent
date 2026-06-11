@@ -11,8 +11,8 @@ RUN apt-get update && apt-get install -y \
 
 COPY target/release/network-flow-monitor-agent /usr/local/bin/
 COPY target/release/report-verifier /usr/local/bin/
-COPY test-data/integration-* /test-context/
-COPY test-data/tools/* /test-context/
+COPY .ci/common/tests/integration-* /test-context/
+COPY .ci/common/tests/tools/* /test-context/
 
 RUN chmod +x /test-context/*
 

@@ -279,7 +279,7 @@ mod tests {
         report.set_service_metadata(ServiceMetadata::new("test-service", "1.0", "build-time"));
 
         let expected: NfmReport =
-            serde_json::from_str(&fs::read_to_string("../test-data/report1.json").unwrap())
+            serde_json::from_str(&fs::read_to_string("test-fixtures/report1.json").unwrap())
                 .unwrap();
         assert_eq!(report, expected);
 
@@ -290,7 +290,7 @@ mod tests {
         report.set_network_stats(vec![agg_results]);
 
         let expected: NfmReport =
-            serde_json::from_str(&fs::read_to_string("../test-data/report2.json").unwrap())
+            serde_json::from_str(&fs::read_to_string("test-fixtures/report2.json").unwrap())
                 .unwrap();
         assert_eq!(report, expected);
     }

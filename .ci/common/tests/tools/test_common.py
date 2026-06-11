@@ -2,7 +2,6 @@
 
 import http.client
 import http.server
-import json
 import socketserver
 import threading
 import socket
