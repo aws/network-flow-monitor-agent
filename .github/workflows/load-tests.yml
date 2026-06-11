@@ -1,121 +1,521 @@
-# Runs load tests on given ref (Branch, PR etc) in actual ec2 instances
-name: Run load tests
+# Unified load test workflow: builds agent, runs perf tests in parallel (one instance per
+# instance-type × TPS combination), then compares PR vs main results.
+name: Load Tests
+
+permissions:
+  contents: read
 
 on:
-  workflow_call:
-    inputs:
-      ref:
-        required: true
-        type: string
-        description: 'Git ref to test (branch, tag, or commit SHA)'
-      test-id:
-        required: true
-        type: string
-        description: 'Unique identifier for this test run'
-    secrets:
-      PR_PERF_TEST_AWS_ROLE_ARN:
-        required: true
-      PR_PERF_TEST_AWS_REGION:
-        required: true
-      PR_PERF_TEST_INSTANCE_ROLE:
-        required: true
-      PR_PERF_TEST_BUCKET:
-        required: true
-    outputs:
-      results-artifact:
-        description: 'Name of the artifact containing test results'
-        value: ${{ jobs.load-tests.outputs.artifact-name }}
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: load-tests-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  load-tests:
-    runs-on: ubuntu-22.04 # 24.04 has GLIBC 2.39, if agent is built with that with dynamic linking it wont run in AL2023 which do not have it
-    timeout-minutes: 90
+  check-access:
+    runs-on: ubuntu-22.04
     permissions:
-      id-token: write   # This is required for requesting the JWT
-      contents: read
+      id-token: write
     outputs:
-      artifact-name: performance-results-${{ inputs.test-id }}
-
+      has-access: ${{ steps.aws-creds.outcome == 'success' }}
     steps:
       - name: Configure AWS credentials
         id: aws-creds
         continue-on-error: true
-        uses: aws-actions/configure-aws-credentials@v5.0.0
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.PR_PERF_TEST_AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.PR_PERF_TEST_AWS_REGION }}
+          mask-aws-account-id: true
+
+  # Build agent and tcp-tester in parallel (one job per ref), upload to S3
+  build:
+    needs: check-access
+    if: needs.check-access.outputs.has-access == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    permissions:
+      id-token: write
+      contents: read
+    strategy:
+      matrix:
+        include:
+          - ref: pr
+            git-ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          - ref: main
+            git-ref: main
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.PR_PERF_TEST_AWS_ROLE_ARN }}
           aws-region: ${{ secrets.PR_PERF_TEST_AWS_REGION }}
           mask-aws-account-id: true
 
       - name: Checkout code
-        if: steps.aws-creds.outcome == 'success'
         uses: actions/checkout@v5
         with:
-          ref: ${{ inputs.ref }}
-
-      - name: Set up Python
-        if: steps.aws-creds.outcome == 'success'
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.13'
-
-      - name: Install Python dependencies
-        if: steps.aws-creds.outcome == 'success'
-        run: |
-          python3 -m pip install --upgrade pip
-          python3 -m pip install sh matplotlib
+          ref: ${{ matrix.git-ref }}
 
       - name: Install Rust
-        if: steps.aws-creds.outcome == 'success'
         uses: actions-rs/toolchain@v1
         with:
           profile: minimal
           toolchain: stable
-          components: rustfmt, clippy
           override: true
 
       - name: Cache Rust build artifacts
-        if: steps.aws-creds.outcome == 'success'
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ inputs.test-id }}-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ matrix.ref }}-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Build agent
-        if: steps.aws-creds.outcome == 'success'
-        run: cargo build --release
+      - name: Build binaries
+        run: |
+          cargo build --release
+          cargo build --release --package tcp-tester
 
-      - name: Build tcp-tester
-        if: steps.aws-creds.outcome == 'success'
-        run: cargo build --release --package tcp-tester
+      - name: Upload bundle to S3
+        run: |
+          S3_PREFIX="load-tests/${{ github.run_id }}/${{ github.run_attempt }}"
+          BUCKET="${{ secrets.PR_PERF_TEST_BUCKET }}"
 
-      - name: Create EC2 instances
-        if: steps.aws-creds.outcome == 'success'
+          tar --transform 's/.*\///g' -czf ${{ matrix.ref }}-bundle.tgz \
+            target/release/network-flow-monitor-agent \
+            target/release/tcp-tester \
+            load-generator/bin/*
+
+          aws s3 cp ${{ matrix.ref }}-bundle.tgz "s3://${BUCKET}/${S3_PREFIX}/${{ matrix.ref }}-bundle.tgz"
+          aws s3 cp load-generator/bin/bpftop "s3://${BUCKET}/${S3_PREFIX}/bpftop"
+          aws s3 cp load-generator/instance-config.json "s3://${BUCKET}/${S3_PREFIX}/instance-config.json"
+
+  # Run one perf test per (ref × instance_type × tps) combination
+  perf-test:
+    needs: [check-access, build]
+    if: needs.check-access.outputs.has-access == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    permissions:
+      id-token: write
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        ref: [pr, main]
+        instance_type:
+          - m6a.xlarge
+          - m6a.4xlarge
+          - m6a.8xlarge
+          - m6a.16xlarge
+          - m6a.24xlarge
+          - m6a.48xlarge
+        tps:
+          - "10000"
+          - "20000"
+          - "30000"
+          - "40000"
+          - "60000"
+          - "80000"
+          - "100000"
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.PR_PERF_TEST_AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.PR_PERF_TEST_AWS_REGION }}
+          mask-aws-account-id: true
+
+      - name: Create EC2 instance and wait for SSM
+        id: ec2
+        run: |
+          REGION="${{ secrets.PR_PERF_TEST_AWS_REGION }}"
+          INSTANCE_ROLE="${{ secrets.PR_PERF_TEST_INSTANCE_ROLE }}"
+
+          AMI_ID=$(aws ec2 describe-images \
+            --owners amazon \
+            --filters "Name=name,Values=al2023-ami-*-x86_64" "Name=state,Values=available" \
+            --query 'Images | sort_by(@, &CreationDate) | [-1].ImageId' \
+            --output text \
+            --region "$REGION")
+
+          # Launch instance and wait for running + SSM ready.
+          # If stuck in pending or SSM never registers, terminate and retry with a new instance.
+          MAX_ATTEMPTS=3
+          for attempt in $(seq 1 $MAX_ATTEMPTS); do
+            echo "=== Instance attempt $attempt/$MAX_ATTEMPTS ==="
+
+            # Create instance (retry on API throttling)
+            BACKOFF=10
+            INSTANCE_ID=""
+            for retry in $(seq 1 5); do
+              INSTANCE_ID=$(aws ec2 run-instances \
+                --image-id "$AMI_ID" \
+                --count 1 \
+                --instance-type "${{ matrix.instance_type }}" \
+                --iam-instance-profile "Name=${INSTANCE_ROLE}" \
+                --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=nfm-perf-${{ matrix.ref }}-${{ matrix.instance_type }}-${{ matrix.tps }}-${{ github.run_id }}},{Key=Purpose,Value=performance-testing}]" \
+                --query 'Instances[0].InstanceId' \
+                --output text \
+                --region "$REGION" 2>/tmp/ec2-error.txt) && break
+              echo "RunInstances throttled, retrying in ${BACKOFF}s ($retry/5)..."
+              sleep $BACKOFF
+              BACKOFF=$((BACKOFF * 2))
+            done
+
+            if [ -z "$INSTANCE_ID" ]; then
+              echo "::error::Failed to create instance after 5 retries"
+              cat /tmp/ec2-error.txt
+              exit 1
+            fi
+            echo "Created instance: ${INSTANCE_ID} (${{ matrix.instance_type }})"
+
+            # Poll for running + SSM ready (3 min timeout)
+            SSM_OK=false
+            for i in $(seq 1 18); do
+              STATE=$(aws ec2 describe-instances \
+                --instance-ids "$INSTANCE_ID" \
+                --query 'Reservations[0].Instances[0].State.Name' \
+                --output text --region "$REGION" 2>/dev/null || echo "pending")
+              if [ "$STATE" = "running" ]; then
+                READY=$(aws ssm describe-instance-information \
+                  --filters "Key=InstanceIds,Values=${INSTANCE_ID}" \
+                  --query 'length(InstanceInformationList)' \
+                  --output text --region "$REGION" 2>/dev/null || echo "0")
+                if [ "$READY" = "1" ]; then
+                  echo "SSM ready after $((i * 10))s"
+                  SSM_OK=true
+                  break
+                fi
+              fi
+              sleep 10
+            done
+
+            if [ "$SSM_OK" = "true" ]; then break; fi
+
+            # Stuck — terminate and retry
+            echo "Instance not healthy after 180s (state: $STATE). Terminating..."
+            aws ec2 terminate-instances --instance-ids "$INSTANCE_ID" --region "$REGION" || true
+            INSTANCE_ID=""
+
+            if [ $attempt -eq $MAX_ATTEMPTS ]; then
+              echo "::error::Failed to get a healthy instance after $MAX_ATTEMPTS attempts"
+              exit 1
+            fi
+          done
+
+          echo "instance-id=${INSTANCE_ID}" >> "$GITHUB_OUTPUT"
+          echo "SSM_INSTANCE_ID=${INSTANCE_ID}" >> "$GITHUB_ENV"
+          echo "SSM_REGION=${REGION}" >> "$GITHUB_ENV"
+
+      - name: Create SSM helper
+        run: |
+          cat > /tmp/run-ssm.sh <<'HELPER'
+          #!/bin/bash
+          set -o errexit
+          set -o pipefail
+          set -o nounset
+          INSTANCE_ID="${SSM_INSTANCE_ID:?SSM_INSTANCE_ID not set}"
+          REGION="${SSM_REGION:?SSM_REGION not set}"
+          TIMEOUT="$1"; shift; COMMAND="$*"
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --parameters "{\"commands\":[$(echo "$COMMAND" | jq -Rs .)],\"executionTimeout\":[\"${TIMEOUT}\"]}" \
+            --timeout-seconds "$TIMEOUT" \
+            --output text --query 'Command.CommandId' --region "$REGION")
+          ELAPSED=0
+          while [ $ELAPSED -lt $TIMEOUT ]; do
+            STATUS=$(aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" \
+              --query 'Status' --output text --region "$REGION" 2>/dev/null || echo "Pending")
+            case "$STATUS" in
+              Success) aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" \
+                --query 'StandardOutputContent' --output text --region "$REGION"; exit 0 ;;
+              Failed|Cancelled|TimedOut)
+                echo "::error::SSM command failed ($STATUS)"
+                aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" \
+                  --query 'StandardOutputContent' --output text --region "$REGION" || true
+                echo "=== STDERR ==="
+                aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" \
+                  --query 'StandardErrorContent' --output text --region "$REGION" || true
+                exit 1 ;;
+              *) printf "."; sleep 10; ELAPSED=$((ELAPSED + 10)) ;;
+            esac
+          done
+          echo ""; echo "::error::Timeout after ${TIMEOUT}s"; exit 1
+          HELPER
+          chmod +x /tmp/run-ssm.sh
+
+      - name: Download bundle and prepare environment
+        run: |
+          BUCKET="${{ secrets.PR_PERF_TEST_BUCKET }}"
+          S3_PREFIX="load-tests/${{ github.run_id }}/${{ github.run_attempt }}"
+          REF="${{ matrix.ref }}"
+
+          /tmp/run-ssm.sh 600 "bash -c '
+            set -e
+            # Wait for cloud-init/dnf to finish (avoids SQLite lock conflicts)
+            for i in \$(seq 1 30); do
+              if ! fuser /var/lib/dnf/history.sqlite &>/dev/null && ! pgrep -x dnf &>/dev/null; then
+                break
+              fi
+              echo \"Waiting for dnf lock to release... (\${i}/30)\"
+              sleep 10
+            done
+            # Install dependencies
+            yum install -y awscli sysstat iproute-tc bpftool tree gcc make perf
+            mkdir -p /usr/tmp
+            cd /usr/tmp
+            aws s3 cp s3://${BUCKET}/${S3_PREFIX}/${REF}-bundle.tgz ./bundle.tgz
+            aws s3 cp s3://${BUCKET}/${S3_PREFIX}/bpftop ./bpftop
+            mkdir -p bin
+            tar -xzf bundle.tgz --directory bin
+            mv bpftop /usr/local/sbin/bpftop && chmod +x /usr/local/sbin/bpftop
+            mv bin/network-flow-monitor-agent /usr/local/sbin/ && chmod +x /usr/local/sbin/network-flow-monitor-agent
+            mv bin/tcp-tester /usr/local/sbin/ && chmod +x /usr/local/sbin/tcp-tester
+            rm bundle.tgz
+            cd /usr/tmp && PATH=\$PATH:/usr/sbin:/sbin:/usr/local/sbin sudo --preserve-env bin/prepare-environment
+          '"
+
+      - name: Run performance test (10 minutes)
+        run: |
+          TPS="${{ matrix.tps }}"
+          REGION="${{ secrets.PR_PERF_TEST_AWS_REGION }}"
+
+          /tmp/run-ssm.sh 900 "bash -c '
+            set -e
+            cd /usr/tmp
+            export PATH=\$PATH:/usr/sbin:/sbin:/usr/local/sbin
+            sudo bin/perform-load-test ${TPS} 0 ${REGION} 600
+          '"
+
+      - name: Collect results to S3
+        if: always()
+        run: |
+          BUCKET="${{ secrets.PR_PERF_TEST_BUCKET }}"
+          S3_PREFIX="load-tests/${{ github.run_id }}/${{ github.run_attempt }}"
+          REF="${{ matrix.ref }}"
+          INSTANCE_TYPE="${{ matrix.instance_type }}"
+          TPS="${{ matrix.tps }}"
+
+          /tmp/run-ssm.sh 120 "bash -c '
+            set -e
+            cd /usr/tmp
+            if [ -d results ]; then
+              tar -C results -czf results.tgz .
+              aws s3 cp results.tgz s3://${BUCKET}/${S3_PREFIX}/results/${REF}/${INSTANCE_TYPE}/${TPS}/results.tgz
+            fi
+          '" || true
+
+      - name: Terminate EC2 instance
+        if: always()
+        run: |
+          if [ -n "${SSM_INSTANCE_ID:-}" ]; then
+            aws ec2 terminate-instances --instance-ids "$SSM_INSTANCE_ID" --region "$SSM_REGION" || true
+            echo "Terminated instance: ${SSM_INSTANCE_ID}"
+          fi
+
+  # Collect all results, generate graphs, and compare PR vs main
+  compare-results:
+    needs: [check-access, build, perf-test]
+    if: needs.check-access.outputs.has-access == 'true' && always()
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      id-token: write
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.PR_PERF_TEST_AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.PR_PERF_TEST_AWS_REGION }}
+          mask-aws-account-id: true
+
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install Python dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install sh matplotlib
+
+      - name: Download all results from S3
+        run: |
+          BUCKET="${{ secrets.PR_PERF_TEST_BUCKET }}"
+          S3_PREFIX="load-tests/${{ github.run_id }}/${{ github.run_attempt }}"
+
+          # Download and unpack PR results
+          # Each tarball contains: ./<tps>/<metric-files>
+          # generate-tps-report expects: <instance_type>/results/<tps>/<metric-files>
+          mkdir -p pr-results
+          aws s3 cp "s3://${BUCKET}/${S3_PREFIX}/results/pr/" pr-raw/ --recursive || true
+          for tgz in $(find pr-raw -name "results.tgz" 2>/dev/null); do
+            # Path: pr-raw/<instance_type>/<tps>/results.tgz
+            rel_path="${tgz#pr-raw/}"
+            instance_type="$(echo "$rel_path" | cut -d'/' -f1)"
+            dest="pr-results/${instance_type}/results"
+            mkdir -p "$dest"
+            tar -xzf "$tgz" -C "$dest"
+          done
+
+          # Download and unpack main results
+          mkdir -p main-results
+          aws s3 cp "s3://${BUCKET}/${S3_PREFIX}/results/main/" main-raw/ --recursive || true
+          for tgz in $(find main-raw -name "results.tgz" 2>/dev/null); do
+            rel_path="${tgz#main-raw/}"
+            instance_type="$(echo "$rel_path" | cut -d'/' -f1)"
+            dest="main-results/${instance_type}/results"
+            mkdir -p "$dest"
+            tar -xzf "$tgz" -C "$dest"
+          done
+
+      - name: Generate TPS reports and graphs
         run: |
           cd load-generator
-          chmod +x bin/*
-          bin/create-instances --region ${{ secrets.PR_PERF_TEST_AWS_REGION }} --instance-role ${{ secrets.PR_PERF_TEST_INSTANCE_ROLE }}
 
-      - name: Run Performance tests on EC2 instances
-        if: steps.aws-creds.outcome == 'success'
+          PR_TEST_ID="pr-${{ github.event.number || github.run_id }}"
+          MAIN_TEST_ID="main-${{ github.event.number || github.run_id }}"
+          TPS_VALUES="10000,20000,30000,40000,60000,80000,100000"
+
+          # Generate TPS reports for PR
+          # Expected naming: results-{test-run-id}_{instance_type}_{tps}_tps-report.json
+          for inst_dir in ../pr-results/*/; do
+            [ -d "$inst_dir" ] || continue
+            inst_type="$(basename "$inst_dir")"
+            results_dir="$inst_dir/results"
+            [ -d "$results_dir" ] || continue
+            for tps_dir in "$results_dir"/*/; do
+              [ -d "$tps_dir" ] || continue
+              tps="$(basename "$tps_dir")"
+              bin/generate-tps-report "$results_dir" "$tps" > "../pr-results/results-${PR_TEST_ID}_${inst_type}_${tps}_tps-report.json" 2>/dev/null || true
+            done
+          done
+
+          # Generate TPS reports for main
+          for inst_dir in ../main-results/*/; do
+            [ -d "$inst_dir" ] || continue
+            inst_type="$(basename "$inst_dir")"
+            results_dir="$inst_dir/results"
+            [ -d "$results_dir" ] || continue
+            for tps_dir in "$results_dir"/*/; do
+              [ -d "$tps_dir" ] || continue
+              tps="$(basename "$tps_dir")"
+              bin/generate-tps-report "$results_dir" "$tps" > "../main-results/results-${MAIN_TEST_ID}_${inst_type}_${tps}_tps-report.json" 2>/dev/null || true
+            done
+          done
+
+          # Generate graphs for PR results
+          INSTANCE_TYPES=$(ls -d ../pr-results/*/ 2>/dev/null | xargs -I{} basename {} | grep -v graphs | paste -sd,)
+
+          if [ -n "$INSTANCE_TYPES" ]; then
+            mkdir -p ../pr-results/graphs
+            bin/generate-graph-set \
+              --tps-report-dir ../pr-results \
+              --test-run-id "$PR_TEST_ID" \
+              --output-dir ../pr-results/graphs \
+              --instance-types "$INSTANCE_TYPES" \
+              --tps-values "$TPS_VALUES" || true
+          fi
+
+      - name: Generate performance comparison
         run: |
           cd load-generator
-          bin/invoke_test --bucket ${{ secrets.PR_PERF_TEST_BUCKET }} --region ${{ secrets.PR_PERF_TEST_AWS_REGION }} --graph_identifier ${{ inputs.test-id }}
+          chmod +x bin/compare-performance
+          bin/compare-performance --current-dir ../pr-results --baseline-dir ../main-results > performance-comparison.md || true
 
       - name: Upload performance results
-        if: steps.aws-creds.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
-          name: performance-results-${{ inputs.test-id }}
+          name: performance-results-pr-${{ github.event.number || github.run_id }}
           path: |
-            load-generator/results-${{ inputs.test-id }}/graphs/*.png
-            load-generator/results-${{ inputs.test-id }}/*_tps-report.json
+            pr-results/graphs/*.png
+            pr-results/*_tps-report.json
           retention-days: 180
 
-      - name: Cleanup EC2 instances
-        if: steps.aws-creds.outcome == 'success' && always()
+      - name: Upload graphs to gh-perf-images branch
+        if: github.event_name == 'pull_request'
         run: |
-          cd load-generator
-          bin/cleanup-instances --region ${{ secrets.PR_PERF_TEST_AWS_REGION }}
+          git stash push -m "Temporary stash for graph upload" || true
+          git fetch origin gh-perf-images:gh-perf-images 2>/dev/null || git checkout -b gh-perf-images
+          git checkout gh-perf-images
+
+          mkdir -p perf-images/pr-${{ github.event.number }}
+          cp pr-results/graphs/*.png perf-images/pr-${{ github.event.number }}/ 2>/dev/null || true
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add perf-images/pr-${{ github.event.number }}/
+          git commit -m "Add performance graphs for PR #${{ github.event.number }}" || true
+          git push origin gh-perf-images || true
+
+          git checkout ${{ github.sha }}
+          git stash pop || true
+
+      - name: Comment PR with performance results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+
+            let comparison = '';
+            try {
+              comparison = fs.readFileSync('load-generator/performance-comparison.md', 'utf8');
+            } catch (e) {
+              comparison = '_Performance comparison not available_';
+            }
+
+            const graphsDir = 'pr-results/graphs';
+            const graphs = fs.existsSync(graphsDir) ? fs.readdirSync(graphsDir).filter(f => f.endsWith('.png')) : [];
+
+            let comment = '## 📊 Performance Test Results\n\n';
+            comment += comparison + '\n\n';
+
+            if (graphs.length > 0) {
+              graphs.forEach(graph => {
+                const graphUrl = `https://raw.githubusercontent.com/${{ github.repository }}/gh-perf-images/perf-images/pr-${{ github.event.number }}/${graph}`;
+                comment += `![${graph}](${graphUrl})\n\n`;
+              });
+            }
+
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+  # Cleanup S3 artifacts after everything completes
+  cleanup:
+    needs: [check-access, build, perf-test, compare-results]
+    if: always() && needs.check-access.outputs.has-access == 'true'
+    runs-on: ubuntu-22.04
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.PR_PERF_TEST_AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.PR_PERF_TEST_AWS_REGION }}
+          mask-aws-account-id: true
+
+      - name: Remove S3 artifacts
+        run: |
+          aws s3 rm "s3://${{ secrets.PR_PERF_TEST_BUCKET }}/load-tests/${{ github.run_id }}/${{ github.run_attempt }}/" --recursive || true
+          echo "Cleaned up S3 artifacts"
