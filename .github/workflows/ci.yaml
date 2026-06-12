@@ -58,7 +58,7 @@ jobs:
         run: cargo build --release --package report-verifier
       - name: Run integration tests
         run: |
-          docker build -t integration-test -f test-data/Dockerfile.test .
+          docker build -t integration-test -f .ci/common/tests/Dockerfile.test .
           docker run --privileged -t integration-test
       - name: Upload release binary
         uses: actions/upload-artifact@v4

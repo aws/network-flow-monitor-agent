@@ -1,4 +1,4 @@
-ignore: ["verifiers", "load-generator"]
+ignore: ["verifiers", ".ci"]
 coverage:
   status:
     project:

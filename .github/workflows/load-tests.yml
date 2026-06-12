@@ -86,14 +86,24 @@ jobs:
           S3_PREFIX="load-tests/${{ github.run_id }}/${{ github.run_attempt }}"
           BUCKET="${{ secrets.PR_PERF_TEST_BUCKET }}"
 
+          # TODO: Remove this fallback once this PR is merged to main.
+          # The build (main) job checks out main which still has the old layout.
+          if [ -d ".ci/load-tests/bin" ]; then
+            SCRIPTS_DIR=".ci/load-tests/bin"
+            CONFIG_FILE=".ci/load-tests/configs/instance-config.json"
+          else
+            SCRIPTS_DIR="load-generator/bin"
+            CONFIG_FILE="load-generator/instance-config.json"
+          fi
+
           tar --transform 's/.*\///g' -czf ${{ matrix.ref }}-bundle.tgz \
             target/release/network-flow-monitor-agent \
             target/release/tcp-tester \
-            load-generator/bin/*
+            ${SCRIPTS_DIR}/*
 
           aws s3 cp ${{ matrix.ref }}-bundle.tgz "s3://${BUCKET}/${S3_PREFIX}/${{ matrix.ref }}-bundle.tgz"
-          aws s3 cp load-generator/bin/bpftop "s3://${BUCKET}/${S3_PREFIX}/bpftop"
-          aws s3 cp load-generator/instance-config.json "s3://${BUCKET}/${S3_PREFIX}/instance-config.json"
+          aws s3 cp ${SCRIPTS_DIR}/bpftop "s3://${BUCKET}/${S3_PREFIX}/bpftop"
+          aws s3 cp ${CONFIG_FILE} "s3://${BUCKET}/${S3_PREFIX}/instance-config.json"
 
   # Run one perf test per (ref × instance_type × tps) combination
   perf-test:
@@ -125,6 +135,9 @@ jobs:
           - "100000"
 
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
         with:
@@ -138,70 +151,29 @@ jobs:
           REGION="${{ secrets.PR_PERF_TEST_AWS_REGION }}"
           INSTANCE_ROLE="${{ secrets.PR_PERF_TEST_INSTANCE_ROLE }}"
 
-          AMI_ID=$(aws ec2 describe-images \
-            --owners amazon \
-            --filters "Name=name,Values=al2023-ami-*-x86_64" "Name=state,Values=available" \
-            --query 'Images | sort_by(@, &CreationDate) | [-1].ImageId' \
-            --output text \
-            --region "$REGION")
+          AMI_ID=$(.ci/common/scripts/resolve-ami.sh "$REGION" "al2023-ami-*-x86_64")
 
-          # Launch instance and wait for running + SSM ready.
-          # If stuck in pending or SSM never registers, terminate and retry with a new instance.
+          # Launch instance and wait for SSM ready.
+          # If stuck, terminate and retry with a new instance.
           MAX_ATTEMPTS=3
           for attempt in $(seq 1 $MAX_ATTEMPTS); do
             echo "=== Instance attempt $attempt/$MAX_ATTEMPTS ==="
 
-            # Create instance (retry on API throttling)
-            BACKOFF=10
-            INSTANCE_ID=""
-            for retry in $(seq 1 5); do
-              INSTANCE_ID=$(aws ec2 run-instances \
-                --image-id "$AMI_ID" \
-                --count 1 \
-                --instance-type "${{ matrix.instance_type }}" \
-                --iam-instance-profile "Name=${INSTANCE_ROLE}" \
-                --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=nfm-perf-${{ matrix.ref }}-${{ matrix.instance_type }}-${{ matrix.tps }}-${{ github.run_id }}},{Key=Purpose,Value=performance-testing}]" \
-                --query 'Instances[0].InstanceId' \
-                --output text \
-                --region "$REGION" 2>/tmp/ec2-error.txt) && break
-              echo "RunInstances throttled, retrying in ${BACKOFF}s ($retry/5)..."
-              sleep $BACKOFF
-              BACKOFF=$((BACKOFF * 2))
-            done
+            INSTANCE_ID=$(.ci/common/scripts/launch-instance.sh \
+              --ami-id "$AMI_ID" \
+              --instance-type "${{ matrix.instance_type }}" \
+              --region "$REGION" \
+              --instance-role "$INSTANCE_ROLE" \
+              --tags '[{Key=Name,Value=nfm-perf-${{ matrix.ref }}-${{ matrix.instance_type }}-${{ matrix.tps }}-${{ github.run_id }}},{Key=Purpose,Value=performance-testing}]' \
+              --retry)
 
-            if [ -z "$INSTANCE_ID" ]; then
-              echo "::error::Failed to create instance after 5 retries"
-              cat /tmp/ec2-error.txt
-              exit 1
+            if .ci/common/scripts/wait-ssm.sh "$INSTANCE_ID" "$REGION" 180; then
+              break
             fi
-            echo "Created instance: ${INSTANCE_ID} (${{ matrix.instance_type }})"
-
-            # Poll for running + SSM ready (3 min timeout)
-            SSM_OK=false
-            for i in $(seq 1 18); do
-              STATE=$(aws ec2 describe-instances \
-                --instance-ids "$INSTANCE_ID" \
-                --query 'Reservations[0].Instances[0].State.Name' \
-                --output text --region "$REGION" 2>/dev/null || echo "pending")
-              if [ "$STATE" = "running" ]; then
-                READY=$(aws ssm describe-instance-information \
-                  --filters "Key=InstanceIds,Values=${INSTANCE_ID}" \
-                  --query 'length(InstanceInformationList)' \
-                  --output text --region "$REGION" 2>/dev/null || echo "0")
-                if [ "$READY" = "1" ]; then
-                  echo "SSM ready after $((i * 10))s"
-                  SSM_OK=true
-                  break
-                fi
-              fi
-              sleep 10
-            done
-
-            if [ "$SSM_OK" = "true" ]; then break; fi
 
             # Stuck — terminate and retry
-            echo "Instance not healthy after 180s (state: $STATE). Terminating..."
-            aws ec2 terminate-instances --instance-ids "$INSTANCE_ID" --region "$REGION" || true
+            echo "Instance not healthy after 180s. Terminating..."
+            .ci/common/scripts/terminate-instance.sh "$INSTANCE_ID" "$REGION"
             INSTANCE_ID=""
 
             if [ $attempt -eq $MAX_ATTEMPTS ]; then
@@ -214,51 +186,13 @@ jobs:
           echo "SSM_INSTANCE_ID=${INSTANCE_ID}" >> "$GITHUB_ENV"
           echo "SSM_REGION=${REGION}" >> "$GITHUB_ENV"
 
-      - name: Create SSM helper
-        run: |
-          cat > /tmp/run-ssm.sh <<'HELPER'
-          #!/bin/bash
-          set -o errexit
-          set -o pipefail
-          set -o nounset
-          INSTANCE_ID="${SSM_INSTANCE_ID:?SSM_INSTANCE_ID not set}"
-          REGION="${SSM_REGION:?SSM_REGION not set}"
-          TIMEOUT="$1"; shift; COMMAND="$*"
-          COMMAND_ID=$(aws ssm send-command \
-            --instance-ids "$INSTANCE_ID" \
-            --document-name "AWS-RunShellScript" \
-            --parameters "{\"commands\":[$(echo "$COMMAND" | jq -Rs .)],\"executionTimeout\":[\"${TIMEOUT}\"]}" \
-            --timeout-seconds "$TIMEOUT" \
-            --output text --query 'Command.CommandId' --region "$REGION")
-          ELAPSED=0
-          while [ $ELAPSED -lt $TIMEOUT ]; do
-            STATUS=$(aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" \
-              --query 'Status' --output text --region "$REGION" 2>/dev/null || echo "Pending")
-            case "$STATUS" in
-              Success) aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" \
-                --query 'StandardOutputContent' --output text --region "$REGION"; exit 0 ;;
-              Failed|Cancelled|TimedOut)
-                echo "::error::SSM command failed ($STATUS)"
-                aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" \
-                  --query 'StandardOutputContent' --output text --region "$REGION" || true
-                echo "=== STDERR ==="
-                aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" \
-                  --query 'StandardErrorContent' --output text --region "$REGION" || true
-                exit 1 ;;
-              *) printf "."; sleep 10; ELAPSED=$((ELAPSED + 10)) ;;
-            esac
-          done
-          echo ""; echo "::error::Timeout after ${TIMEOUT}s"; exit 1
-          HELPER
-          chmod +x /tmp/run-ssm.sh
-
       - name: Download bundle and prepare environment
         run: |
           BUCKET="${{ secrets.PR_PERF_TEST_BUCKET }}"
           S3_PREFIX="load-tests/${{ github.run_id }}/${{ github.run_attempt }}"
           REF="${{ matrix.ref }}"
 
-          /tmp/run-ssm.sh 600 "bash -c '
+          .ci/common/scripts/run-ssm.sh 600 "bash -c '
             set -e
             # Wait for cloud-init/dnf to finish (avoids SQLite lock conflicts)
             for i in \$(seq 1 30); do
@@ -288,7 +222,7 @@ jobs:
           TPS="${{ matrix.tps }}"
           REGION="${{ secrets.PR_PERF_TEST_AWS_REGION }}"
 
-          /tmp/run-ssm.sh 900 "bash -c '
+          .ci/common/scripts/run-ssm.sh 900 "bash -c '
             set -e
             cd /usr/tmp
             export PATH=\$PATH:/usr/sbin:/sbin:/usr/local/sbin
@@ -304,7 +238,7 @@ jobs:
           INSTANCE_TYPE="${{ matrix.instance_type }}"
           TPS="${{ matrix.tps }}"
 
-          /tmp/run-ssm.sh 120 "bash -c '
+          .ci/common/scripts/run-ssm.sh 120 "bash -c '
             set -e
             cd /usr/tmp
             if [ -d results ]; then
@@ -315,11 +249,7 @@ jobs:
 
       - name: Terminate EC2 instance
         if: always()
-        run: |
-          if [ -n "${SSM_INSTANCE_ID:-}" ]; then
-            aws ec2 terminate-instances --instance-ids "$SSM_INSTANCE_ID" --region "$SSM_REGION" || true
-            echo "Terminated instance: ${SSM_INSTANCE_ID}"
-          fi
+        run: .ci/common/scripts/terminate-instance.sh
 
   # Collect all results, generate graphs, and compare PR vs main
   compare-results:
@@ -385,7 +315,7 @@ jobs:
 
       - name: Generate TPS reports and graphs
         run: |
-          cd load-generator
+          cd .ci/load-tests
 
           PR_TEST_ID="pr-${{ github.event.number || github.run_id }}"
           MAIN_TEST_ID="main-${{ github.event.number || github.run_id }}"
@@ -393,7 +323,7 @@ jobs:
 
           # Generate TPS reports for PR
           # Expected naming: results-{test-run-id}_{instance_type}_{tps}_tps-report.json
-          for inst_dir in ../pr-results/*/; do
+          for inst_dir in ../../pr-results/*/; do
             [ -d "$inst_dir" ] || continue
             inst_type="$(basename "$inst_dir")"
             results_dir="$inst_dir/results"
@@ -401,12 +331,12 @@ jobs:
             for tps_dir in "$results_dir"/*/; do
               [ -d "$tps_dir" ] || continue
               tps="$(basename "$tps_dir")"
-              bin/generate-tps-report "$results_dir" "$tps" > "../pr-results/results-${PR_TEST_ID}_${inst_type}_${tps}_tps-report.json" 2>/dev/null || true
+              bin/generate-tps-report "$results_dir" "$tps" > "../../pr-results/results-${PR_TEST_ID}_${inst_type}_${tps}_tps-report.json" 2>/dev/null || true
             done
           done
 
           # Generate TPS reports for main
-          for inst_dir in ../main-results/*/; do
+          for inst_dir in ../../main-results/*/; do
             [ -d "$inst_dir" ] || continue
             inst_type="$(basename "$inst_dir")"
             results_dir="$inst_dir/results"
@@ -414,28 +344,28 @@ jobs:
             for tps_dir in "$results_dir"/*/; do
               [ -d "$tps_dir" ] || continue
               tps="$(basename "$tps_dir")"
-              bin/generate-tps-report "$results_dir" "$tps" > "../main-results/results-${MAIN_TEST_ID}_${inst_type}_${tps}_tps-report.json" 2>/dev/null || true
+              bin/generate-tps-report "$results_dir" "$tps" > "../../main-results/results-${MAIN_TEST_ID}_${inst_type}_${tps}_tps-report.json" 2>/dev/null || true
             done
           done
 
           # Generate graphs for PR results
-          INSTANCE_TYPES=$(ls -d ../pr-results/*/ 2>/dev/null | xargs -I{} basename {} | grep -v graphs | paste -sd,)
+          INSTANCE_TYPES=$(ls -d ../../pr-results/*/ 2>/dev/null | xargs -I{} basename {} | grep -v graphs | paste -sd,)
 
           if [ -n "$INSTANCE_TYPES" ]; then
-            mkdir -p ../pr-results/graphs
+            mkdir -p ../../pr-results/graphs
             bin/generate-graph-set \
-              --tps-report-dir ../pr-results \
+              --tps-report-dir ../../pr-results \
               --test-run-id "$PR_TEST_ID" \
-              --output-dir ../pr-results/graphs \
+              --output-dir ../../pr-results/graphs \
               --instance-types "$INSTANCE_TYPES" \
               --tps-values "$TPS_VALUES" || true
           fi
 
       - name: Generate performance comparison
         run: |
-          cd load-generator
+          cd .ci/load-tests
           chmod +x bin/compare-performance
-          bin/compare-performance --current-dir ../pr-results --baseline-dir ../main-results > performance-comparison.md || true
+          bin/compare-performance --current-dir ../../pr-results --baseline-dir ../../main-results > performance-comparison.md || true
 
       - name: Upload performance results
         uses: actions/upload-artifact@v4
@@ -472,9 +402,29 @@ jobs:
           script: |
             const fs = require('fs');
 
+            // Minimize (hide) previous performance report comments
+            const PERF_MARKER = '## 📊 Performance Test Results';
+            const { data: comments } = await github.rest.issues.listComments({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              per_page: 100,
+            });
+            for (const comment of comments) {
+              if (comment.body && comment.body.startsWith(PERF_MARKER)) {
+                await github.graphql(`
+                  mutation($id: ID!) {
+                    minimizeComment(input: {subjectId: $id, classifier: OUTDATED}) {
+                      minimizedComment { isMinimized }
+                    }
+                  }
+                `, { id: comment.node_id });
+              }
+            }
+
             let comparison = '';
             try {
-              comparison = fs.readFileSync('load-generator/performance-comparison.md', 'utf8');
+              comparison = fs.readFileSync('.ci/load-tests/performance-comparison.md', 'utf8');
             } catch (e) {
               comparison = '_Performance comparison not available_';
             }
@@ -482,7 +432,7 @@ jobs:
             const graphsDir = 'pr-results/graphs';
             const graphs = fs.existsSync(graphsDir) ? fs.readdirSync(graphsDir).filter(f => f.endsWith('.png')) : [];
 
-            let comment = '## 📊 Performance Test Results\n\n';
+            let comment = `${PERF_MARKER}\n\n`;
             comment += comparison + '\n\n';
 
             if (graphs.length > 0) {

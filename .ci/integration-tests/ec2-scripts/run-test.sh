@@ -60,8 +60,8 @@ echo "Agent started (PID $AGENT_PID)"
 
 # Prepare and run test
 mkdir -p /tmp/nfm-test/test-scripts
-cp /tmp/nfm-build/test-data/integration-test-01-basic /tmp/nfm-test/test-scripts/
-cp /tmp/nfm-build/test-data/tools/test_common.py /tmp/nfm-test/test-scripts/
+cp /tmp/nfm-ci/tests/integration-test-01-basic /tmp/nfm-test/test-scripts/
+cp /tmp/nfm-ci/tests/tools/test_common.py /tmp/nfm-test/test-scripts/
 chmod +x /tmp/nfm-test/test-scripts/*
 
 cd /tmp/nfm-test/test-scripts

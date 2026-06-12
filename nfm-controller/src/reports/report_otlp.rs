@@ -564,7 +564,7 @@ mod tests {
             ComputePlatform::Ec2K8sVanilla => "k8s-vanilla",
         };
         let expected_report: ExportMetricsServiceRequest = serde_json::from_reader(
-            fs::File::open(format!("../test-data/report-{compute_type}-otel.json")).unwrap(),
+            fs::File::open(format!("test-fixtures/report-{compute_type}-otel.json")).unwrap(),
         )
         .unwrap();
 
