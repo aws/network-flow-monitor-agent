@@ -86,24 +86,14 @@ jobs:
           S3_PREFIX="load-tests/${{ github.run_id }}/${{ github.run_attempt }}"
           BUCKET="${{ secrets.PR_PERF_TEST_BUCKET }}"
 
-          # TODO: Remove this fallback once this PR is merged to main.
-          # The build (main) job checks out main which still has the old layout.
-          if [ -d ".ci/load-tests/bin" ]; then
-            SCRIPTS_DIR=".ci/load-tests/bin"
-            CONFIG_FILE=".ci/load-tests/configs/instance-config.json"
-          else
-            SCRIPTS_DIR="load-generator/bin"
-            CONFIG_FILE="load-generator/instance-config.json"
-          fi
-
           tar --transform 's/.*\///g' -czf ${{ matrix.ref }}-bundle.tgz \
             target/release/network-flow-monitor-agent \
             target/release/tcp-tester \
-            ${SCRIPTS_DIR}/*
+            .ci/load-tests/bin/*
 
           aws s3 cp ${{ matrix.ref }}-bundle.tgz "s3://${BUCKET}/${S3_PREFIX}/${{ matrix.ref }}-bundle.tgz"
-          aws s3 cp ${SCRIPTS_DIR}/bpftop "s3://${BUCKET}/${S3_PREFIX}/bpftop"
-          aws s3 cp ${CONFIG_FILE} "s3://${BUCKET}/${S3_PREFIX}/instance-config.json"
+          aws s3 cp .ci/load-tests/bin/bpftop "s3://${BUCKET}/${S3_PREFIX}/bpftop"
+          aws s3 cp .ci/load-tests/configs/instance-config.json "s3://${BUCKET}/${S3_PREFIX}/instance-config.json"
 
   # Run one perf test per (ref × instance_type × tps) combination
   perf-test:
