@@ -17,7 +17,7 @@ use crate::{
     reports::report::ReportValue,
 };
 use aws_config::imds::Client;
-use log::{info, warn};
+use log::{debug, info, warn};
 use prometheus::{IntGaugeVec, Registry};
 
 const INFINIBAND_SYSFS_PATH: &str = "/sys/class/infiniband";
@@ -158,13 +158,13 @@ impl EfaMetricsProvider {
         let mut values = Vec::with_capacity(self.total_metrics_count());
 
         for (metric_name, _) in STANDARD_METRICS {
-            let sysfs_name = standard_metric_name(metric_name);
+            let sysfs_name = strip_efa_prefix(metric_name);
             values.push(self.read_counter(device, sysfs_name).unwrap_or(0));
         }
 
         if self.srd_available {
             for (metric_name, _) in SRD_METRICS {
-                let sysfs_name = srd_metric_name(metric_name);
+                let sysfs_name = strip_efa_prefix(metric_name);
                 values.push(self.read_counter(device, sysfs_name).unwrap_or(0));
             }
         }
@@ -179,7 +179,7 @@ impl EfaMetricsProvider {
 
         for entry in entries.flatten() {
             let counters_path = entry.path().join(HW_COUNTERS_SUBPATH);
-            let first_srd_metric = srd_metric_name(SRD_METRICS[0].0);
+            let first_srd_metric = strip_efa_prefix(SRD_METRICS[0].0);
             if counters_path.join(first_srd_metric).exists() {
                 return true;
             }
@@ -216,7 +216,7 @@ impl EfaMetricsProvider {
                 }
             },
             Err(e) => {
-                warn!("Failed to read EFA metric {:?}: {}", path, e);
+                debug!("Failed to read EFA metric {:?}: {}", path, e);
                 None
             }
         }
@@ -232,12 +232,19 @@ impl EfaMetricsProvider {
     }
 }
 
-fn srd_metric_name(prefixed_name: &str) -> &str {
+fn strip_efa_prefix(prefixed_name: &str) -> &str {
     prefixed_name.strip_prefix("efa_").unwrap_or(prefixed_name)
 }
 
-fn standard_metric_name(prefixed_name: &str) -> &str {
-    prefixed_name.strip_prefix("efa_").unwrap_or(prefixed_name)
+/// Computes the delta between two counter readings. If the counter appears to
+/// have reset (current < previous), returns the current value assuming the
+/// counter restarted from 0.
+fn compute_delta(current: u64, previous: u64) -> u64 {
+    if current >= previous {
+        current - previous
+    } else {
+        current
+    }
 }
 
 impl OpenMetricProvider for EfaMetricsProvider {
@@ -260,6 +267,9 @@ impl OpenMetricProvider for EfaMetricsProvider {
     fn update_metrics(&mut self) -> Result<(), anyhow::Error> {
         let devices = self.discover_devices();
 
+        // Remove stale entries for devices that no longer exist.
+        self.previous_values.retain(|d, _| devices.contains(d));
+
         for device in &devices {
             let current_values = self.read_all_counters(device);
             let previous = self
@@ -271,7 +281,7 @@ impl OpenMetricProvider for EfaMetricsProvider {
             let label_values = self.label_values(device);
 
             for (i, _) in STANDARD_METRICS.iter().enumerate() {
-                let delta = current_values[i].wrapping_sub(previous[i]);
+                let delta = compute_delta(current_values[i], previous[i]);
                 self.standard_gauges[i]
                     .with_label_values(&label_values)
                     .set(delta as i64);
@@ -280,7 +290,7 @@ impl OpenMetricProvider for EfaMetricsProvider {
             if self.srd_available {
                 let offset = STANDARD_METRICS.len();
                 for (i, _) in SRD_METRICS.iter().enumerate() {
-                    let delta = current_values[offset + i].wrapping_sub(previous[offset + i]);
+                    let delta = compute_delta(current_values[offset + i], previous[offset + i]);
                     self.srd_gauges[i]
                         .with_label_values(&label_values)
                         .set(delta as i64);
@@ -307,13 +317,13 @@ mod tests {
         fs::create_dir_all(&device_path).unwrap();
 
         for (metric_name, _) in STANDARD_METRICS {
-            let sysfs_name = standard_metric_name(metric_name);
+            let sysfs_name = strip_efa_prefix(metric_name);
             fs::write(device_path.join(sysfs_name), "42\n").unwrap();
         }
 
         if with_srd {
             for (metric_name, _) in SRD_METRICS {
-                let sysfs_name = srd_metric_name(metric_name);
+                let sysfs_name = strip_efa_prefix(metric_name);
                 fs::write(device_path.join(sysfs_name), "7\n").unwrap();
             }
         }
@@ -358,12 +368,12 @@ mod tests {
     fn write_counters(tmp: &TempDir, device: &str, standard_val: u64, srd_val: Option<u64>) {
         let device_path = tmp.path().join(device).join(HW_COUNTERS_SUBPATH);
         for (metric_name, _) in STANDARD_METRICS {
-            let sysfs_name = standard_metric_name(metric_name);
+            let sysfs_name = strip_efa_prefix(metric_name);
             fs::write(device_path.join(sysfs_name), format!("{}\n", standard_val)).unwrap();
         }
         if let Some(val) = srd_val {
             for (metric_name, _) in SRD_METRICS {
-                let sysfs_name = srd_metric_name(metric_name);
+                let sysfs_name = strip_efa_prefix(metric_name);
                 fs::write(device_path.join(sysfs_name), format!("{}\n", val)).unwrap();
             }
         }
@@ -522,7 +532,7 @@ mod tests {
     }
 
     #[test]
-    fn test_delta_with_counter_wraparound() {
+    fn test_delta_with_counter_reset_returns_current() {
         let tmp = create_mock_sysfs(false);
         let mut provider = create_provider_with_mock(&tmp, ComputePlatform::Ec2Plain);
         let mut registry = Registry::new();
@@ -531,13 +541,13 @@ mod tests {
         // First scrape (seeded at 42, read 42 -> delta 0).
         let _ = provider.update_metrics();
 
-        // Simulate wraparound: counter goes from 42 to a smaller value (e.g., u64::MAX - 10 + 42 = wraps).
-        // Set counter to u64::MAX - 5 (very large), then next to 10.
-        write_counters(&tmp, "rdmap0s31", u64::MAX - 5, None);
+        // Simulate counter going up.
+        write_counters(&tmp, "rdmap0s31", 1000, None);
         let _ = provider.update_metrics();
 
-        // Now wrap: u64::MAX - 5 -> 10 means delta = 10 - (MAX-5) via wrapping_sub = 16.
-        write_counters(&tmp, "rdmap0s31", 10, None);
+        // Simulate counter reset (e.g., driver reload): 1000 -> 5.
+        // Should return the current value (5) assuming counter restarted from 0.
+        write_counters(&tmp, "rdmap0s31", 5, None);
         let _ = provider.update_metrics();
 
         let metric_families = registry.gather();
@@ -545,8 +555,8 @@ mod tests {
             for metric in mf.get_metric() {
                 assert_eq!(
                     metric.get_gauge().get_value(),
-                    16.0,
-                    "Wraparound delta should be 16 for {}",
+                    5.0,
+                    "Counter reset should return current value for {}",
                     mf.get_name()
                 );
             }
@@ -630,7 +640,7 @@ mod tests {
         fs::create_dir_all(&device2).unwrap();
 
         for (metric_name, _) in STANDARD_METRICS {
-            let sysfs_name = standard_metric_name(metric_name);
+            let sysfs_name = strip_efa_prefix(metric_name);
             fs::write(device1.join(sysfs_name), "100\n").unwrap();
             fs::write(device2.join(sysfs_name), "200\n").unwrap();
         }
@@ -644,7 +654,7 @@ mod tests {
 
         // Increment device1 by 10, device2 by 50.
         for (metric_name, _) in STANDARD_METRICS {
-            let sysfs_name = standard_metric_name(metric_name);
+            let sysfs_name = strip_efa_prefix(metric_name);
             fs::write(device1.join(sysfs_name), "110\n").unwrap();
             fs::write(device2.join(sysfs_name), "250\n").unwrap();
         }
@@ -683,5 +693,48 @@ mod tests {
                 mf.get_name()
             );
         }
+    }
+
+    #[test]
+    fn test_compute_delta_normal() {
+        assert_eq!(compute_delta(100, 42), 58);
+    }
+
+    #[test]
+    fn test_compute_delta_same_value() {
+        assert_eq!(compute_delta(42, 42), 0);
+    }
+
+    #[test]
+    fn test_compute_delta_reset_returns_current() {
+        assert_eq!(compute_delta(5, 1000), 5);
+    }
+
+    #[test]
+    fn test_stale_device_cleanup() {
+        let tmp = TempDir::new().unwrap();
+        let device1 = tmp.path().join("rdmap0s31").join(HW_COUNTERS_SUBPATH);
+        let device2 = tmp.path().join("rdmap1s32").join(HW_COUNTERS_SUBPATH);
+        fs::create_dir_all(&device1).unwrap();
+        fs::create_dir_all(&device2).unwrap();
+
+        for (metric_name, _) in STANDARD_METRICS {
+            let sysfs_name = strip_efa_prefix(metric_name);
+            fs::write(device1.join(sysfs_name), "100\n").unwrap();
+            fs::write(device2.join(sysfs_name), "200\n").unwrap();
+        }
+
+        let mut provider = create_provider_with_mock(&tmp, ComputePlatform::Ec2Plain);
+        assert_eq!(provider.previous_values.len(), 2);
+
+        // Remove device2 from sysfs.
+        fs::remove_dir_all(tmp.path().join("rdmap1s32")).unwrap();
+
+        let _ = provider.update_metrics();
+
+        // Stale entry for rdmap1s32 should be cleaned up.
+        assert_eq!(provider.previous_values.len(), 1);
+        assert!(provider.previous_values.contains_key("rdmap0s31"));
+        assert!(!provider.previous_values.contains_key("rdmap1s32"));
     }
 }

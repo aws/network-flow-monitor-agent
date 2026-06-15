@@ -61,8 +61,13 @@ mod tests {
 
         for platform in platforms {
             let providers = get_open_metric_providers(platform.clone(), None);
-            assert_eq!(providers.len(), 2, "Failed for platform: {:?}", platform);
-            // Verify we get both SystemMetricsProvider and InterfaceMetricsProvider
+            // 2 base providers (System + Interface), plus EFA if devices are present.
+            assert!(
+                providers.len() >= 2 && providers.len() <= 3,
+                "Unexpected provider count {} for platform: {:?}",
+                providers.len(),
+                platform
+            );
         }
     }
 
@@ -74,8 +79,7 @@ mod tests {
         let k8s_collector = Arc::new(KubernetesMetadataCollector::new());
         let providers = get_open_metric_providers(compute_platform, Some(k8s_collector));
 
-        assert_eq!(providers.len(), 2);
-        // Verify providers are created with k8s collector
+        assert!(providers.len() >= 2 && providers.len() <= 3);
     }
 
     #[test]
