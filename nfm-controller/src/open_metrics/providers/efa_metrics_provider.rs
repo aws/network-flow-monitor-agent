@@ -287,11 +287,15 @@ impl OpenMetricProvider for EfaMetricsProvider {
         );
 
         for gauge in &self.standard_gauges {
-            registry.register(Box::new(gauge.clone())).unwrap();
+            registry
+                .register(Box::new(gauge.clone()))
+                .expect("EFA metric registration");
         }
 
         for gauge in &self.srd_gauges {
-            registry.register(Box::new(gauge.clone())).unwrap();
+            registry
+                .register(Box::new(gauge.clone()))
+                .expect("EFA metric registration");
         }
     }
 
