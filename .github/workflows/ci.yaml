@@ -1,3 +1,4 @@
+# CI pipeline for network-flow-monitor-agent.
 name: CI
 
 on:
@@ -6,17 +7,18 @@ on:
   push:
     branches: [ main ]
   workflow_dispatch:
-    branches: [ main ]
 
 permissions:
   contents: read
 
 jobs:
-  validate:
-    name: Validate
+  # Clippy warnings + rustfmt check
+  lint:
+    name: Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: Install Rust
         uses: actions-rs/toolchain@v1
         with:
@@ -24,16 +26,53 @@ jobs:
           toolchain: stable
           components: rustfmt, clippy
           override: true
-      - name: Run tests
-        run: cargo test --release
-      - name: Run clipply
+
+      - name: Run clippy
         run: cargo clippy -- -D warnings
+
       - name: Check formatting
         run: cargo fmt --all -- --check
+
+  # Unit tests in release mode
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+
+      - name: Run tests
+        run: cargo test --release
+
+  # Code coverage via tarpaulin, reported to Codecov
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+
       - name: Install tarpaulin
         run: cargo install cargo-tarpaulin
+
       - name: Install conntrack
         run: sudo apt-get update && sudo apt-get install -y conntrack
+
+      - name: Build BPF object
+        run: cargo build --release
+
       - name: Check code coverage
         run: |
           BPF_OBJECT_PATH="${{ github.workspace }}/target/ebpf/bpfel-unknown-none/release/nfm-bpf" \
@@ -44,26 +83,46 @@ jobs:
           --exclude nfm-bpf \
           --exclude-files '**/build.rs' \
           --out xml
+
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
+
+  # Build release binaries and run Docker-based integration tests
+  integration:
+    name: Integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+
       - name: Check environment
         run: |
           cat /etc/os-release
           ldd --version
+
       - name: Build release binary
         run: cargo build --release
+
       - name: Build verifier binary
         run: cargo build --release --package report-verifier
+
       - name: Run integration tests
         run: |
           docker build -t integration-test -f .ci/common/tests/Dockerfile.test .
           docker run --privileged -t integration-test
+
       - name: Upload release binary
         uses: actions/upload-artifact@v4
         with:
           name: network-flow-monitor-agent
-          path:  ./target/release/network-flow-monitor-agent
+          path: ./target/release/network-flow-monitor-agent
           retention-days: 3
           if-no-files-found: error
