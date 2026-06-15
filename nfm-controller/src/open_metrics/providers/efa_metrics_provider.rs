@@ -25,28 +25,85 @@ const PORTS_SUBDIR: &str = "ports";
 const HW_COUNTERS_DIR: &str = "hw_counters";
 
 const STANDARD_METRICS: &[(&str, &str)] = &[
-    ("efa_tx_bytes", "Bytes transmitted via EFA device since last scrape"),
-    ("efa_rx_bytes", "Bytes received via EFA device since last scrape"),
-    ("efa_tx_pkts", "Packets transmitted via EFA device since last scrape"),
-    ("efa_rx_pkts", "Packets received via EFA device since last scrape"),
-    ("efa_rx_drops", "Receive drops on EFA device since last scrape"),
-    ("efa_send_bytes", "RDMA send bytes on EFA device since last scrape"),
-    ("efa_recv_bytes", "RDMA recv bytes on EFA device since last scrape"),
-    ("efa_send_wrs", "RDMA send work requests on EFA device since last scrape"),
-    ("efa_recv_wrs", "RDMA recv work requests on EFA device since last scrape"),
-    ("efa_rdma_read_wrs", "RDMA read work requests on EFA device since last scrape"),
-    ("efa_rdma_read_bytes", "RDMA read bytes on EFA device since last scrape"),
-    ("efa_rdma_write_wrs", "RDMA write work requests on EFA device since last scrape"),
-    ("efa_rdma_write_bytes", "RDMA write bytes on EFA device since last scrape"),
-    ("efa_rdma_read_wr_err", "RDMA read work request errors on EFA device since last scrape"),
-    ("efa_rdma_write_wr_err", "RDMA write work request errors on EFA device since last scrape"),
-    ("efa_rdma_read_resp_bytes", "RDMA read response bytes on EFA device since last scrape"),
-    ("efa_rdma_write_recv_bytes", "RDMA write received bytes on EFA device since last scrape"),
+    (
+        "efa_tx_bytes",
+        "Bytes transmitted via EFA device since last scrape",
+    ),
+    (
+        "efa_rx_bytes",
+        "Bytes received via EFA device since last scrape",
+    ),
+    (
+        "efa_tx_pkts",
+        "Packets transmitted via EFA device since last scrape",
+    ),
+    (
+        "efa_rx_pkts",
+        "Packets received via EFA device since last scrape",
+    ),
+    (
+        "efa_rx_drops",
+        "Receive drops on EFA device since last scrape",
+    ),
+    (
+        "efa_send_bytes",
+        "RDMA send bytes on EFA device since last scrape",
+    ),
+    (
+        "efa_recv_bytes",
+        "RDMA recv bytes on EFA device since last scrape",
+    ),
+    (
+        "efa_send_wrs",
+        "RDMA send work requests on EFA device since last scrape",
+    ),
+    (
+        "efa_recv_wrs",
+        "RDMA recv work requests on EFA device since last scrape",
+    ),
+    (
+        "efa_rdma_read_wrs",
+        "RDMA read work requests on EFA device since last scrape",
+    ),
+    (
+        "efa_rdma_read_bytes",
+        "RDMA read bytes on EFA device since last scrape",
+    ),
+    (
+        "efa_rdma_write_wrs",
+        "RDMA write work requests on EFA device since last scrape",
+    ),
+    (
+        "efa_rdma_write_bytes",
+        "RDMA write bytes on EFA device since last scrape",
+    ),
+    (
+        "efa_rdma_read_wr_err",
+        "RDMA read work request errors on EFA device since last scrape",
+    ),
+    (
+        "efa_rdma_write_wr_err",
+        "RDMA write work request errors on EFA device since last scrape",
+    ),
+    (
+        "efa_rdma_read_resp_bytes",
+        "RDMA read response bytes on EFA device since last scrape",
+    ),
+    (
+        "efa_rdma_write_recv_bytes",
+        "RDMA write received bytes on EFA device since last scrape",
+    ),
 ];
 
 const SRD_METRICS: &[(&str, &str)] = &[
-    ("efa_retrans_bytes", "SRD retransmitted bytes on EFA device since last scrape (Nitro v4+)"),
-    ("efa_retrans_pkts", "SRD retransmitted packets on EFA device since last scrape (Nitro v4+)"),
+    (
+        "efa_retrans_bytes",
+        "SRD retransmitted bytes on EFA device since last scrape (Nitro v4+)",
+    ),
+    (
+        "efa_retrans_pkts",
+        "SRD retransmitted packets on EFA device since last scrape (Nitro v4+)",
+    ),
     (
         "efa_retrans_timeout_events",
         "SRD retransmission timeout events on EFA device since last scrape (Nitro v4+)",
@@ -145,7 +202,12 @@ impl EfaMetricsProvider {
     }
 
     fn total_metrics_count(&self) -> usize {
-        STANDARD_METRICS.len() + if self.srd_available { SRD_METRICS.len() } else { 0 }
+        STANDARD_METRICS.len()
+            + if self.srd_available {
+                SRD_METRICS.len()
+            } else {
+                0
+            }
     }
 
     fn seed_cache(&mut self) {
@@ -301,10 +363,7 @@ impl OpenMetricProvider for EfaMetricsProvider {
 
     fn update_metrics(&mut self) -> Result<(), anyhow::Error> {
         let device_ports = self.discover_device_ports();
-        let active_keys: Vec<String> = device_ports
-            .iter()
-            .map(|(d, p)| cache_key(d, p))
-            .collect();
+        let active_keys: Vec<String> = device_ports.iter().map(|(d, p)| cache_key(d, p)).collect();
 
         // Remove stale entries for device/port combos that no longer exist.
         self.previous_values.retain(|k, _| active_keys.contains(k));
@@ -354,7 +413,10 @@ mod tests {
     const TEST_PORT: &str = "1";
 
     fn hw_counters_path(base: &Path, device: &str, port: &str) -> PathBuf {
-        base.join(device).join(PORTS_SUBDIR).join(port).join(HW_COUNTERS_DIR)
+        base.join(device)
+            .join(PORTS_SUBDIR)
+            .join(port)
+            .join(HW_COUNTERS_DIR)
     }
 
     fn create_mock_sysfs(with_srd: bool) -> TempDir {
@@ -460,7 +522,10 @@ mod tests {
         let tmp = create_mock_sysfs(false);
         let provider = create_provider_with_mock(&tmp, ComputePlatform::Ec2Plain);
         let device_ports = provider.discover_device_ports();
-        assert_eq!(device_ports, vec![("rdmap0s31".to_string(), "1".to_string())]);
+        assert_eq!(
+            device_ports,
+            vec![("rdmap0s31".to_string(), "1".to_string())]
+        );
     }
 
     #[test]
