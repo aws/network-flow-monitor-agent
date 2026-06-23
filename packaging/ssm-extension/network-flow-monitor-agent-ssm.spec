@@ -20,15 +20,15 @@ Vendor:     Amazon Web Services, Inc
 
 %description
 Installs the Network Flow Monitor Agent as a supervised extension for the
-AWS Core Agent (SSM v4). This RPM places the manifest, lifecycle scripts,
+AWS SSM Agent v4. This RPM places the manifest, lifecycle scripts,
 placeholder binary, bundled NFM Agent RPM, and extension configuration on
-disk. The Core Agent then drives the lifecycle (install → configure → start).
+disk. The SSM Agent then drives the lifecycle (install → configure → start).
 
 %pre
-# Verify the Core Agent binary exists and is executable
+# Verify the SSM Agent v4 binary exists and is executable
 if [ ! -x %{EXTENSION_BASE}/aws-core-agent ]; then
-    echo "Error: AWS Core Agent not found at %{EXTENSION_BASE}/aws-core-agent" >&2
-    echo "Install the Core Agent RPM first: sudo rpm -i aws-core-agent.rpm" >&2
+    echo "Error: AWS SSM Agent v4 not found at %{EXTENSION_BASE}/aws-core-agent" >&2
+    echo "Install the SSM Agent v4 RPM first: sudo rpm -i aws-core-agent.rpm" >&2
     exit 1
 fi
 
@@ -69,7 +69,7 @@ cp %{_sourcedir}/package/artifacts/config/config.json %{buildroot}%{CONFIG_DIR}/
 mkdir -p %{WORKING_DIR}
 mkdir -p %{LOG_DIR}
 
-# Trigger the Core Agent lifecycle: install.sh -> configure.sh -> start.sh
+# Trigger the SSM Agent v4 lifecycle: install.sh -> configure.sh -> start.sh
 %{EXTENSION_BASE}/aws-core-agent start-extension --namespace %{NAMESPACE} 2>/dev/null || true
 
 %preun

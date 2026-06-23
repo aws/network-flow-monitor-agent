@@ -34,7 +34,7 @@ The script will create an `out` directory in the root of the Git repository cont
 
 ## SSM v4 Supervised Extension RPM (`ssm-extension/`)
 
-Builds an RPM that installs the NFM Agent as a supervised extension for the AWS Core Agent (SSM v4). The Core Agent manages the full lifecycle (install, configure, start, stop, health monitoring, uninstall) via shell scripts.
+Builds an RPM that installs the NFM Agent as a supervised extension for the AWS SSM Agent v4. The SSM Agent manages the full lifecycle (install, configure, start, stop, health monitoring, uninstall) via shell scripts.
 
 ### Prerequisites
 

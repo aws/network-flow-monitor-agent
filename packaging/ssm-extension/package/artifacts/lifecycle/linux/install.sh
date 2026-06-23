@@ -43,7 +43,7 @@ fi
 grep -q "networkflowmonitor-cgroup" /etc/fstab 2>/dev/null || \
     echo "networkflowmonitor-cgroup /mnt/cgroup-nfm cgroup2 defaults 0 0" >> /etc/fstab
 
-# Step 9: Disable systemd service to prevent auto-start on boot (Core Agent manages lifecycle)
+# Step 9: Disable systemd service to prevent auto-start on boot (SSM Agent v4 manages lifecycle)
 systemctl disable network-flow-monitor.service 2>/dev/null || true
 
 echo "Installation complete"

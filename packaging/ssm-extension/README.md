@@ -1,6 +1,6 @@
 # NFM Agent — SSM v4 Supervised Extension RPM
 
-This directory builds an RPM that installs the Network Flow Monitor Agent as a **supervised extension** for the AWS Core Agent (SSM v4). The Core Agent manages the NFM Agent lifecycle (install, configure, start, stop, health monitoring, uninstall) via shell scripts.
+This directory builds an RPM that installs the Network Flow Monitor Agent as a **supervised extension** for the AWS SSM Agent v4. The SSM Agent manages the NFM Agent lifecycle (install, configure, start, stop, health monitoring, uninstall) via shell scripts.
 
 ## Prerequisites
 
@@ -10,7 +10,7 @@ This directory builds an RPM that installs the Network Flow Monitor Agent as a *
    ```
    This produces `out/network-flow-monitor-agent.rpm`.
 
-2. The AWS Core Agent RPM must be installed on the target host before this extension RPM.
+2. The AWS SSM Agent v4 RPM must be installed on the target host before this extension RPM.
 
 ## Building the Extension RPM
 
@@ -28,14 +28,14 @@ The script:
 ## Installation
 
 ```bash
-# Install Core Agent first
+# Install SSM Agent v4 first
 sudo rpm -i aws-core-agent.rpm
 
 # Install the NFM extension
 sudo rpm -i aws-ssm-networkflowmonitor.rpm
 ```
 
-The extension RPM's `%post` script triggers the Core Agent to drive the lifecycle automatically.
+The extension RPM's `%post` script triggers the SSM Agent to drive the lifecycle automatically.
 
 ## Directory Layout (on target host)
 
@@ -53,29 +53,9 @@ The extension RPM's `%post` script triggers the Core Agent to drive the lifecycl
 | Script | Purpose |
 |--------|---------|
 | `install.sh` | Installs NFM RPM (--noscripts), creates user/group, sets capabilities, mounts cgroupv2 |
-| `configure.sh` | Maps Core Agent config to NFM INI format, sets up credentials per identity type |
+| `configure.sh` | Maps SSM Agent config to NFM INI format, sets up credentials per identity type |
 | `start.sh` | Starts the `network-flow-monitor.service` systemd unit |
 | `stop.sh` | Stops the systemd service |
 | `health_check.sh` | Checks `systemctl is-active` for the service |
 | `status.sh` | Returns JSON with service state, start time, and timestamp |
 | `uninstall.sh` | Full teardown: stops service, removes RPM, cleans cgroup/user/group |
-
-## Running Tests
-
-Tests use [bats-core](https://github.com/bats-core/bats-core) with mocked system commands (no root required):
-
-```bash
-# Install bats if needed
-./packaging/ssm-extension/tests/bats_setup.sh
-
-# Run all tests
-bats packaging/ssm-extension/tests/
-```
-
-## Local Testing (without Core Agent)
-
-```bash
-./packaging/ssm-extension/test_install.sh --test /tmp/nfm-test
-```
-
-This sets up a simulated Core Agent directory structure and runs the lifecycle scripts that don't require root (configure, status, stop).
