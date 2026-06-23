@@ -2,7 +2,11 @@
 
 This directory contains the infrastructure to compile new Network Flow Monitor Agent release packages.
 
-## Building in Docker
+## Standalone RPM (`linux/`)
+
+Builds the standard NFM Agent RPM that installs as a systemd service.
+
+### Building in Docker
 
 First, build the Docker image:
 ```
@@ -20,10 +24,37 @@ $ ls out/*.rpm
 out/network-flow-monitor-agent.rpm
 ```
 
-## Building locally
+### Building locally
 
 Run the RPM build script:
 ```
     ./packaging/linux/create_rpm.sh
 ```
 The script will create an `out` directory in the root of the Git repository containing the build artifacts.
+
+## SSM v4 Supervised Extension RPM (`ssm-extension/`)
+
+Builds an RPM that installs the NFM Agent as a supervised extension for the AWS Core Agent (SSM v4). The Core Agent manages the full lifecycle (install, configure, start, stop, health monitoring, uninstall) via shell scripts.
+
+### Prerequisites
+
+The standalone NFM Agent RPM must be built first (see above). The extension RPM bundles it as an artifact.
+
+### Building
+
+```
+    ./packaging/ssm-extension/create_extension_rpm.sh
+```
+
+Output: `out/aws-ssm-networkflowmonitor.rpm`
+
+### Installation
+
+```bash
+# SSM v4 Agent must be installed first
+
+# Then install the extension
+sudo rpm -i aws-ssm-networkflowmonitor.rpm
+```
+
+See `ssm-extension/README.md` for full details on directory layout, lifecycle scripts, and credential handling.
