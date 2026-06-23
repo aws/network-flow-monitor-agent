@@ -1,0 +1,7 @@
+{
+  "configuration": {
+    "region": "default",
+    "endpoint": "default",
+    "cgroup": "default"
+  }
+}

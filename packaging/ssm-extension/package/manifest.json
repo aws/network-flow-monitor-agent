@@ -1,0 +1,48 @@
+{
+  "namespace": {
+    "organization": "aws",
+    "service": "ssm",
+    "microservice": "networkflowmonitor"
+  },
+  "version": "1.0.0",
+  "runtime": "supervised",
+  "supervised_config": {
+    "lifecycle_scripts": {
+      "linux": {
+        "install": {
+          "path": "scripts/install.sh",
+          "timeout_seconds": 300
+        },
+        "configure": {
+          "path": "scripts/configure.sh",
+          "timeout_seconds": 60
+        },
+        "start": {
+          "path": "scripts/start.sh",
+          "timeout_seconds": 30
+        },
+        "stop": {
+          "path": "scripts/stop.sh",
+          "timeout_seconds": 30
+        },
+        "health_check": {
+          "path": "scripts/health_check.sh",
+          "timeout_seconds": 10
+        },
+        "status": {
+          "path": "scripts/status.sh",
+          "timeout_seconds": 10
+        },
+        "uninstall": {
+          "path": "scripts/uninstall.sh",
+          "timeout_seconds": 60
+        }
+      }
+    },
+    "health_check": {
+      "interval_seconds": 60,
+      "failure_threshold": 3
+    },
+    "requires_restart_on_config_change": true
+  }
+}
