@@ -125,7 +125,7 @@ impl MetricLabel for EfaMetric {
         match compute_platform {
             ComputePlatform::Ec2Plain => &["instance_id", "device", "port"],
             ComputePlatform::Ec2K8sEks | ComputePlatform::Ec2K8sVanilla => {
-                &["instance_id", "device", "port", "node"]
+                &["instance_id", "device", "port", "node", "pod"]
             }
         }
     }
@@ -315,7 +315,7 @@ impl EfaMetricsProvider {
         match self.compute_platform {
             ComputePlatform::Ec2Plain => vec![&self.instance_id, device, port],
             ComputePlatform::Ec2K8sEks | ComputePlatform::Ec2K8sVanilla => {
-                vec![&self.instance_id, device, port, &self.node_name]
+                vec![&self.instance_id, device, port, &self.node_name, ""]
             }
         }
     }
@@ -707,7 +707,7 @@ mod tests {
     fn test_labels_k8s() {
         for platform in &[ComputePlatform::Ec2K8sEks, ComputePlatform::Ec2K8sVanilla] {
             let labels = EfaMetric::get_labels(platform);
-            assert_eq!(labels, &["instance_id", "device", "port", "node"]);
+            assert_eq!(labels, &["instance_id", "device", "port", "node", "pod"]);
         }
     }
 
@@ -726,7 +726,7 @@ mod tests {
         let values = provider.label_values("rdmap0s31", "1");
         assert_eq!(
             values,
-            vec!["i-1234567890abcdef0", "rdmap0s31", "1", "test-node"]
+            vec!["i-1234567890abcdef0", "rdmap0s31", "1", "test-node", ""]
         );
     }
 
