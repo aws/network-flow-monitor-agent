@@ -1,7 +1,7 @@
 # Multi-distro integration tests on EC2 instances via SSM.
 # Builds the agent on Amazon Linux 2 (x86_64 and ARM64) — same as the production
 # S3Release pipeline — then distributes pre-built binaries to test instances.
-name: Integration Tests (Multi-Distro)
+name: Integration Tests (EC2 Multi-Distro)
 
 on:
   workflow_dispatch:
@@ -18,11 +18,11 @@ on:
       - 'nfm-bpf/**'
       - 'packaging/**'
       - '.ci/common/**'
-      - '.ci/integration-tests/**'
-      - '.github/workflows/integration-tests.yml'
+      - '.ci/integration-tests/ec2-scripts/**'
+      - '.github/workflows/integration-tests-ec2.yml'
 
 concurrency:
-  group: integration-tests-${{ github.ref }}
+  group: integration-tests-ec2-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -378,13 +378,23 @@ jobs:
           .ci/common/scripts/run-ssm.sh 300 "bash -c '
             set -e
 
+            # Wait for cloud-init to finish, then retry package installs if lock is held.
+            if command -v cloud-init &>/dev/null; then
+              cloud-init status --wait &>/dev/null 2>&1 || true
+            fi
+
             # Install AWS CLI and dependencies if not present
             if ! command -v aws &>/dev/null; then
               case ${PKG_MANAGER} in
                 dnf)
                   rm -rf /var/cache/dnf/*
-                  dnf makecache
-                  dnf install -y --allowerasing awscli python3 libcap
+                  for attempt in \$(seq 1 12); do
+                    if dnf install -y --allowerasing awscli python3 libcap; then
+                      break
+                    fi
+                    echo \"dnf install failed (attempt \${attempt}/12), retrying in 10s...\"
+                    sleep 10
+                  done
                   ;;
                 zypper)
                   zypper install -y aws-cli curl libcap-progs
@@ -472,11 +482,11 @@ jobs:
           aws s3 rm "s3://${{ secrets.PR_PERF_TEST_BUCKET }}/${{ needs.build.outputs.s3-prefix }}/" --recursive || true
           echo "Cleaned up S3 artifacts"
 
-  # Gate job for branch protection. Add "Integration Tests Gate" as a required
+  # Gate job for branch protection. Add "Integration Tests (EC2) Gate" as a required
   # status check — it passes when all test matrix jobs succeed, and is skipped
   # (which GitHub treats as passing) when the workflow doesn't run due to path filters.
   gate:
-    name: Integration Tests Gate
+    name: Integration Tests (EC2) Gate
     needs: [build, test]
     if: always()
     runs-on: ubuntu-latest

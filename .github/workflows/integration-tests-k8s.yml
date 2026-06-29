@@ -1,0 +1,279 @@
+# Kubernetes integration tests on pre-created EKS clusters.
+# Builds the agent container image, deploys it via Helm to persistent EKS clusters
+# (managed by CDK), and runs the integration test suite across multiple K8s versions,
+# node AMI families (AL2023, Bottlerocket), and architectures (amd64, arm64).
+name: Integration Tests (Kubernetes)
+
+on:
+  workflow_dispatch:
+    inputs:
+      k8s_versions:
+        description: 'Comma-separated K8s versions to test (empty = all)'
+        required: false
+        type: string
+        default: ''
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'nfm-controller/**'
+      - 'nfm-bpf/**'
+      - 'charts/**'
+      - 'Dockerfile.k8s'
+      - '.ci/common/**'
+      - '.ci/integration-tests/k8s-scripts/**'
+      - '.github/workflows/integration-tests-k8s.yml'
+
+concurrency:
+  group: integration-tests-k8s-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  # Pre-created cluster naming convention: nfm-integ-{version}-{family}
+  # Clusters are managed by CDK (NetworkSonarMonitoringAgentReleaseStressTestCDK).
+  # To add/remove K8s versions or AMI families, update the CDK stack's
+  # github-integration-config.json and redeploy — then update the matrix below.
+  CLUSTER_PREFIX: nfm-integ
+
+jobs:
+  # Build container images on native EC2 instances using the production Dockerfile.k8s.
+  # Each arch gets its own EC2 (c5.xlarge for amd64, c7g.xlarge for arm64) so the
+  # docker build runs natively — no QEMU emulation needed.
+  build-arch:
+    name: Build (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            ami_filter: "al2023-ami-*-kernel-6.1-x86_64"
+            instance_type: c5.xlarge
+          - arch: arm64
+            ami_filter: "al2023-ami-*-kernel-6.1-arm64"
+            instance_type: c7g.2xlarge
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.PR_PERF_TEST_AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.PR_PERF_TEST_AWS_REGION }}
+          mask-aws-account-id: true
+
+      - name: Upload source to S3
+        id: upload
+        run: |
+          S3_PREFIX="k8s-integ/${{ github.run_id }}/${{ github.run_attempt }}"
+          echo "s3-prefix=${S3_PREFIX}" >> "$GITHUB_OUTPUT"
+          BUCKET="${{ secrets.PR_PERF_TEST_BUCKET }}"
+
+          tar czf /tmp/nfm-source.tar.gz --exclude='.git' --exclude='target' --exclude='out' .
+          aws s3 cp /tmp/nfm-source.tar.gz "s3://${BUCKET}/${S3_PREFIX}/nfm-source.tar.gz"
+
+      - name: Create build EC2 instance
+        id: ec2
+        run: |
+          REGION="${{ secrets.PR_PERF_TEST_AWS_REGION }}"
+          AMI_ID=$(.ci/common/scripts/resolve-ami.sh "$REGION" "${{ matrix.ami_filter }}")
+
+          .ci/common/scripts/launch-instance.sh \
+            --ami-id "$AMI_ID" \
+            --instance-type "${{ matrix.instance_type }}" \
+            --region "$REGION" \
+            --instance-role "${{ secrets.PR_PERF_TEST_INSTANCE_ROLE }}" \
+            --block-device '[{"DeviceName":"/dev/xvda","Ebs":{"VolumeSize":30,"VolumeType":"gp3"}}]' \
+            --tags '[{Key=Name,Value=nfm-k8s-build-${{ matrix.arch }}-${{ github.run_id }}},{Key=Purpose,Value=integration-testing}]'
+
+      - name: Wait for SSM readiness
+        run: .ci/common/scripts/wait-ssm.sh "${{ steps.ec2.outputs.instance-id }}" "$SSM_REGION" 180
+
+      - name: Build and push container image on EC2
+        run: |
+          BUCKET="${{ secrets.PR_PERF_TEST_BUCKET }}"
+          S3_PREFIX="${{ steps.upload.outputs.s3-prefix }}"
+          ECR_REGISTRY="${{ secrets.PR_PERF_TEST_ECR_REGISTRY }}"
+          ECR_REGION="${{ secrets.PR_PERF_TEST_AWS_REGION }}"
+          REPO_NAME="nfm-agent-integration-test"
+          IMAGE_TAG="integ-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}"
+          IMAGE_URI="${ECR_REGISTRY}/${REPO_NAME}:${IMAGE_TAG}"
+
+          .ci/common/scripts/run-ssm.sh 900 "bash -c '
+            set -e
+            export HOME=/root
+
+            # Install Docker
+            yum install -y docker awscli
+            systemctl start docker
+
+            # ECR login
+            aws ecr get-login-password --region ${ECR_REGION} | \
+              docker login --username AWS --password-stdin ${ECR_REGISTRY}
+
+            # Download source and build image using production Dockerfile
+            mkdir -p /tmp/nfm-build && cd /tmp/nfm-build
+            aws s3 cp s3://${BUCKET}/${S3_PREFIX}/nfm-source.tar.gz ./nfm-source.tar.gz
+            tar xzf nfm-source.tar.gz
+
+            docker build -f Dockerfile.k8s -t ${IMAGE_URI} .
+            docker push ${IMAGE_URI}
+
+            echo \"=== Image pushed: ${IMAGE_URI} ===\"
+          '"
+
+      - name: Terminate build instance
+        if: always()
+        run: .ci/common/scripts/terminate-instance.sh
+
+      - name: Cleanup S3 build artifacts
+        if: always()
+        run: |
+          aws s3 rm "s3://${{ secrets.PR_PERF_TEST_BUCKET }}/${{ steps.upload.outputs.s3-prefix }}/" --recursive || true
+
+  # Deploy the agent to pre-created EKS clusters and run tests.
+  # Clusters are managed by CDK — see env.CLUSTER_PREFIX comment above.
+  # To add new test cases, update BOTH the CDK config AND the matrix below.
+  test:
+    name: K8s ${{ matrix.k8s_version }} / ${{ matrix.ami_family }} / ${{ matrix.arch }}
+    needs: build-arch
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        k8s_version: ["1.30", "1.32", "1.34", "1.36"]
+        ami_family: [AL2023, Bottlerocket]
+        arch: [amd64, arm64]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.PR_PERF_TEST_AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.PR_PERF_TEST_AWS_REGION }}
+          mask-aws-account-id: true
+
+      - name: Install kubectl and Helm
+        run: |
+          curl -LO "https://dl.k8s.io/release/v1.32.0/bin/linux/amd64/kubectl"
+          chmod +x kubectl && sudo mv kubectl /usr/local/bin/
+          curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+      - name: Connect to pre-created EKS cluster
+        id: cluster
+        run: |
+          K8S_VER=$(echo "${{ matrix.k8s_version }}" | tr '.' '-')
+          CLUSTER_NAME="${{ env.CLUSTER_PREFIX }}-${K8S_VER}-${{ matrix.ami_family }}"
+          echo "cluster-name=${CLUSTER_NAME}" >> "$GITHUB_OUTPUT"
+
+          aws eks update-kubeconfig \
+            --name "$CLUSTER_NAME" \
+            --region "${{ secrets.PR_PERF_TEST_AWS_REGION }}" \
+            --kubeconfig "/tmp/kubeconfig-${CLUSTER_NAME}"
+
+          export KUBECONFIG="/tmp/kubeconfig-${CLUSTER_NAME}"
+          echo "Connected to cluster: ${CLUSTER_NAME}"
+          kubectl get nodes -o wide
+
+      - name: Deploy agent via Helm
+        run: |
+          KUBECONFIG="/tmp/kubeconfig-${{ steps.cluster.outputs.cluster-name }}"
+          IMAGE_URI="${{ secrets.PR_PERF_TEST_ECR_REGISTRY }}/nfm-agent-integration-test:integ-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}"
+
+          .ci/integration-tests/k8s-scripts/deploy-agent.sh \
+            "$IMAGE_URI" \
+            "$KUBECONFIG" \
+            "" \
+            "${{ matrix.arch }}"
+
+      - name: Run integration tests
+        run: |
+          KUBECONFIG="/tmp/kubeconfig-${{ steps.cluster.outputs.cluster-name }}"
+          .ci/integration-tests/k8s-scripts/run-test.sh "$KUBECONFIG" "${{ matrix.arch }}"
+
+      - name: Uninstall agent
+        if: always()
+        run: |
+          KUBECONFIG="/tmp/kubeconfig-${{ steps.cluster.outputs.cluster-name }}"
+          NS="amazon-cloudwatch-${{ matrix.arch }}"
+          helm uninstall "nfm-agent-test-${{ matrix.arch }}" --namespace "$NS" --kubeconfig "$KUBECONFIG" 2>/dev/null || true
+          kubectl delete namespace "nfm-test-${{ matrix.arch }}" --kubeconfig "$KUBECONFIG" --ignore-not-found 2>/dev/null || true
+          kubectl delete namespace "$NS" --kubeconfig "$KUBECONFIG" --ignore-not-found 2>/dev/null || true
+
+      - name: Collect diagnostics on failure
+        if: failure()
+        run: |
+          KUBECONFIG="/tmp/kubeconfig-${{ steps.cluster.outputs.cluster-name }}"
+          NS="amazon-cloudwatch-${{ matrix.arch }}"
+          export KUBECONFIG
+
+          echo "=== Node status ==="
+          kubectl get nodes -o wide || true
+
+          echo ""
+          echo "=== DaemonSet details ==="
+          kubectl describe daemonset -n "$NS" || true
+
+          echo ""
+          echo "=== Agent pod logs (all pods) ==="
+          for POD in $(kubectl get pods -n "$NS" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+            echo "--- ${POD} ---"
+            kubectl logs -n "$NS" "$POD" -c aws-network-flow-monitor-agent --tail=100 || true
+            echo ""
+          done
+
+          echo ""
+          echo "=== Events ==="
+          kubectl get events -n "$NS" --sort-by='.lastTimestamp' || true
+
+  # Cleanup ECR images after all tests finish
+  cleanup-image:
+    name: Cleanup ECR Image
+    needs: [build-arch, test]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.PR_PERF_TEST_AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.PR_PERF_TEST_AWS_REGION }}
+          mask-aws-account-id: true
+
+      - name: Delete test images from ECR
+        run: |
+          IMAGE_TAG="integ-${{ github.run_id }}-${{ github.run_attempt }}"
+          REGION="${{ secrets.PR_PERF_TEST_AWS_REGION }}"
+          REPO="nfm-agent-integration-test"
+
+          aws ecr batch-delete-image --repository-name "$REPO" --region "$REGION" \
+            --image-ids "imageTag=${IMAGE_TAG}-amd64" "imageTag=${IMAGE_TAG}-arm64" || true
+          echo "Cleaned up ECR images for tag: ${IMAGE_TAG}"
+
+  # Gate job for branch protection.
+  gate:
+    name: Integration Tests (K8s) Gate
+    needs: [build-arch, test]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check test results
+        run: |
+          if [ "${{ needs.build-arch.result }}" = "failure" ] || \
+             [ "${{ needs.test.result }}" = "failure" ]; then
+            echo "::error::Kubernetes integration tests failed"
+            exit 1
+          fi
+          echo "All Kubernetes integration tests passed"
