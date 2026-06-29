@@ -9,7 +9,10 @@ use prometheus::Registry;
 use std::sync::Arc;
 
 use crate::{
-    kubernetes::kubernetes_metadata_collector::KubernetesMetadataCollector,
+    kubernetes::{
+        efa_pod_resources::EfaPodResourcesWatcher,
+        kubernetes_metadata_collector::KubernetesMetadataCollector,
+    },
     metadata::runtime_environment_metadata::ComputePlatform,
     open_metrics::providers::{
         efa_metrics_provider::EfaMetricsProvider,
@@ -32,7 +35,21 @@ pub fn get_open_metric_providers(
 
     if EfaMetricsProvider::efa_devices_present() {
         info!("EFA devices detected, enabling EFA metrics collection");
-        providers.push(Box::new(EfaMetricsProvider::new(&compute_platform)));
+
+        let device_to_pod_map = match compute_platform {
+            ComputePlatform::Ec2K8sEks | ComputePlatform::Ec2K8sVanilla => {
+                let watcher = EfaPodResourcesWatcher::new();
+                let map = watcher.device_map();
+                watcher.start();
+                Some(map)
+            }
+            ComputePlatform::Ec2Plain => None,
+        };
+
+        providers.push(Box::new(EfaMetricsProvider::new(
+            &compute_platform,
+            device_to_pod_map,
+        )));
     }
 
     providers

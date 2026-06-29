@@ -30,6 +30,9 @@ open-metrics = [
     "dep:tokio-util",
     "dep:getifaddrs",
     "dep:regex",
+    "dep:tonic",
+    "dep:tower",
+    "dep:tokio-stream",
 ]
 
 [profile.dev]
@@ -78,6 +81,9 @@ opentelemetry-proto = { version = "0.27", features = [
     "gen-tonic",
     "with-serde",
 ] }
+tonic = { version = "0.12", optional = true }
+tower = { version = "0.4", optional = true }
+tokio-stream = { version = "0.1", optional = true }
 procfs = "0.16"
 prost = "0.13"
 rand = "0.8"
