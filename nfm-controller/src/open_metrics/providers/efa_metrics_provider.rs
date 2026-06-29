@@ -127,7 +127,7 @@ impl MetricLabel for EfaMetric {
         match compute_platform {
             ComputePlatform::Ec2Plain => &["instance_id", "device", "port"],
             ComputePlatform::Ec2K8sEks | ComputePlatform::Ec2K8sVanilla => {
-                &["instance_id", "device", "port", "node", "pod"]
+                &["instance_id", "device", "port", "node", "pod", "namespace"]
             }
         }
     }
@@ -335,26 +335,27 @@ impl EfaMetricsProvider {
                 vec![self.instance_id.clone(), device.to_string(), port.to_string()]
             }
             ComputePlatform::Ec2K8sEks | ComputePlatform::Ec2K8sVanilla => {
-                let pod_name = self.resolve_pod_for_device(device);
+                let (pod_name, pod_namespace) = self.resolve_pod_for_device(device);
                 vec![
                     self.instance_id.clone(),
                     device.to_string(),
                     port.to_string(),
                     self.node_name.clone(),
                     pod_name,
+                    pod_namespace,
                 ]
             }
         }
     }
 
-    fn resolve_pod_for_device(&self, device: &str) -> String {
+    fn resolve_pod_for_device(&self, device: &str) -> (String, String) {
         let Some(map_arc) = &self.device_to_pod_map else {
-            return "unknown".to_string();
+            return ("unknown".to_string(), "unknown".to_string());
         };
         let map = map_arc.lock().unwrap();
         map.get(device)
-            .map(|info| info.pod_name.clone())
-            .unwrap_or_else(|| "unknown".to_string())
+            .map(|info| (info.pod_name.clone(), info.pod_namespace.clone()))
+            .unwrap_or_else(|| ("unknown".to_string(), "unknown".to_string()))
     }
 }
 
@@ -754,7 +755,7 @@ mod tests {
     fn test_labels_k8s() {
         for platform in &[ComputePlatform::Ec2K8sEks, ComputePlatform::Ec2K8sVanilla] {
             let labels = EfaMetric::get_labels(platform);
-            assert_eq!(labels, &["instance_id", "device", "port", "node", "pod"]);
+            assert_eq!(labels, &["instance_id", "device", "port", "node", "pod", "namespace"]);
         }
     }
 
@@ -773,7 +774,7 @@ mod tests {
         let values = provider.label_values("rdmap0s31", "1");
         assert_eq!(
             values,
-            vec!["i-1234567890abcdef0", "rdmap0s31", "1", "test-node", "unknown"]
+            vec!["i-1234567890abcdef0", "rdmap0s31", "1", "test-node", "unknown", "unknown"]
         );
     }
 
@@ -952,7 +953,8 @@ mod tests {
                 "rdmap0s31",
                 "1",
                 "test-node",
-                "training-job-worker-0"
+                "training-job-worker-0",
+                "ml"
             ]
         );
     }
@@ -971,7 +973,7 @@ mod tests {
         let values = provider.label_values("rdmap0s31", "1");
         assert_eq!(
             values,
-            vec!["i-1234567890abcdef0", "rdmap0s31", "1", "test-node", "unknown"]
+            vec!["i-1234567890abcdef0", "rdmap0s31", "1", "test-node", "unknown", "unknown"]
         );
     }
 
@@ -982,7 +984,7 @@ mod tests {
         let values = provider.label_values("rdmap0s31", "1");
         assert_eq!(
             values,
-            vec!["i-1234567890abcdef0", "rdmap0s31", "1", "test-node", "unknown"]
+            vec!["i-1234567890abcdef0", "rdmap0s31", "1", "test-node", "unknown", "unknown"]
         );
     }
 }
