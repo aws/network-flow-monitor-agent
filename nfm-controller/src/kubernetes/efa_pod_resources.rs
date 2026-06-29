@@ -37,11 +37,17 @@ pub struct EfaPodResourcesWatcher {
     device_map: Arc<Mutex<EfaDeviceToPodMap>>,
 }
 
-impl EfaPodResourcesWatcher {
-    pub fn new() -> Self {
+impl Default for EfaPodResourcesWatcher {
+    fn default() -> Self {
         Self {
             device_map: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+}
+
+impl EfaPodResourcesWatcher {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     pub fn device_map(&self) -> Arc<Mutex<EfaDeviceToPodMap>> {
@@ -240,10 +246,7 @@ impl EfaPodResourcesWatcher {
             .connect_with_connector(tower::service_fn(move |_| async move {
                 UnixStream::connect(KUBELET_SOCKET_PATH)
                     .await
-                    .map(|stream| {
-                        let io = hyper_util::rt::TokioIo::new(stream);
-                        io
-                    })
+                    .map(hyper_util::rt::TokioIo::new)
             }))
             .await?;
 

@@ -332,7 +332,11 @@ impl EfaMetricsProvider {
     fn label_values(&self, device: &str, port: &str) -> Vec<String> {
         match self.compute_platform {
             ComputePlatform::Ec2Plain => {
-                vec![self.instance_id.clone(), device.to_string(), port.to_string()]
+                vec![
+                    self.instance_id.clone(),
+                    device.to_string(),
+                    port.to_string(),
+                ]
             }
             ComputePlatform::Ec2K8sEks | ComputePlatform::Ec2K8sVanilla => {
                 let (pod_name, pod_namespace) = self.resolve_pod_for_device(device);
@@ -755,7 +759,10 @@ mod tests {
     fn test_labels_k8s() {
         for platform in &[ComputePlatform::Ec2K8sEks, ComputePlatform::Ec2K8sVanilla] {
             let labels = EfaMetric::get_labels(platform);
-            assert_eq!(labels, &["instance_id", "device", "port", "node", "pod", "namespace"]);
+            assert_eq!(
+                labels,
+                &["instance_id", "device", "port", "node", "pod", "namespace"]
+            );
         }
     }
 
@@ -774,7 +781,14 @@ mod tests {
         let values = provider.label_values("rdmap0s31", "1");
         assert_eq!(
             values,
-            vec!["i-1234567890abcdef0", "rdmap0s31", "1", "test-node", "unknown", "unknown"]
+            vec![
+                "i-1234567890abcdef0",
+                "rdmap0s31",
+                "1",
+                "test-node",
+                "unknown",
+                "unknown"
+            ]
         );
     }
 
@@ -940,11 +954,8 @@ mod tests {
         );
         let pod_map = Arc::new(Mutex::new(device_map));
 
-        let provider = create_provider_with_mock_and_pod_map(
-            &tmp,
-            ComputePlatform::Ec2K8sEks,
-            Some(pod_map),
-        );
+        let provider =
+            create_provider_with_mock_and_pod_map(&tmp, ComputePlatform::Ec2K8sEks, Some(pod_map));
         let values = provider.label_values("rdmap0s31", "1");
         assert_eq!(
             values,
@@ -965,15 +976,19 @@ mod tests {
         let device_map = EfaDeviceToPodMap::new();
         let pod_map = Arc::new(Mutex::new(device_map));
 
-        let provider = create_provider_with_mock_and_pod_map(
-            &tmp,
-            ComputePlatform::Ec2K8sEks,
-            Some(pod_map),
-        );
+        let provider =
+            create_provider_with_mock_and_pod_map(&tmp, ComputePlatform::Ec2K8sEks, Some(pod_map));
         let values = provider.label_values("rdmap0s31", "1");
         assert_eq!(
             values,
-            vec!["i-1234567890abcdef0", "rdmap0s31", "1", "test-node", "unknown", "unknown"]
+            vec![
+                "i-1234567890abcdef0",
+                "rdmap0s31",
+                "1",
+                "test-node",
+                "unknown",
+                "unknown"
+            ]
         );
     }
 
@@ -984,7 +999,14 @@ mod tests {
         let values = provider.label_values("rdmap0s31", "1");
         assert_eq!(
             values,
-            vec!["i-1234567890abcdef0", "rdmap0s31", "1", "test-node", "unknown", "unknown"]
+            vec![
+                "i-1234567890abcdef0",
+                "rdmap0s31",
+                "1",
+                "test-node",
+                "unknown",
+                "unknown"
+            ]
         );
     }
 }

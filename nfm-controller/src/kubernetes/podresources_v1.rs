@@ -71,9 +71,8 @@ pub mod pod_resources_lister_client {
                 tonic::Status::new(tonic::Code::Unknown, format!("Service not ready: {}", e))
             })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path = tonic::codegen::http::uri::PathAndQuery::from_static(
-                "/v1.PodResourcesLister/List",
-            );
+            let path =
+                tonic::codegen::http::uri::PathAndQuery::from_static("/v1.PodResourcesLister/List");
             self.inner.unary(request.into_request(), path, codec).await
         }
     }
