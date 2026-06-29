@@ -68,8 +68,8 @@ mod tests {
     use crate::metadata::runtime_environment_metadata::ComputePlatform;
     use std::sync::Arc;
 
-    #[test]
-    fn test_get_open_metric_providers_all_platforms() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_get_open_metric_providers_all_platforms() {
         let platforms = vec![
             ComputePlatform::Ec2Plain,
             ComputePlatform::Ec2K8sEks,
@@ -88,8 +88,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_get_open_metric_providers_with_k8s_collector() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_get_open_metric_providers_with_k8s_collector() {
         use crate::kubernetes::kubernetes_metadata_collector::KubernetesMetadataCollector;
 
         let compute_platform = ComputePlatform::Ec2K8sEks;
