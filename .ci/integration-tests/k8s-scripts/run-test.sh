@@ -23,6 +23,9 @@ export KUBECONFIG="$KUBECONFIG_PATH"
 NAMESPACE="amazon-cloudwatch-${TARGET_ARCH:-default}"
 TEST_NAMESPACE="nfm-test-${TARGET_ARCH:-default}"
 PUBLISH_SECS=5
+# Use a distinctive port unlikely to collide with other traffic on the node.
+# This lets us verify the agent captured *our* test flows specifically.
+TEST_PORT=54321
 
 echo "=== Running K8s integration tests ==="
 
@@ -37,8 +40,8 @@ if [ -n "$TARGET_ARCH" ]; then
   echo "Restricting test pods to ${TARGET_ARCH} nodes"
 fi
 
-# Deploy a simple HTTP server as a test workload
-echo "Deploying test server..."
+# Deploy a simple HTTP server on a distinctive port.
+echo "Deploying test server on port ${TEST_PORT}..."
 kubectl apply -n "$TEST_NAMESPACE" -f - <<EOF
 apiVersion: v1
 kind: Pod
@@ -65,14 +68,14 @@ ${NODE_SELECTOR}
                   self.end_headers()
                   self.wfile.write(b'hello from nfm-test-server')
               def log_message(self, *a): pass
-          socketserver.TCPServer(('0.0.0.0', 8080), H).serve_forever()
+          socketserver.TCPServer(('0.0.0.0', ${TEST_PORT}), H).serve_forever()
           "
       ports:
-        - containerPort: 8080
+        - containerPort: ${TEST_PORT}
       readinessProbe:
         httpGet:
           path: /
-          port: 8080
+          port: ${TEST_PORT}
         initialDelaySeconds: 5
         periodSeconds: 2
 ---
@@ -84,8 +87,8 @@ spec:
   selector:
     app: nfm-test-server
   ports:
-    - port: 8080
-      targetPort: 8080
+    - port: ${TEST_PORT}
+      targetPort: ${TEST_PORT}
 EOF
 
 # Wait for the test server to be ready
@@ -124,9 +127,9 @@ ${NODE_SELECTOR}
         - /bin/sh
         - -c
         - |
-          echo "Starting requests to test-server..." && \
+          echo "Starting requests to test-server on port ${TEST_PORT}..." && \
           for i in \$(seq 1 10); do
-            curl -sf http://test-server.${TEST_NAMESPACE}.svc.cluster.local:8080/ && \
+            curl -sf http://test-server.${TEST_NAMESPACE}.svc.cluster.local:${TEST_PORT}/ && \
               echo "Request \$i: OK" || echo "Request \$i: FAILED"
             sleep 1
           done && \
@@ -197,6 +200,21 @@ else
   else
     echo "  Agent shows no evidence of BPF aggregation"
   fi
+  echo ""
+  echo "Last 50 log lines:"
+  tail -50 "$LOGFILE"
+  exit 1
+fi
+
+# Verify 2: Agent captured our specific test traffic (port 54321).
+# This confirms the agent is tracking the exact flows we generated,
+# not just reporting traffic from unrelated processes on the node.
+if grep -q "${TEST_PORT}" "$LOGFILE"; then
+  echo "[PASS] Agent captured test traffic on port ${TEST_PORT}"
+else
+  echo "[FAIL] Agent did not capture traffic on test port ${TEST_PORT}"
+  echo "  The agent is publishing reports but none contain our test flow."
+  echo "  This may indicate a BPF filtering issue or insufficient wait time."
   echo ""
   echo "Last 50 log lines:"
   tail -50 "$LOGFILE"
