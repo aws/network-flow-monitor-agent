@@ -4,8 +4,10 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use crate::{
+    kubernetes::efa_pod_resources::EfaDeviceToPodMap,
     metadata::{
         imds_utils::retrieve_instance_id, k8s_metadata::K8sMetadata,
         runtime_environment_metadata::ComputePlatform,
@@ -125,7 +127,7 @@ impl MetricLabel for EfaMetric {
         match compute_platform {
             ComputePlatform::Ec2Plain => &["instance_id", "device", "port"],
             ComputePlatform::Ec2K8sEks | ComputePlatform::Ec2K8sVanilla => {
-                &["instance_id", "device", "port", "node"]
+                &["instance_id", "device", "port", "node", "pod", "namespace"]
             }
         }
     }
@@ -144,6 +146,10 @@ pub struct EfaMetricsProvider {
     /// Cached previous sysfs counter values per (device, metric_index).
     /// Used to compute per-scrape deltas via wrapping_sub.
     previous_values: HashMap<String, Vec<u64>>,
+
+    /// Shared mapping from EFA device IDs to pod info, populated by the
+    /// EfaPodResourcesWatcher when the EFA device plugin is present.
+    device_to_pod_map: Option<Arc<Mutex<EfaDeviceToPodMap>>>,
 }
 
 impl EfaMetricsProvider {
@@ -158,11 +164,22 @@ impl EfaMetricsProvider {
         }
     }
 
-    pub fn new(compute_platform: &ComputePlatform) -> Self {
-        Self::with_sysfs_base(compute_platform, PathBuf::from(INFINIBAND_SYSFS_PATH))
+    pub fn new(
+        compute_platform: &ComputePlatform,
+        device_to_pod_map: Option<Arc<Mutex<EfaDeviceToPodMap>>>,
+    ) -> Self {
+        Self::with_sysfs_base(
+            compute_platform,
+            PathBuf::from(INFINIBAND_SYSFS_PATH),
+            device_to_pod_map,
+        )
     }
 
-    fn with_sysfs_base(compute_platform: &ComputePlatform, sysfs_base: PathBuf) -> Self {
+    fn with_sysfs_base(
+        compute_platform: &ComputePlatform,
+        sysfs_base: PathBuf,
+        device_to_pod_map: Option<Arc<Mutex<EfaDeviceToPodMap>>>,
+    ) -> Self {
         let node_name = match K8sMetadata::default().node_name {
             Some(ReportValue::String(node_name)) => node_name,
             _ => "unknown".to_string(),
@@ -193,6 +210,7 @@ impl EfaMetricsProvider {
             srd_gauges,
             srd_available,
             previous_values: HashMap::new(),
+            device_to_pod_map,
         };
 
         // Seed the cache with current sysfs values so the first scrape produces
@@ -311,13 +329,37 @@ impl EfaMetricsProvider {
         }
     }
 
-    fn label_values<'a>(&'a self, device: &'a str, port: &'a str) -> Vec<&'a str> {
+    fn label_values(&self, device: &str, port: &str) -> Vec<String> {
         match self.compute_platform {
-            ComputePlatform::Ec2Plain => vec![&self.instance_id, device, port],
+            ComputePlatform::Ec2Plain => {
+                vec![
+                    self.instance_id.clone(),
+                    device.to_string(),
+                    port.to_string(),
+                ]
+            }
             ComputePlatform::Ec2K8sEks | ComputePlatform::Ec2K8sVanilla => {
-                vec![&self.instance_id, device, port, &self.node_name]
+                let (pod_name, pod_namespace) = self.resolve_pod_for_device(device);
+                vec![
+                    self.instance_id.clone(),
+                    device.to_string(),
+                    port.to_string(),
+                    self.node_name.clone(),
+                    pod_name,
+                    pod_namespace,
+                ]
             }
         }
+    }
+
+    fn resolve_pod_for_device(&self, device: &str) -> (String, String) {
+        let Some(map_arc) = &self.device_to_pod_map else {
+            return ("unknown".to_string(), "unknown".to_string());
+        };
+        let map = map_arc.lock().unwrap();
+        map.get(device)
+            .map(|info| (info.pod_name.clone(), info.pod_namespace.clone()))
+            .unwrap_or_else(|| ("unknown".to_string(), "unknown".to_string()))
     }
 }
 
@@ -378,11 +420,12 @@ impl OpenMetricProvider for EfaMetricsProvider {
                 .unwrap_or_else(|| vec![0; self.total_metrics_count()]);
 
             let label_values = self.label_values(device, port);
+            let label_refs: Vec<&str> = label_values.iter().map(|s| s.as_str()).collect();
 
             for (i, _) in STANDARD_METRICS.iter().enumerate() {
                 let delta = compute_delta(current_values[i], previous[i]);
                 self.standard_gauges[i]
-                    .with_label_values(&label_values)
+                    .with_label_values(&label_refs)
                     .set(delta as i64);
             }
 
@@ -391,7 +434,7 @@ impl OpenMetricProvider for EfaMetricsProvider {
                 for (i, _) in SRD_METRICS.iter().enumerate() {
                     let delta = compute_delta(current_values[offset + i], previous[offset + i]);
                     self.srd_gauges[i]
-                        .with_label_values(&label_values)
+                        .with_label_values(&label_refs)
                         .set(delta as i64);
                 }
             }
@@ -440,6 +483,14 @@ mod tests {
     }
 
     fn create_provider_with_mock(tmp: &TempDir, platform: ComputePlatform) -> EfaMetricsProvider {
+        create_provider_with_mock_and_pod_map(tmp, platform, None)
+    }
+
+    fn create_provider_with_mock_and_pod_map(
+        tmp: &TempDir,
+        platform: ComputePlatform,
+        device_to_pod_map: Option<Arc<Mutex<EfaDeviceToPodMap>>>,
+    ) -> EfaMetricsProvider {
         let sysfs_base = tmp.path().to_path_buf();
         let srd_available = EfaMetricsProvider::detect_srd_support(&sysfs_base);
 
@@ -466,6 +517,7 @@ mod tests {
             srd_gauges,
             srd_available,
             previous_values: HashMap::new(),
+            device_to_pod_map,
         };
 
         provider.seed_cache();
@@ -707,7 +759,10 @@ mod tests {
     fn test_labels_k8s() {
         for platform in &[ComputePlatform::Ec2K8sEks, ComputePlatform::Ec2K8sVanilla] {
             let labels = EfaMetric::get_labels(platform);
-            assert_eq!(labels, &["instance_id", "device", "port", "node"]);
+            assert_eq!(
+                labels,
+                &["instance_id", "device", "port", "node", "pod", "namespace"]
+            );
         }
     }
 
@@ -726,7 +781,14 @@ mod tests {
         let values = provider.label_values("rdmap0s31", "1");
         assert_eq!(
             values,
-            vec!["i-1234567890abcdef0", "rdmap0s31", "1", "test-node"]
+            vec![
+                "i-1234567890abcdef0",
+                "rdmap0s31",
+                "1",
+                "test-node",
+                "unknown",
+                "unknown"
+            ]
         );
     }
 
@@ -875,5 +937,76 @@ mod tests {
         assert_eq!(provider.previous_values.len(), 1);
         assert!(provider.previous_values.contains_key("rdmap0s31/1"));
         assert!(!provider.previous_values.contains_key("rdmap1s32/1"));
+    }
+
+    #[test]
+    fn test_label_values_k8s_with_pod_map() {
+        use crate::kubernetes::efa_pod_resources::EfaPodInfo;
+
+        let tmp = create_mock_sysfs(false);
+        let mut device_map = EfaDeviceToPodMap::new();
+        device_map.insert(
+            "rdmap0s31".to_string(),
+            EfaPodInfo {
+                pod_name: "training-job-worker-0".to_string(),
+                pod_namespace: "ml".to_string(),
+            },
+        );
+        let pod_map = Arc::new(Mutex::new(device_map));
+
+        let provider =
+            create_provider_with_mock_and_pod_map(&tmp, ComputePlatform::Ec2K8sEks, Some(pod_map));
+        let values = provider.label_values("rdmap0s31", "1");
+        assert_eq!(
+            values,
+            vec![
+                "i-1234567890abcdef0",
+                "rdmap0s31",
+                "1",
+                "test-node",
+                "training-job-worker-0",
+                "ml"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_label_values_k8s_with_pod_map_device_not_found() {
+        let tmp = create_mock_sysfs(false);
+        let device_map = EfaDeviceToPodMap::new();
+        let pod_map = Arc::new(Mutex::new(device_map));
+
+        let provider =
+            create_provider_with_mock_and_pod_map(&tmp, ComputePlatform::Ec2K8sEks, Some(pod_map));
+        let values = provider.label_values("rdmap0s31", "1");
+        assert_eq!(
+            values,
+            vec![
+                "i-1234567890abcdef0",
+                "rdmap0s31",
+                "1",
+                "test-node",
+                "unknown",
+                "unknown"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_label_values_k8s_without_pod_map() {
+        let tmp = create_mock_sysfs(false);
+        let provider = create_provider_with_mock(&tmp, ComputePlatform::Ec2K8sEks);
+        let values = provider.label_values("rdmap0s31", "1");
+        assert_eq!(
+            values,
+            vec![
+                "i-1234567890abcdef0",
+                "rdmap0s31",
+                "1",
+                "test-node",
+                "unknown",
+                "unknown"
+            ]
+        );
     }
 }
