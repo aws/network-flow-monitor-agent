@@ -250,10 +250,7 @@ impl InterfaceMetricsProvider {
         // On EC2 Plain, report host-level TCP flow stats on a dedicated "host" key.
         // /proc/net/snmp provides host-aggregate counters that can't be split per-interface.
         if self.compute_platform == ComputePlatform::Ec2Plain {
-            let stats = self
-                .netns_stats
-                .get_host_flow_stats()
-                .unwrap_or_default();
+            let stats = self.netns_stats.get_host_flow_stats().unwrap_or_default();
 
             let host_key = InterfaceMetricKey {
                 instance: self.instance_id.clone(),
@@ -334,7 +331,6 @@ impl InterfaceMetricsProvider {
         result
     }
 
-
     fn environment_info(&mut self) -> (Option<NamespaceMapping>, Option<IpToPodMapping>) {
         let (ns_to_pid, pod_info) = match self.compute_platform {
             ComputePlatform::Ec2Plain => (None, None),
@@ -381,9 +377,7 @@ impl InterfaceMetricsProvider {
             .unwrap_or_default();
         let node = match self.compute_platform {
             ComputePlatform::Ec2Plain => String::new(),
-            ComputePlatform::Ec2K8sEks | ComputePlatform::Ec2K8sVanilla => {
-                self.node_name.clone()
-            }
+            ComputePlatform::Ec2K8sEks | ComputePlatform::Ec2K8sVanilla => self.node_name.clone(),
         };
         InterfaceMetricKey {
             instance: self.instance_id.clone(),

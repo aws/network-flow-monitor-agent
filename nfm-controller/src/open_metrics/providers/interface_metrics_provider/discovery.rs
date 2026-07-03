@@ -144,7 +144,10 @@ pub fn should_include_interface(
         ComputePlatform::Ec2Plain => {
             // On EC2 Plain, report physical (non-virtual) interfaces
             if interface.is_virtual() {
-                debug!("Skipping virtual interface on EC2 Plain: {}", interface.name);
+                debug!(
+                    "Skipping virtual interface on EC2 Plain: {}",
+                    interface.name
+                );
                 return false;
             }
         }
