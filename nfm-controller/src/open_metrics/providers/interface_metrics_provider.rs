@@ -261,7 +261,7 @@ impl InterfaceMetricsProvider {
                 eni: String::new(),
                 pod: String::new(),
                 pod_namespace: String::new(),
-                node: self.node_name.clone(),
+                node: String::new(),
             };
 
             let host_metrics = InterfaceMetricValues {
@@ -379,13 +379,19 @@ impl InterfaceMetricsProvider {
             .get(iface_name)
             .cloned()
             .unwrap_or_default();
+        let node = match self.compute_platform {
+            ComputePlatform::Ec2Plain => String::new(),
+            ComputePlatform::Ec2K8sEks | ComputePlatform::Ec2K8sVanilla => {
+                self.node_name.clone()
+            }
+        };
         InterfaceMetricKey {
             instance: self.instance_id.clone(),
             iface: iface_name.to_string(),
             eni,
             pod,
             pod_namespace,
-            node: self.node_name.clone(),
+            node,
         }
     }
 }
@@ -1270,10 +1276,10 @@ mod tests {
             .iter()
             .find(|mf| mf.get_name() == "ingress_packets")
             .unwrap();
-        // 2 physical interfaces + 1 "host" key for flow stats
-        assert_eq!(ingress_pkt_family.get_metric().len(), 3);
+        // 2 physical interfaces (host key only emits flow stats, not packets/bytes)
+        assert_eq!(ingress_pkt_family.get_metric().len(), 2);
 
-        // Verify interface names include physical ENIs and the host key
+        // Verify interface names are physical ENIs
         let iface_names: HashSet<&str> = ingress_pkt_family
             .get_metric()
             .iter()
@@ -1287,7 +1293,6 @@ mod tests {
             .collect();
         assert!(iface_names.contains("eth0"));
         assert!(iface_names.contains("eth1"));
-        assert!(iface_names.contains("host"));
     }
 
     #[test]
