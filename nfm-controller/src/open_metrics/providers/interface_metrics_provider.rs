@@ -128,7 +128,6 @@ pub struct InterfaceMetricsProvider {
     k8s_metadata: Option<Arc<KubernetesMetadataCollector>>,
     eni_metadata_provider: EniMetadataProvider,
 
-    // Cached device_name -> eni_id mapping (refreshed from IMDS)
     iface_to_eni: HashMap<String, String>,
 
     // Prometheus metrics
