@@ -704,6 +704,7 @@ mod tests {
     fn build_host_stats() -> HostStats {
         let iface1_stats = GroupedInterfaceStats {
             interface_id: "iface-id-1".to_string(),
+            device_name: "eth0".to_string(),
             stats: NetworkInterfaceStats {
                 bw_in_allowance_exceeded: 211,
                 bw_out_allowance_exceeded: 223,

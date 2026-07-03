@@ -97,6 +97,7 @@
       "interface_stats": [
           {
               "interface_id": "iface-id-1",
+              "device_name": "eth0",
               "stats": {
                   "bw_in_allowance_exceeded": 211,
                   "bw_out_allowance_exceeded": 223,
