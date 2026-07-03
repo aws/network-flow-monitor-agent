@@ -73,7 +73,6 @@ impl InterfaceMetricKey {
                 vec![
                     instance_id,
                     &self.iface,
-                    &self.eni,
                     &self.pod,
                     &self.pod_namespace,
                     node_name,
@@ -95,7 +94,7 @@ impl MetricLabel for InterfaceMetricKey {
         match compute_platform {
             ComputePlatform::Ec2Plain => &["instance_id", "iface", "eni"],
             ComputePlatform::Ec2K8sEks | ComputePlatform::Ec2K8sVanilla => {
-                &["instance_id", "iface", "eni", "pod", "namespace", "node"]
+                &["instance_id", "iface", "pod", "namespace", "node"]
             }
         }
     }
@@ -129,6 +128,9 @@ pub struct InterfaceMetricsProvider {
     k8s_metadata: Option<Arc<KubernetesMetadataCollector>>,
     eni_metadata_provider: EniMetadataProvider,
 
+    // Cached device_name -> eni_id mapping (refreshed from IMDS)
+    iface_to_eni: HashMap<String, String>,
+
     // Prometheus metrics
     ingress_pkt_count: IntGaugeVec,
     ingress_bytes_count: IntGaugeVec,
@@ -157,6 +159,13 @@ impl InterfaceMetricsProvider {
         let netns_stats = NetNsStats::new(netns_command_runner);
         let iface_discovery = Box::new(InterfaceDiscoveryImpl::new());
 
+        let mut eni_metadata_provider = EniMetadataProvider::new();
+        let iface_to_eni: HashMap<String, String> = eni_metadata_provider
+            .get_network_devices()
+            .into_iter()
+            .map(|dev| (dev.device_name, dev.interface_id))
+            .collect();
+
         let mut provider = Self {
             compute_platform: compute_platform.clone(),
             instance_id: retrieve_instance_id(&Client::builder().build()),
@@ -165,7 +174,8 @@ impl InterfaceMetricsProvider {
             netns_stats,
             iface_discovery,
             k8s_metadata,
-            eni_metadata_provider: EniMetadataProvider::new(),
+            eni_metadata_provider,
+            iface_to_eni,
             ingress_pkt_count: build_gauge_metric::<InterfaceMetricKey>(
                 compute_platform,
                 "ingress_packets",
@@ -216,14 +226,6 @@ impl InterfaceMetricsProvider {
                 .unwrap_or_default(),
         };
 
-        // Build device_name -> eni_id mapping
-        let iface_to_eni: HashMap<String, String> = self
-            .eni_metadata_provider
-            .get_network_devices()
-            .into_iter()
-            .map(|dev| (dev.device_name, dev.interface_id))
-            .collect();
-
         let mut new_current_metrics = HashMap::new();
         let mut result = HashMap::new();
 
@@ -232,14 +234,49 @@ impl InterfaceMetricsProvider {
             .get_interface_stats(&self.compute_platform)
             .unwrap_or_default();
 
-        // For EC2 Plain, get host-level flow stats once (shared across all interfaces)
-        let host_flow_stats = match self.compute_platform {
-            ComputePlatform::Ec2Plain => self
+        // Refresh ENI mapping only if we see an interface not yet in the cache
+        if interface_stats
+            .keys()
+            .any(|iface| !iface.is_virtual() && !self.iface_to_eni.contains_key(&iface.name))
+        {
+            self.iface_to_eni = self
+                .eni_metadata_provider
+                .get_network_devices()
+                .into_iter()
+                .map(|dev| (dev.device_name, dev.interface_id))
+                .collect();
+        }
+
+        // On EC2 Plain, report host-level TCP flow stats on a dedicated "host" key.
+        // /proc/net/snmp provides host-aggregate counters that can't be split per-interface.
+        if self.compute_platform == ComputePlatform::Ec2Plain {
+            let stats = self
                 .netns_stats
                 .get_host_flow_stats()
-                .unwrap_or_default(),
-            _ => NetNsInterfaceMetricValues::default(),
-        };
+                .unwrap_or_default();
+
+            let host_key = InterfaceMetricKey {
+                instance: self.instance_id.clone(),
+                iface: "host".to_string(),
+                eni: String::new(),
+                pod: String::new(),
+                pod_namespace: String::new(),
+                node: self.node_name.clone(),
+            };
+
+            let host_metrics = InterfaceMetricValues {
+                host: HostInterfaceMetricValues::default(),
+                netns: stats,
+            };
+
+            let delta = host_metrics.calculate_delta(
+                self.current_metrics
+                    .get(&host_key)
+                    .unwrap_or(&InterfaceMetricValues::default()),
+            );
+            new_current_metrics.insert(host_key.clone(), host_metrics);
+            result.insert(host_key, delta);
+        }
 
         for (iface, device_status) in interface_stats {
             let netns = if iface.is_virtual() {
@@ -248,8 +285,7 @@ impl InterfaceMetricsProvider {
                 None
             };
 
-            let key =
-                self.build_metric_key(&iface.name, &ns_to_pid, &pod_info, netns, &iface_to_eni);
+            let key = self.build_metric_key(&iface.name, &ns_to_pid, &pod_info, netns);
             if !key.is_valid(&self.compute_platform) {
                 continue;
             }
@@ -262,7 +298,7 @@ impl InterfaceMetricsProvider {
             );
 
             let netns_metrics = match self.compute_platform {
-                ComputePlatform::Ec2Plain => host_flow_stats.clone(),
+                ComputePlatform::Ec2Plain => NetNsInterfaceMetricValues::default(),
                 ComputePlatform::Ec2K8sEks | ComputePlatform::Ec2K8sVanilla => {
                     // For virtual interfaces, swap TX/RX because the pod is on the other end
                     host_metrics.swap_tx_rx();
@@ -298,6 +334,7 @@ impl InterfaceMetricsProvider {
         result
     }
 
+
     fn environment_info(&mut self) -> (Option<NamespaceMapping>, Option<IpToPodMapping>) {
         let (ns_to_pid, pod_info) = match self.compute_platform {
             ComputePlatform::Ec2Plain => (None, None),
@@ -325,7 +362,6 @@ impl InterfaceMetricsProvider {
         ns_to_pid: &Option<NamespaceMapping>,
         pod_info_map: &Option<IpToPodMapping>,
         netns: Option<&NamespaceId>,
-        iface_to_eni: &HashMap<String, String>,
     ) -> InterfaceMetricKey {
         let (pod, pod_namespace) = match self.compute_platform {
             ComputePlatform::Ec2Plain => (String::new(), String::new()),
@@ -338,7 +374,8 @@ impl InterfaceMetricsProvider {
                 }
             }
         };
-        let eni = iface_to_eni
+        let eni = self
+            .iface_to_eni
             .get(iface_name)
             .cloned()
             .unwrap_or_default();
@@ -387,18 +424,22 @@ impl OpenMetricProvider for InterfaceMetricsProvider {
 
             debug!(labels = format!("{:?}", label_values), metrics = format!("{:?}", value); "Interface metrics");
 
-            self.ingress_bytes_count
-                .with_label_values(&label_values)
-                .set(value.host.ingress_bytes_count as i64);
-            self.ingress_pkt_count
-                .with_label_values(&label_values)
-                .set(value.host.ingress_pkt_count as i64);
-            self.egress_bytes_count
-                .with_label_values(&label_values)
-                .set(value.host.egress_bytes_count as i64);
-            self.egress_pkt_count
-                .with_label_values(&label_values)
-                .set(value.host.egress_pkt_count as i64);
+            let is_host_aggregate = key.iface == "host";
+
+            if !is_host_aggregate {
+                self.ingress_bytes_count
+                    .with_label_values(&label_values)
+                    .set(value.host.ingress_bytes_count as i64);
+                self.ingress_pkt_count
+                    .with_label_values(&label_values)
+                    .set(value.host.ingress_pkt_count as i64);
+                self.egress_bytes_count
+                    .with_label_values(&label_values)
+                    .set(value.host.egress_bytes_count as i64);
+                self.egress_pkt_count
+                    .with_label_values(&label_values)
+                    .set(value.host.egress_pkt_count as i64);
+            }
 
             self.ingress_flow_count
                 .with_label_values(&label_values)
@@ -474,7 +515,7 @@ mod tests {
         let labels_eks = InterfaceMetricKey::get_labels(&ComputePlatform::Ec2K8sEks);
         assert_eq!(
             labels_eks,
-            &["instance_id", "iface", "eni", "pod", "namespace", "node"]
+            &["instance_id", "iface", "pod", "namespace", "node"]
         );
     }
 
@@ -495,7 +536,7 @@ mod tests {
         let k8s_labels = key.label_values(&ComputePlatform::Ec2K8sEks, "node1", "i-123");
         assert_eq!(
             k8s_labels,
-            vec!["i-123", "eth0", "eni-abc", "test-pod", "default", "node1"]
+            vec!["i-123", "eth0", "test-pod", "default", "node1"]
         );
     }
 
@@ -566,11 +607,10 @@ mod tests {
     #[test]
     fn test_build_metric_key_ec2_plain() {
         let provider = InterfaceMetricsProvider::new(&ComputePlatform::Ec2Plain, None);
-        let iface_to_eni = HashMap::new();
 
-        let key = provider.build_metric_key("eth0", &None, &None, None, &iface_to_eni);
+        let key = provider.build_metric_key("nonexistent-iface", &None, &None, None);
 
-        assert_eq!(key.iface, "eth0");
+        assert_eq!(key.iface, "nonexistent-iface");
         assert_eq!(key.eni, "");
         assert_eq!(key.pod, "");
         assert_eq!(key.pod_namespace, "");
@@ -610,13 +650,11 @@ mod tests {
         });
         pod_mapping.insert(ip, pod_set);
 
-        let iface_to_eni = HashMap::new();
         let key = provider.build_metric_key(
             "veth123",
             &Some(ns_mapping),
             &Some(pod_mapping),
             Some(&ns_id),
-            &iface_to_eni,
         );
 
         assert_eq!(key.iface, "veth123");
@@ -878,6 +916,7 @@ mod tests {
             iface_discovery,
             k8s_metadata: Some(Arc::new(k8s_metadata)),
             eni_metadata_provider: EniMetadataProvider::new(),
+            iface_to_eni: HashMap::new(),
             ingress_pkt_count: build_gauge_metric::<InterfaceMetricKey>(
                 &compute_platform,
                 "ingress_packets",
@@ -1160,6 +1199,7 @@ mod tests {
             iface_discovery,
             k8s_metadata: None,
             eni_metadata_provider: EniMetadataProvider::new(),
+            iface_to_eni: HashMap::new(),
             ingress_pkt_count: build_gauge_metric::<InterfaceMetricKey>(
                 &compute_platform,
                 "ingress_packets",
@@ -1230,9 +1270,10 @@ mod tests {
             .iter()
             .find(|mf| mf.get_name() == "ingress_packets")
             .unwrap();
-        assert_eq!(ingress_pkt_family.get_metric().len(), 2);
+        // 2 physical interfaces + 1 "host" key for flow stats
+        assert_eq!(ingress_pkt_family.get_metric().len(), 3);
 
-        // Verify interface names are physical
+        // Verify interface names include physical ENIs and the host key
         let iface_names: HashSet<&str> = ingress_pkt_family
             .get_metric()
             .iter()
@@ -1246,6 +1287,7 @@ mod tests {
             .collect();
         assert!(iface_names.contains("eth0"));
         assert!(iface_names.contains("eth1"));
+        assert!(iface_names.contains("host"));
     }
 
     #[test]
@@ -1272,9 +1314,9 @@ mod tests {
             .find(|mf| mf.get_name() == "egress_flow")
             .unwrap();
 
-        // Flow metrics should exist for both interfaces
-        assert_eq!(ingress_flow_family.get_metric().len(), 2);
-        assert_eq!(egress_flow_family.get_metric().len(), 2);
+        // Flow metrics: 1 "host" key with actual values + 2 interfaces with zero flows
+        assert_eq!(ingress_flow_family.get_metric().len(), 3);
+        assert_eq!(egress_flow_family.get_metric().len(), 3);
     }
 
     #[test]
