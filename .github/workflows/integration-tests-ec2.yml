@@ -446,7 +446,7 @@ jobs:
 
       - name: Verify BPF prerequisites
         run: |
-          .ci/common/scripts/run-ssm.sh 60 "bash /tmp/nfm-ci/tests/ec2-test-scripts/verify-bpf.sh"
+          .ci/common/scripts/run-ssm.sh 300 "bash /tmp/nfm-ci/tests/ec2-test-scripts/verify-bpf.sh"
 
       - name: Start agent and run integration test
         run: |
@@ -455,7 +455,7 @@ jobs:
       - name: Uninstall agent and verify cleanup
         if: always()
         run: |
-          .ci/common/scripts/run-ssm.sh 60 "bash /tmp/nfm-ci/tests/ec2-test-scripts/uninstall-agent.sh ${{ matrix.pkg_type }}" || true
+          .ci/common/scripts/run-ssm.sh 300 "bash /tmp/nfm-ci/tests/ec2-test-scripts/uninstall-agent.sh ${{ matrix.pkg_type }}" || true
 
       - name: Terminate EC2 instance
         if: always()
