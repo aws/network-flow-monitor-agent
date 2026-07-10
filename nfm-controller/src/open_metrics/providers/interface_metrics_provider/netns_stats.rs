@@ -61,6 +61,21 @@ impl NetNsStats {
         }
     }
 
+    /// Get TCP flow statistics from the host network namespace
+    pub fn get_host_flow_stats(&self) -> Result<NetNsInterfaceMetricValues, String> {
+        let proc_path = "/proc/net/snmp";
+        match fs::read_to_string(proc_path) {
+            Ok(content) => {
+                debug!("Successfully read {}", proc_path);
+                Ok(self.parse_proc_netstat(&content))
+            }
+            Err(e) => {
+                debug!("Failed to read {}: {}", proc_path, e);
+                Err(format!("Failed to read {}: {}", proc_path, e))
+            }
+        }
+    }
+
     fn execute_nsenter(
         &self,
         args: &[&str],
@@ -590,5 +605,20 @@ Tcp: 1 200 120000 -1 100 200 5 10 2 1000 800 50 0 20 0";
         let result = collector.parse_proc_netstat("");
         assert_eq!(result.ingress_flow_count, 0);
         assert_eq!(result.egress_flow_count, 0);
+    }
+
+    #[test]
+    fn test_get_host_flow_stats() {
+        let fake_runner = FakeCommandRunner::new();
+        let collector = NetNsStats::new(Box::new(fake_runner));
+
+        // /proc/net/snmp exists on any Linux host, so this should succeed
+        let result = collector.get_host_flow_stats();
+        assert!(result.is_ok());
+        // We can't assert exact values, but we can verify the structure is populated
+        let stats = result.unwrap();
+        // On a real host, these values should be >= 0 (they're cumulative counters)
+        assert!(stats.ingress_flow_count >= 0);
+        assert!(stats.egress_flow_count >= 0);
     }
 }

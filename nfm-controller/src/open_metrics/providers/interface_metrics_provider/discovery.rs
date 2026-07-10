@@ -14,6 +14,7 @@ use std::collections::HashSet;
 use std::net::IpAddr;
 
 use crate::kubernetes::kubernetes_metadata_collector::PodInfo;
+use crate::metadata::runtime_environment_metadata::ComputePlatform;
 use crate::open_metrics::providers::interface_metrics_provider::types::{
     NamespaceId, NamespaceInfo,
 };
@@ -66,7 +67,10 @@ impl HostInterfaceMetricValues {
 
 /// Discovers and filters network interfaces
 pub trait InterfaceDiscovery {
-    fn get_virtual_interface_stats(&mut self) -> Result<HashMap<HostInterface, DeviceStatus>>;
+    fn get_interface_stats(
+        &mut self,
+        compute_platform: &ComputePlatform,
+    ) -> Result<HashMap<HostInterface, DeviceStatus>>;
 }
 
 pub struct InterfaceDiscoveryImpl {
@@ -82,8 +86,11 @@ impl InterfaceDiscoveryImpl {
 }
 
 impl InterfaceDiscovery for InterfaceDiscoveryImpl {
-    /// Get interface statistics with filtering for virtual interfaces
-    fn get_virtual_interface_stats(&mut self) -> Result<HashMap<HostInterface, DeviceStatus>> {
+    /// Get interface statistics with filtering based on compute platform
+    fn get_interface_stats(
+        &mut self,
+        compute_platform: &ComputePlatform,
+    ) -> Result<HashMap<HostInterface, DeviceStatus>> {
         let interfaces =
             dev_status().context("Failed to read network interface statistics from procfs")?;
 
@@ -103,7 +110,7 @@ impl InterfaceDiscovery for InterfaceDiscoveryImpl {
             };
 
             let interface = HostInterface::new(name, is_virtual);
-            if should_include_interface(&interface, &interface_flags) {
+            if should_include_interface(&interface, &interface_flags, compute_platform) {
                 filtered_interfaces.insert(interface, status);
             }
         }
@@ -116,6 +123,7 @@ impl InterfaceDiscovery for InterfaceDiscoveryImpl {
 pub fn should_include_interface(
     interface: &HostInterface,
     flags: &HashMap<String, InterfaceFlags>,
+    compute_platform: &ComputePlatform,
 ) -> bool {
     let Some(interface_flags) = flags.get(&interface.name) else {
         info!("Interface flags not found for {}", interface.name);
@@ -132,10 +140,24 @@ pub fn should_include_interface(
         return false;
     }
 
-    // Only report Pod Network metrics (virtual interfaces)
-    if !interface.is_virtual() {
-        debug!("Skipping non-virtual interface: {}", interface.name);
-        return false;
+    match compute_platform {
+        ComputePlatform::Ec2Plain => {
+            // On EC2 Plain, report physical (non-virtual) interfaces
+            if interface.is_virtual() {
+                debug!(
+                    "Skipping virtual interface on EC2 Plain: {}",
+                    interface.name
+                );
+                return false;
+            }
+        }
+        ComputePlatform::Ec2K8sEks | ComputePlatform::Ec2K8sVanilla => {
+            // On K8s, only report Pod Network metrics (virtual interfaces)
+            if !interface.is_virtual() {
+                debug!("Skipping non-virtual interface: {}", interface.name);
+                return false;
+            }
+        }
     }
 
     true
@@ -275,7 +297,11 @@ mod tests {
 
         // Test interface not found in flags
         let interface = HostInterface::new("test0".to_string(), false);
-        assert!(!should_include_interface(&interface, &flags));
+        assert!(!should_include_interface(
+            &interface,
+            &flags,
+            &ComputePlatform::Ec2K8sEks
+        ));
 
         // Test loopback interface (should be excluded)
         flags.insert(
@@ -283,12 +309,20 @@ mod tests {
             InterfaceFlags::LOOPBACK | InterfaceFlags::UP,
         );
         let loopback = HostInterface::new("lo".to_string(), true);
-        assert!(!should_include_interface(&loopback, &flags));
+        assert!(!should_include_interface(
+            &loopback,
+            &flags,
+            &ComputePlatform::Ec2K8sEks
+        ));
 
         // Test non-UP interface (should be excluded)
         flags.insert("down0".to_string(), InterfaceFlags::empty());
         let down_interface = HostInterface::new("down0".to_string(), true);
-        assert!(!should_include_interface(&down_interface, &flags));
+        assert!(!should_include_interface(
+            &down_interface,
+            &flags,
+            &ComputePlatform::Ec2K8sEks
+        ));
     }
 
     #[test]
@@ -325,25 +359,67 @@ mod tests {
     fn test_should_include_interface_virtual_up() {
         let mut flags = HashMap::new();
 
-        // Test virtual interface that is UP (should be included)
+        // Test virtual interface that is UP (should be included on K8s)
         flags.insert("veth123".to_string(), InterfaceFlags::UP);
         let veth_interface = HostInterface::new("veth123".to_string(), true);
-        assert!(should_include_interface(&veth_interface, &flags));
+        assert!(should_include_interface(
+            &veth_interface,
+            &flags,
+            &ComputePlatform::Ec2K8sEks
+        ));
 
-        // Test docker interface that is UP (should be included)
+        // Test docker interface that is UP (should be included on K8s)
         flags.insert("docker0".to_string(), InterfaceFlags::UP);
         let docker_interface = HostInterface::new("docker0".to_string(), true);
-        assert!(should_include_interface(&docker_interface, &flags));
+        assert!(should_include_interface(
+            &docker_interface,
+            &flags,
+            &ComputePlatform::Ec2K8sEks
+        ));
     }
 
     #[test]
     fn test_should_include_interface_physical() {
         let mut flags = HashMap::new();
 
-        // Test physical interface (should be excluded even if UP)
+        // Test physical interface (should be excluded on K8s)
         flags.insert("eth0".to_string(), InterfaceFlags::UP);
         let eth_interface = HostInterface::new("eth0".to_string(), false);
-        assert!(!should_include_interface(&eth_interface, &flags));
+        assert!(!should_include_interface(
+            &eth_interface,
+            &flags,
+            &ComputePlatform::Ec2K8sEks
+        ));
+
+        // Test physical interface (should be included on EC2 Plain)
+        assert!(should_include_interface(
+            &eth_interface,
+            &flags,
+            &ComputePlatform::Ec2Plain
+        ));
+    }
+
+    #[test]
+    fn test_should_include_interface_ec2_plain() {
+        let mut flags = HashMap::new();
+
+        // Physical interface UP on EC2 Plain — should be included
+        flags.insert("eth0".to_string(), InterfaceFlags::UP);
+        let eth_interface = HostInterface::new("eth0".to_string(), false);
+        assert!(should_include_interface(
+            &eth_interface,
+            &flags,
+            &ComputePlatform::Ec2Plain
+        ));
+
+        // Virtual interface UP on EC2 Plain — should be excluded
+        let veth_interface = HostInterface::new("veth123".to_string(), true);
+        flags.insert("veth123".to_string(), InterfaceFlags::UP);
+        assert!(!should_include_interface(
+            &veth_interface,
+            &flags,
+            &ComputePlatform::Ec2Plain
+        ));
     }
 
     #[test]
@@ -485,7 +561,11 @@ mod tests {
             InterfaceFlags::UP | InterfaceFlags::RUNNING | InterfaceFlags::BROADCAST,
         );
         let veth_interface = HostInterface::new("veth456".to_string(), true);
-        assert!(should_include_interface(&veth_interface, &flags));
+        assert!(should_include_interface(
+            &veth_interface,
+            &flags,
+            &ComputePlatform::Ec2K8sEks
+        ));
 
         // Test loopback with UP flag (should still be excluded)
         flags.insert(
@@ -493,6 +573,10 @@ mod tests {
             InterfaceFlags::LOOPBACK | InterfaceFlags::UP | InterfaceFlags::RUNNING,
         );
         let loopback = HostInterface::new("lo".to_string(), true);
-        assert!(!should_include_interface(&loopback, &flags));
+        assert!(!should_include_interface(
+            &loopback,
+            &flags,
+            &ComputePlatform::Ec2K8sEks
+        ));
     }
 }

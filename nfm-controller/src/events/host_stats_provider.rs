@@ -20,6 +20,7 @@ pub struct HostStats {
 #[derive(Clone, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct GroupedInterfaceStats {
     pub interface_id: String,
+    pub device_name: String,
     pub stats: NetworkInterfaceStats,
 }
 
@@ -137,6 +138,7 @@ impl HostStatsProviderImpl {
             .into_iter()
             .map(|(net_dev, stats)| GroupedInterfaceStats {
                 interface_id: net_dev.interface_id,
+                device_name: net_dev.device_name,
                 stats,
             })
             .collect();
@@ -394,6 +396,7 @@ mod test {
                 // eth1 values show no change after command failure.
                 GroupedInterfaceStats {
                     interface_id: "id1".to_string(),
+                    device_name: "eth1".to_string(),
                     stats: NetworkInterfaceStats {
                         conntrack_allowance_available: 10,
                         ..Default::default()
@@ -402,6 +405,7 @@ mod test {
                 // eth2 values represent the diff on command success.
                 GroupedInterfaceStats {
                     interface_id: "id2".to_string(),
+                    device_name: "eth2".to_string(),
                     stats: NetworkInterfaceStats {
                         linklocal_allowance_exceeded: 1,
                         conntrack_allowance_available: 1010,
