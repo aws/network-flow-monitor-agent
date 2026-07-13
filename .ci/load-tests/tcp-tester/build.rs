@@ -59,7 +59,7 @@ fn build_ebpf(release: bool) {
         bpf_obj_path.to_str().unwrap()
     );
 
-    let target_trip_arg = format!("--target={}", &target_triple);
+    let target_trip_arg = format!("--target={}", target_triple);
     let target_dir_arg = format!("--target-dir={}", target_dir.to_str().unwrap());
     let mut args = vec![
         "build",
