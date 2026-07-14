@@ -378,30 +378,72 @@ jobs:
           .ci/common/scripts/run-ssm.sh 300 "bash -c '
             set -e
 
-            # Wait for cloud-init to finish, then retry package installs if lock is held.
+            # Wait for cloud-init to finish
             if command -v cloud-init &>/dev/null; then
               cloud-init status --wait &>/dev/null 2>&1 || true
             fi
 
-            # Install AWS CLI and dependencies if not present
+            # --- Helper functions ---
+
+            # Check if a package manager lock is currently held.
+            is_lock_held() {
+              case ${PKG_MANAGER} in
+                dnf)
+                  fuser /var/lib/rpm/.rpm.lock &>/dev/null 2>&1 || \
+                  fuser /var/lib/dnf/lock &>/dev/null 2>&1 || \
+                  fuser /var/cache/dnf/metadata.lock &>/dev/null 2>&1
+                  ;;
+                zypper)
+                  fuser /var/run/zypp.pid &>/dev/null 2>&1 || \
+                  fuser /var/lib/rpm/.rpm.lock &>/dev/null 2>&1
+                  ;;
+                apt)
+                  fuser /var/lib/dpkg/lock-frontend &>/dev/null 2>&1 || \
+                  fuser /var/lib/apt/lists/lock &>/dev/null 2>&1
+                  ;;
+                *) return 1 ;;
+              esac
+            }
+
+            # Wait up to 60s for the package manager lock to be released.
+            wait_for_lock() {
+              local elapsed=0
+              while is_lock_held && [ \$elapsed -lt 60 ]; do
+                echo \"  Waiting for package manager lock (\${elapsed}s/60s)...\"
+                sleep 5
+                elapsed=\$((elapsed + 5))
+              done
+            }
+
+            # Retry a command up to 3 times, waiting for lock before each attempt.
+            retry_with_lock() {
+              local attempt=0
+              while [ \$attempt -lt 3 ]; do
+                attempt=\$((attempt + 1))
+                wait_for_lock
+                if \"\$@\"; then
+                  return 0
+                fi
+                echo \"Command failed (attempt \${attempt}/3): \$*\"
+                [ \$attempt -lt 3 ] && sleep 10
+              done
+              echo \"FATAL: command failed after 3 attempts: \$*\"
+              return 1
+            }
+
+            # --- Install AWS CLI and dependencies ---
+
             if ! command -v aws &>/dev/null; then
               case ${PKG_MANAGER} in
                 dnf)
                   rm -rf /var/cache/dnf/*
-                  for attempt in \$(seq 1 12); do
-                    if dnf install -y --allowerasing awscli python3 libcap; then
-                      break
-                    fi
-                    echo \"dnf install failed (attempt \${attempt}/12), retrying in 10s...\"
-                    sleep 10
-                  done
+                  retry_with_lock dnf install -y --allowerasing awscli python3 libcap
                   ;;
                 zypper)
-                  zypper install -y aws-cli curl libcap-progs
+                  retry_with_lock zypper install -y aws-cli curl libcap-progs
                   ;;
                 apt)
-                  apt-get update
-                  apt-get install -y curl unzip libcap2-bin python3
+                  retry_with_lock bash -c \"apt-get update && apt-get install -y curl unzip libcap2-bin python3\"
                   curl -sSL https://awscli.amazonaws.com/awscli-exe-linux-\$(uname -m).zip -o /tmp/awscliv2.zip
                   unzip -q /tmp/awscliv2.zip -d /tmp
                   /tmp/aws/install
@@ -411,11 +453,13 @@ jobs:
             else
               # Ensure setcap is available even if aws cli was pre-installed
               case ${PKG_MANAGER} in
-                zypper) zypper install -y libcap-progs 2>/dev/null || true ;;
-                apt) apt-get update && apt-get install -y libcap2-bin 2>/dev/null || true ;;
-                dnf) dnf install -y libcap 2>/dev/null || true ;;
+                zypper) retry_with_lock zypper install -y libcap-progs || true ;;
+                apt) retry_with_lock bash -c \"apt-get update && apt-get install -y libcap2-bin\" || true ;;
+                dnf) retry_with_lock dnf install -y libcap || true ;;
               esac
             fi
+
+            # --- Download artifacts ---
 
             mkdir -p /tmp/nfm-artifacts /tmp/nfm-ci/tests/ec2-test-scripts /tmp/nfm-ci/tests/tools
 
@@ -429,8 +473,10 @@ jobs:
             chmod +x /tmp/nfm-ci/tests/ec2-test-scripts/*.sh 2>/dev/null || true
             chmod +x /tmp/nfm-ci/tests/integration-test-01-basic
 
+            # --- Install agent ---
+
             if [ \"${PKG_TYPE}\" = \"rpm\" ]; then
-              rpm -ivh /tmp/nfm-artifacts/network-flow-monitor-agent.rpm
+              retry_with_lock rpm -ivh /tmp/nfm-artifacts/network-flow-monitor-agent.rpm
               timeout 30 bash -c \"until systemctl is-active --quiet network-flow-monitor.service; do sleep 1; done\"
               systemctl status network-flow-monitor.service --no-pager
               echo \"Service is RUNNING\"
