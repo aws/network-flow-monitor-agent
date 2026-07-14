@@ -55,7 +55,7 @@ impl OpenMetricsServerConfig {
         k8s_metadata: Option<Arc<KubernetesMetadataCollector>>,
     ) -> Self {
         let ip = IpAddr::from_str(&addr)
-            .expect(&format!("Invalid OpenMetrics server address: {}", addr));
+            .unwrap_or_else(|_| panic!("Invalid OpenMetrics server address: {}", addr));
         Self {
             addr: SocketAddr::new(ip, port),
             k8s_metadata,

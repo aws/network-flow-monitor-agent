@@ -33,6 +33,26 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+  # Security audit of dependencies
+  audit:
+    name: Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+
+      - name: Run security audit
+        run: cargo audit
+
   # Unit tests in release mode
   test:
     name: Test
