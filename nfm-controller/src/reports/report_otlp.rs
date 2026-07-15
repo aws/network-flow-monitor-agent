@@ -180,6 +180,7 @@ impl NfmReportOTLP {
                     value: Some(AnyValue {
                         value: Some(value.into()),
                     }),
+                    key_strindex: 0,
                 });
             }
 
@@ -214,6 +215,7 @@ impl NfmReportOTLP {
                 value: Some(AnyValue {
                     value: Some(Value::StringValue(grouped_stats.interface_id.clone())),
                 }),
+                key_strindex: 0,
             });
 
             // List of metrics for the flow
@@ -332,6 +334,7 @@ impl NfmReportOTLP {
             value: Some(AnyValue {
                 value: Some(value.clone().into()),
             }),
+            key_strindex: 0,
         });
     }
 

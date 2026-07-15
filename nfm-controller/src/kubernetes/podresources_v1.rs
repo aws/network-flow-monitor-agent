@@ -57,7 +57,7 @@ pub mod pod_resources_lister_client {
 
     impl<T> PodResourcesListerClient<T>
     where
-        T: tonic::client::GrpcService<tonic::body::BoxBody>,
+        T: tonic::client::GrpcService<tonic::body::Body>,
         T::Error: Into<Box<dyn std::error::Error + Send + Sync>> + std::fmt::Display,
         T::ResponseBody: tonic::codegen::Body<Data = tonic::codegen::Bytes> + Send + 'static,
         <T::ResponseBody as tonic::codegen::Body>::Error:
@@ -70,7 +70,7 @@ pub mod pod_resources_lister_client {
             self.inner.ready().await.map_err(|e| {
                 tonic::Status::new(tonic::Code::Unknown, format!("Service not ready: {}", e))
             })?;
-            let codec = tonic::codec::ProstCodec::default();
+            let codec = tonic_prost::ProstCodec::default();
             let path =
                 tonic::codegen::http::uri::PathAndQuery::from_static("/v1.PodResourcesLister/List");
             self.inner.unary(request.into_request(), path, codec).await
