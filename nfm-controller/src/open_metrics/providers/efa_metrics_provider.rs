@@ -637,7 +637,7 @@ mod tests {
         for mf in &metric_families {
             for metric in mf.get_metric() {
                 assert_eq!(
-                    metric.get_gauge().get_value(),
+                    metric.get_gauge().value(),
                     0.0,
                     "First scrape should return 0 delta for {}",
                     mf.get_name()
@@ -662,7 +662,7 @@ mod tests {
         for mf in &metric_families {
             for metric in mf.get_metric() {
                 assert_eq!(
-                    metric.get_gauge().get_value(),
+                    metric.get_gauge().value(),
                     58.0,
                     "Delta should be 58 for {}",
                     mf.get_name()
@@ -684,7 +684,7 @@ mod tests {
         let metric_families = registry.gather();
         for mf in &metric_families {
             for metric in mf.get_metric() {
-                assert_eq!(metric.get_gauge().get_value(), 0.0);
+                assert_eq!(metric.get_gauge().value(), 0.0);
             }
         }
     }
@@ -708,7 +708,7 @@ mod tests {
         for mf in &metric_families {
             for metric in mf.get_metric() {
                 assert_eq!(
-                    metric.get_gauge().get_value(),
+                    metric.get_gauge().value(),
                     5.0,
                     "Counter reset should return current value for {}",
                     mf.get_name()
@@ -735,7 +735,7 @@ mod tests {
         for mf in &metric_families {
             for metric in mf.get_metric() {
                 assert_eq!(
-                    metric.get_gauge().get_value(),
+                    metric.get_gauge().value(),
                     10.0,
                     "Delta should be 10 for {}",
                     mf.get_name()
@@ -827,7 +827,7 @@ mod tests {
             let values: Vec<f64> = mf
                 .get_metric()
                 .iter()
-                .map(|m| m.get_gauge().get_value())
+                .map(|m| m.get_gauge().value())
                 .collect();
             let mut sorted = values.clone();
             sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -870,7 +870,7 @@ mod tests {
             let values: Vec<f64> = mf
                 .get_metric()
                 .iter()
-                .map(|m| m.get_gauge().get_value())
+                .map(|m| m.get_gauge().value())
                 .collect();
             let mut sorted = values.clone();
             sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());

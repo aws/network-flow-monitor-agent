@@ -1089,7 +1089,7 @@ mod tests {
         for family in &metric_families {
             let metric_name = family.get_name();
             for metric in family.get_metric() {
-                let value = metric.get_gauge().get_value();
+                let value = metric.get_gauge().value();
 
                 let mut iface = "";
                 let mut instance_id = "";
@@ -1343,7 +1343,7 @@ mod tests {
             .unwrap();
 
         // Value is 100 (recv_packets for eth0) — no swap applied
-        assert_eq!(eth0_metric.get_gauge().get_value(), 100.0);
+        assert_eq!(eth0_metric.get_gauge().value(), 100.0);
 
         // Find eth0 egress packets — should be sent_packets (200)
         let egress_pkt_family = metric_families
@@ -1361,6 +1361,6 @@ mod tests {
             })
             .unwrap();
 
-        assert_eq!(eth0_egress.get_gauge().get_value(), 200.0);
+        assert_eq!(eth0_egress.get_gauge().value(), 200.0);
     }
 }

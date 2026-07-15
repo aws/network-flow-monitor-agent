@@ -1,0 +1,216 @@
+# EC2 integration test for the open-metrics feature.
+# Builds the agent with --features open-metrics, deploys to an AL2023 instance,
+# and validates the Prometheus metrics endpoint (system metrics, interface metrics, labels).
+name: Integration Tests (EC2 Open Metrics)
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'nfm-controller/src/open_metrics/**'
+      - 'nfm-controller/Cargo.toml'
+      - '.ci/integration-tests/ec2-scripts/run-open-metrics-test.sh'
+      - '.github/workflows/integration-tests-ec2-open-metrics.yml'
+
+concurrency:
+  group: integration-tests-ec2-open-metrics-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build:
+    name: Build (x86_64, open-metrics)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    outputs:
+      s3-prefix: ${{ steps.upload.outputs.s3-prefix }}
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.PR_PERF_TEST_AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.PR_PERF_TEST_AWS_REGION }}
+          mask-aws-account-id: true
+
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Upload source to S3
+        id: upload
+        run: |
+          S3_PREFIX="integration-tests/open-metrics/${{ github.run_id }}/${{ github.run_attempt }}"
+          echo "s3-prefix=${S3_PREFIX}" >> "$GITHUB_OUTPUT"
+
+          BUCKET="${{ secrets.PR_PERF_TEST_BUCKET }}"
+
+          tar czf /tmp/nfm-source.tar.gz \
+            --exclude='.git' \
+            --exclude='target' \
+            --exclude='out' \
+            .
+
+          aws s3 cp /tmp/nfm-source.tar.gz \
+            "s3://${BUCKET}/${S3_PREFIX}/nfm-source.tar.gz"
+
+      - name: Create build instance
+        id: ec2
+        run: |
+          REGION="${{ secrets.PR_PERF_TEST_AWS_REGION }}"
+          AMI_ID=$(.ci/common/scripts/resolve-ami.sh "$REGION" "amzn2-ami-kernel-5.10-hvm-*-x86_64-gp2")
+
+          .ci/common/scripts/launch-instance.sh \
+            --ami-id "$AMI_ID" \
+            --instance-type "c5.xlarge" \
+            --region "$REGION" \
+            --instance-role "${{ secrets.PR_PERF_TEST_INSTANCE_ROLE }}" \
+            --block-device '[{"DeviceName":"/dev/xvda","Ebs":{"VolumeSize":30,"VolumeType":"gp3"}}]' \
+            --tags '[{Key=Name,Value=nfm-build-open-metrics-${{ github.run_id }}},{Key=Purpose,Value=integration-testing}]'
+
+      - name: Wait for SSM readiness
+        run: |
+          .ci/common/scripts/wait-ssm.sh "${{ steps.ec2.outputs.instance-id }}" "$SSM_REGION" 180
+
+      - name: Build agent with open-metrics feature
+        run: |
+          BUCKET="${{ secrets.PR_PERF_TEST_BUCKET }}"
+          S3_PREFIX="${{ steps.upload.outputs.s3-prefix }}"
+
+          .ci/common/scripts/run-ssm.sh 900 "bash -c '
+            set -e
+            export HOME=/root
+
+            yum update -y
+            yum install -y gcc git cmake rpm-build awscli
+            curl --proto \"=https\" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+            . /root/.cargo/env
+
+            mkdir -p /tmp/nfm-build && cd /tmp/nfm-build
+            aws s3 cp s3://${BUCKET}/${S3_PREFIX}/nfm-source.tar.gz ./nfm-source.tar.gz
+            tar xzf nfm-source.tar.gz
+
+            cargo build --release --features open-metrics
+
+            echo \"=== Build complete ===\"
+            ls -la target/release/network-flow-monitor-agent
+
+            aws s3 cp target/release/network-flow-monitor-agent s3://${BUCKET}/${S3_PREFIX}/x86_64/network-flow-monitor-agent
+          '"
+
+      - name: Upload test scripts to S3
+        run: |
+          BUCKET="${{ secrets.PR_PERF_TEST_BUCKET }}"
+          S3_PREFIX="${{ steps.upload.outputs.s3-prefix }}"
+
+          aws s3 cp .ci/integration-tests/ec2-scripts/ \
+            "s3://${BUCKET}/${S3_PREFIX}/ec2-test-scripts/" --recursive
+
+      - name: Terminate build instance
+        if: always()
+        run: .ci/common/scripts/terminate-instance.sh
+
+  test:
+    name: Test Open Metrics (AL2023)
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.PR_PERF_TEST_AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.PR_PERF_TEST_AWS_REGION }}
+          mask-aws-account-id: true
+
+      - name: Resolve AMI
+        id: ami
+        run: |
+          AMI_ID=$(.ci/common/scripts/resolve-ami.sh \
+            "${{ secrets.PR_PERF_TEST_AWS_REGION }}" \
+            "al2023-ami-*-kernel-6.1-x86_64")
+          echo "ami-id=${AMI_ID}" >> "$GITHUB_OUTPUT"
+
+      - name: Create EC2 instance
+        id: ec2
+        run: |
+          .ci/common/scripts/launch-instance.sh \
+            --ami-id "${{ steps.ami.outputs.ami-id }}" \
+            --instance-type "t3.medium" \
+            --region "${{ secrets.PR_PERF_TEST_AWS_REGION }}" \
+            --instance-role "${{ secrets.PR_PERF_TEST_INSTANCE_ROLE }}" \
+            --tags '[{Key=Name,Value=nfm-open-metrics-test-${{ github.run_id }}},{Key=Purpose,Value=integration-testing}]'
+
+      - name: Wait for instance + SSM readiness
+        run: |
+          .ci/common/scripts/wait-ssm.sh "${{ steps.ec2.outputs.instance-id }}" "$SSM_REGION" 300
+
+      - name: Install agent binary
+        run: |
+          BUCKET="${{ secrets.PR_PERF_TEST_BUCKET }}"
+          S3_PREFIX="${{ needs.build.outputs.s3-prefix }}"
+
+          .ci/common/scripts/run-ssm.sh 120 "bash -c '
+            set -e
+            yum install -y --allowerasing libcap
+
+            mkdir -p /tmp/nfm-artifacts /tmp/nfm-ci/tests/ec2-test-scripts
+            aws s3 cp s3://${BUCKET}/${S3_PREFIX}/x86_64/network-flow-monitor-agent /tmp/nfm-artifacts/
+            aws s3 cp s3://${BUCKET}/${S3_PREFIX}/ec2-test-scripts/ /tmp/nfm-ci/tests/ec2-test-scripts/ --recursive
+
+            chmod +x /tmp/nfm-artifacts/network-flow-monitor-agent
+            chmod +x /tmp/nfm-ci/tests/ec2-test-scripts/*.sh
+
+            cp /tmp/nfm-artifacts/network-flow-monitor-agent /usr/local/sbin/
+            setcap cap_sys_admin,cap_bpf=eip /usr/local/sbin/network-flow-monitor-agent 2>/dev/null || \
+              setcap cap_sys_admin,39=eip /usr/local/sbin/network-flow-monitor-agent
+
+            echo \"Agent installed with BPF capabilities\"
+          '"
+
+      - name: Run open-metrics integration test
+        run: |
+          .ci/common/scripts/run-ssm.sh 120 "bash /tmp/nfm-ci/tests/ec2-test-scripts/run-open-metrics-test.sh"
+
+      - name: Terminate EC2 instance
+        if: always()
+        run: .ci/common/scripts/terminate-instance.sh
+
+  cleanup-s3:
+    name: Cleanup S3 Artifacts
+    needs: [build, test]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.PR_PERF_TEST_AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.PR_PERF_TEST_AWS_REGION }}
+          mask-aws-account-id: true
+
+      - name: Remove artifacts from S3
+        run: |
+          aws s3 rm "s3://${{ secrets.PR_PERF_TEST_BUCKET }}/${{ needs.build.outputs.s3-prefix }}/" --recursive || true
+
+  gate:
+    name: Integration Tests (EC2 Open Metrics) Gate
+    needs: [build, test]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check test results
+        run: |
+          if [ "${{ needs.build.result }}" = "failure" ] || [ "${{ needs.test.result }}" = "failure" ]; then
+            echo "::error::Open metrics integration test failed"
+            exit 1
+          fi
+          echo "Open metrics integration test passed"
