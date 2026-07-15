@@ -18,8 +18,7 @@ use std::sync::Arc;
 use crate::{
     kubernetes::kubernetes_metadata_collector::KubernetesMetadataCollector,
     metadata::{
-        eni::EniMetadataProvider, env_metadata_provider::EnvMetadataProvider,
-        imds_utils::retrieve_instance_id, k8s_metadata::K8sMetadata,
+        eni::EniMetadataProvider, imds_utils::retrieve_instance_id, k8s_metadata::K8sMetadata,
         runtime_environment_metadata::ComputePlatform,
     },
     open_metrics::{
@@ -239,7 +238,6 @@ impl InterfaceMetricsProvider {
             .keys()
             .any(|iface| !iface.is_virtual() && !self.iface_to_eni.contains_key(&iface.name))
         {
-            self.eni_metadata_provider.refresh();
             self.iface_to_eni = self
                 .eni_metadata_provider
                 .get_network_devices()

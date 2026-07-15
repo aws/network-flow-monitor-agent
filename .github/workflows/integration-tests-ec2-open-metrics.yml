@@ -157,7 +157,7 @@ jobs:
 
           .ci/common/scripts/run-ssm.sh 120 "bash -c '
             set -e
-            yum install -y curl libcap
+            yum install -y --allowerasing libcap
 
             mkdir -p /tmp/nfm-artifacts /tmp/nfm-ci/tests/ec2-test-scripts
             aws s3 cp s3://${BUCKET}/${S3_PREFIX}/x86_64/network-flow-monitor-agent /tmp/nfm-artifacts/

@@ -4,8 +4,7 @@
 use crate::{
     events::host_stats_provider::{HostStatsProvider, HostStatsProviderImpl},
     metadata::{
-        eni::EniMetadataProvider, env_metadata_provider::EnvMetadataProvider,
-        imds_utils::retrieve_instance_id, k8s_metadata::K8sMetadata,
+        eni::EniMetadataProvider, imds_utils::retrieve_instance_id, k8s_metadata::K8sMetadata,
         runtime_environment_metadata::ComputePlatform,
     },
     open_metrics::{
@@ -92,7 +91,6 @@ impl SystemMetricsProvider {
     }
 
     fn get_metrics(&mut self) -> Vec<SystemMetric> {
-        self.eni_metadata_provider.refresh();
         self.host_stats_provider
             .set_network_devices(&self.eni_metadata_provider.get_network_devices());
         let mut metrics = vec![];

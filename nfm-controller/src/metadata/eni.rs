@@ -77,6 +77,17 @@ impl EniMetadataProvider {
             }
         }
 
+        let known_macs: std::collections::HashSet<&str> =
+            self.network.iter().map(|n| n.mac.as_str()).collect();
+
+        let has_unknown_mac = mac_to_device
+            .keys()
+            .any(|mac| !known_macs.contains(mac.as_str()));
+
+        if has_unknown_mac {
+            self.network = retrieve_network_information(&self.client);
+        }
+
         let mut net_devices: Vec<NetworkDevice> = Vec::new();
         for net_info in &self.network {
             if let Some(dev_name) = mac_to_device.get(&net_info.mac) {
