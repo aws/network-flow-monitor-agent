@@ -147,6 +147,11 @@ pub struct EfaMetricsProvider {
     /// Used to compute per-scrape deltas via wrapping_sub.
     previous_values: HashMap<String, Vec<u64>>,
 
+    /// Tracks the label values last emitted for each device/port key.
+    /// Used to detect label changes (pod reassignment) and device disappearance
+    /// so we can remove stale Prometheus series via `remove_label_values`.
+    previous_labels: HashMap<String, Vec<String>>,
+
     /// Shared mapping from EFA device IDs to pod info, populated by the
     /// EfaPodResourcesWatcher when the EFA device plugin is present.
     device_to_pod_map: Option<Arc<Mutex<EfaDeviceToPodMap>>>,
@@ -210,6 +215,7 @@ impl EfaMetricsProvider {
             srd_gauges,
             srd_available,
             previous_values: HashMap::new(),
+            previous_labels: HashMap::new(),
             device_to_pod_map,
         };
 
@@ -361,6 +367,20 @@ impl EfaMetricsProvider {
             .map(|info| (info.pod_name.clone(), info.pod_namespace.clone()))
             .unwrap_or_else(|| ("unknown".to_string(), "unknown".to_string()))
     }
+
+    fn remove_series_for_labels(&self, old_labels: &[String]) {
+        let label_refs: Vec<&str> = old_labels.iter().map(|s| s.as_str()).collect();
+        for gauge in &self.standard_gauges {
+            if let Err(e) = gauge.remove_label_values(&label_refs) {
+                debug!("Failed to remove stale EFA standard series: {}", e);
+            }
+        }
+        for gauge in &self.srd_gauges {
+            if let Err(e) = gauge.remove_label_values(&label_refs) {
+                debug!("Failed to remove stale EFA SRD series: {}", e);
+            }
+        }
+    }
 }
 
 fn strip_efa_prefix(prefixed_name: &str) -> &str {
@@ -407,7 +427,19 @@ impl OpenMetricProvider for EfaMetricsProvider {
         let device_ports = self.discover_device_ports();
         let active_keys: Vec<String> = device_ports.iter().map(|(d, p)| cache_key(d, p)).collect();
 
-        // Remove stale entries for device/port combos that no longer exist.
+        // Remove stale Prometheus series for device/port combos that disappeared.
+        let stale_keys: Vec<String> = self
+            .previous_labels
+            .keys()
+            .filter(|k| !active_keys.contains(k))
+            .cloned()
+            .collect();
+        for key in &stale_keys {
+            if let Some(old_labels) = self.previous_labels.remove(key) {
+                self.remove_series_for_labels(&old_labels);
+            }
+        }
+
         self.previous_values.retain(|k, _| active_keys.contains(k));
 
         for (device, port) in &device_ports {
@@ -420,6 +452,19 @@ impl OpenMetricProvider for EfaMetricsProvider {
                 .unwrap_or_else(|| vec![0; self.total_metrics_count()]);
 
             let label_values = self.label_values(device, port);
+
+            // Remove stale series when pod attribution changes (K8s only).
+            if matches!(
+                self.compute_platform,
+                ComputePlatform::Ec2K8sEks | ComputePlatform::Ec2K8sVanilla
+            ) {
+                if let Some(old_labels) = self.previous_labels.get(&key) {
+                    if *old_labels != label_values {
+                        self.remove_series_for_labels(old_labels);
+                    }
+                }
+            }
+
             let label_refs: Vec<&str> = label_values.iter().map(|s| s.as_str()).collect();
 
             for (i, _) in STANDARD_METRICS.iter().enumerate() {
@@ -439,6 +484,7 @@ impl OpenMetricProvider for EfaMetricsProvider {
                 }
             }
 
+            self.previous_labels.insert(key.clone(), label_values);
             self.previous_values.insert(key, current_values);
         }
 
@@ -517,6 +563,7 @@ mod tests {
             srd_gauges,
             srd_available,
             previous_values: HashMap::new(),
+            previous_labels: HashMap::new(),
             device_to_pod_map,
         };
 
@@ -1008,5 +1055,262 @@ mod tests {
                 "unknown"
             ]
         );
+    }
+
+    #[test]
+    fn test_stale_series_removed_on_pod_change() {
+        use crate::kubernetes::efa_pod_resources::EfaPodInfo;
+
+        let tmp = create_mock_sysfs(false);
+        let device_map = EfaDeviceToPodMap::new();
+        let pod_map = Arc::new(Mutex::new(device_map));
+
+        let mut provider = create_provider_with_mock_and_pod_map(
+            &tmp,
+            ComputePlatform::Ec2K8sEks,
+            Some(pod_map.clone()),
+        );
+        let mut registry = Registry::new();
+        provider.register_to(&mut registry);
+
+        // First scrape: pod is unknown
+        write_counters(&tmp, "rdmap0s31", 100, None);
+        let _ = provider.update_metrics();
+
+        let families = registry.gather();
+        for mf in &families {
+            assert_eq!(
+                mf.get_metric().len(),
+                1,
+                "Should have exactly 1 series for {}",
+                mf.get_name()
+            );
+        }
+
+        // Simulate pod assignment: watcher resolves device to a real pod
+        {
+            let mut map = pod_map.lock().unwrap();
+            map.insert(
+                "rdmap0s31".to_string(),
+                EfaPodInfo {
+                    pod_name: "efa-workload".to_string(),
+                    pod_namespace: "efa-test".to_string(),
+                },
+            );
+        }
+
+        write_counters(&tmp, "rdmap0s31", 200, None);
+        let _ = provider.update_metrics();
+
+        // After pod change, the old "unknown" series should be removed.
+        // Only the new series with "efa-workload" should remain.
+        let families = registry.gather();
+        for mf in &families {
+            assert_eq!(
+                mf.get_metric().len(),
+                1,
+                "Stale series not cleaned up for {}",
+                mf.get_name()
+            );
+            let metric = &mf.get_metric()[0];
+            let labels: Vec<(&str, &str)> = metric
+                .get_label()
+                .iter()
+                .map(|l| (l.get_name(), l.get_value()))
+                .collect();
+            assert!(
+                labels.contains(&("pod", "efa-workload")),
+                "Expected pod=efa-workload in labels for {}, got {:?}",
+                mf.get_name(),
+                labels
+            );
+        }
+    }
+
+    #[test]
+    fn test_stale_series_removed_on_device_disappear() {
+        let tmp = TempDir::new().unwrap();
+        let dev1_counters = hw_counters_path(tmp.path(), "rdmap0s31", TEST_PORT);
+        let dev2_counters = hw_counters_path(tmp.path(), "rdmap1s32", TEST_PORT);
+        fs::create_dir_all(&dev1_counters).unwrap();
+        fs::create_dir_all(&dev2_counters).unwrap();
+
+        for (metric_name, _) in STANDARD_METRICS {
+            let sysfs_name = strip_efa_prefix(metric_name);
+            fs::write(dev1_counters.join(sysfs_name), "100\n").unwrap();
+            fs::write(dev2_counters.join(sysfs_name), "200\n").unwrap();
+        }
+
+        let mut provider = create_provider_with_mock(&tmp, ComputePlatform::Ec2Plain);
+        let mut registry = Registry::new();
+        provider.register_to(&mut registry);
+
+        // First scrape: both devices present
+        for (metric_name, _) in STANDARD_METRICS {
+            let sysfs_name = strip_efa_prefix(metric_name);
+            fs::write(dev1_counters.join(sysfs_name), "110\n").unwrap();
+            fs::write(dev2_counters.join(sysfs_name), "250\n").unwrap();
+        }
+        let _ = provider.update_metrics();
+
+        let families = registry.gather();
+        for mf in &families {
+            assert_eq!(mf.get_metric().len(), 2, "Should have 2 devices initially");
+        }
+
+        // Remove device2 from sysfs
+        fs::remove_dir_all(tmp.path().join("rdmap1s32")).unwrap();
+
+        for (metric_name, _) in STANDARD_METRICS {
+            let sysfs_name = strip_efa_prefix(metric_name);
+            fs::write(dev1_counters.join(sysfs_name), "120\n").unwrap();
+        }
+        let _ = provider.update_metrics();
+
+        // After device disappears, its series should be removed
+        let families = registry.gather();
+        for mf in &families {
+            assert_eq!(
+                mf.get_metric().len(),
+                1,
+                "Stale device series not cleaned up for {}",
+                mf.get_name()
+            );
+        }
+    }
+
+    #[test]
+    fn test_pod_reassignment_between_real_pods() {
+        use crate::kubernetes::efa_pod_resources::EfaPodInfo;
+
+        let tmp = create_mock_sysfs(false);
+        let mut device_map = EfaDeviceToPodMap::new();
+        device_map.insert(
+            "rdmap0s31".to_string(),
+            EfaPodInfo {
+                pod_name: "pod-a".to_string(),
+                pod_namespace: "ns-a".to_string(),
+            },
+        );
+        let pod_map = Arc::new(Mutex::new(device_map));
+
+        let mut provider = create_provider_with_mock_and_pod_map(
+            &tmp,
+            ComputePlatform::Ec2K8sEks,
+            Some(pod_map.clone()),
+        );
+        let mut registry = Registry::new();
+        provider.register_to(&mut registry);
+
+        // First scrape with pod-a
+        write_counters(&tmp, "rdmap0s31", 100, None);
+        let _ = provider.update_metrics();
+
+        // Reassign to pod-b
+        {
+            let mut map = pod_map.lock().unwrap();
+            map.insert(
+                "rdmap0s31".to_string(),
+                EfaPodInfo {
+                    pod_name: "pod-b".to_string(),
+                    pod_namespace: "ns-b".to_string(),
+                },
+            );
+        }
+
+        write_counters(&tmp, "rdmap0s31", 200, None);
+        let _ = provider.update_metrics();
+
+        let families = registry.gather();
+        for mf in &families {
+            assert_eq!(
+                mf.get_metric().len(),
+                1,
+                "Should have exactly 1 series after reassignment for {}",
+                mf.get_name()
+            );
+            let labels: Vec<(&str, &str)> = mf.get_metric()[0]
+                .get_label()
+                .iter()
+                .map(|l| (l.get_name(), l.get_value()))
+                .collect();
+            assert!(
+                labels.contains(&("pod", "pod-b")),
+                "Expected pod=pod-b for {}, got {:?}",
+                mf.get_name(),
+                labels
+            );
+            assert!(
+                !labels.contains(&("pod", "pod-a")),
+                "Stale pod-a series should not exist for {}",
+                mf.get_name()
+            );
+        }
+    }
+
+    #[test]
+    fn test_stale_series_removed_with_srd_on_pod_change() {
+        use crate::kubernetes::efa_pod_resources::EfaPodInfo;
+
+        let tmp = create_mock_sysfs(true);
+        let mut device_map = EfaDeviceToPodMap::new();
+        device_map.insert(
+            "rdmap0s31".to_string(),
+            EfaPodInfo {
+                pod_name: "old-pod".to_string(),
+                pod_namespace: "old-ns".to_string(),
+            },
+        );
+        let pod_map = Arc::new(Mutex::new(device_map));
+
+        let mut provider = create_provider_with_mock_and_pod_map(
+            &tmp,
+            ComputePlatform::Ec2K8sEks,
+            Some(pod_map.clone()),
+        );
+        let mut registry = Registry::new();
+        provider.register_to(&mut registry);
+
+        write_counters(&tmp, "rdmap0s31", 100, Some(50));
+        let _ = provider.update_metrics();
+
+        // Reassign to new-pod
+        {
+            let mut map = pod_map.lock().unwrap();
+            map.insert(
+                "rdmap0s31".to_string(),
+                EfaPodInfo {
+                    pod_name: "new-pod".to_string(),
+                    pod_namespace: "new-ns".to_string(),
+                },
+            );
+        }
+
+        write_counters(&tmp, "rdmap0s31", 200, Some(100));
+        let _ = provider.update_metrics();
+
+        let families = registry.gather();
+        let srd_names: Vec<&str> = SRD_METRICS.iter().map(|(name, _)| *name).collect();
+
+        for mf in &families {
+            assert_eq!(
+                mf.get_metric().len(),
+                1,
+                "Should have exactly 1 series after reassignment for {} (SRD: {})",
+                mf.get_name(),
+                srd_names.contains(&mf.get_name())
+            );
+            let labels: Vec<(&str, &str)> = mf.get_metric()[0]
+                .get_label()
+                .iter()
+                .map(|l| (l.get_name(), l.get_value()))
+                .collect();
+            assert!(
+                labels.contains(&("pod", "new-pod")),
+                "Expected pod=new-pod for {}, got {:?}",
+                mf.get_name(),
+                labels
+            );
+        }
     }
 }
