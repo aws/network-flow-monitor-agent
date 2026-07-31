@@ -148,8 +148,7 @@ pub struct EfaMetricsProvider {
     previous_values: HashMap<String, Vec<u64>>,
 
     /// Tracks the label values last emitted for each device/port key.
-    /// Used to detect label changes (pod reassignment) and device disappearance
-    /// so we can remove stale Prometheus series via `remove_label_values`.
+    /// Used to detect label changes (pod reassignment) and device disappearance.
     previous_labels: HashMap<String, Vec<String>>,
 
     /// Shared mapping from EFA device IDs to pod info, populated by the
