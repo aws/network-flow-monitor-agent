@@ -1,8 +1,8 @@
 {
   "namespace": {
     "organization": "aws",
-    "service": "ssm",
-    "microservice": "networkflowmonitor"
+    "service": "cloudwatch",
+    "microservice": "network-flow-monitor"
   },
   "version": "1.0.0",
   "runtime": "supervised",

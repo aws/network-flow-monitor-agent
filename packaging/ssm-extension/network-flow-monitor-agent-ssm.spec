@@ -11,7 +11,7 @@ Packager:   Amazon Web Services, Inc. <http://aws.amazon.com>
 Vendor:     Amazon Web Services, Inc
 
 %define _build_id_links none
-%define NAMESPACE aws.ssm.networkflowmonitor
+%define NAMESPACE aws.cloudwatch.network-flow-monitor
 %define EXTENSION_BASE /opt/amazon/aws-core-agent
 %define EXTENSION_DIR %{EXTENSION_BASE}/%{NAMESPACE}
 %define CONFIG_DIR /etc/amazon/aws-core-agent
