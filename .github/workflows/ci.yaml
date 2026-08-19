@@ -27,6 +27,11 @@ jobs:
           components: rustfmt, clippy
           override: true
 
+      - name: Install bpf-linker
+        run: |
+          curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+          cargo binstall bpf-linker --no-confirm
+
       - name: Run clippy
         run: cargo clippy -- -D warnings
 
@@ -67,6 +72,11 @@ jobs:
           toolchain: stable
           override: true
 
+      - name: Install bpf-linker
+        run: |
+          curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+          cargo binstall bpf-linker --no-confirm
+
       - name: Run tests
         run: cargo test --release
 
@@ -83,6 +93,11 @@ jobs:
           profile: minimal
           toolchain: stable
           override: true
+
+      - name: Install bpf-linker
+        run: |
+          curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+          cargo binstall bpf-linker --no-confirm
 
       - name: Install tarpaulin
         run: cargo install cargo-tarpaulin
@@ -122,6 +137,11 @@ jobs:
           profile: minimal
           toolchain: stable
           override: true
+
+      - name: Install bpf-linker
+        run: |
+          curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+          cargo binstall bpf-linker --no-confirm
 
       - name: Check environment
         run: |

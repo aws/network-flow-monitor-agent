@@ -4,6 +4,10 @@ Release:    1
 Version:    %AGENT_VERSION
 Requires:   /usr/sbin/setcap, bash
 
+# Satisfy auto-generated user/group dependencies in RPM 6.0+
+Provides:   user(networkflowmonitor)
+Provides:   group(networkflowmonitor-group)
+
 Group:      Amazon/Tools
 License:    Apache License, Version 2.0
 URL:        https://github.com/aws/network-flow-monitor-agent
@@ -47,6 +51,7 @@ getent passwd %{NFM_USER} >/dev/null || useradd -r -g %{NFM_GROUP} -d %{PKG_ROOT
 
 #### Install scripts
 %install
+mkdir -p %{_builddir}/%{name}-%{version}-build
 mkdir -p %{buildroot}%{PKG_ROOT_DIR}
 mkdir -p %{_topdir}/RPMS
 mkdir -p %{_topdir}/BUILD

@@ -67,6 +67,11 @@ jobs:
           toolchain: stable
           override: true
 
+      - name: Install bpf-linker
+        run: |
+          curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+          cargo binstall bpf-linker --no-confirm
+
       - name: Cache Rust build artifacts
         uses: actions/cache@v4
         with:

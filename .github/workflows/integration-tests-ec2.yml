@@ -109,6 +109,9 @@ jobs:
             curl --proto \"=https\" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
             . /root/.cargo/env
 
+            curl -L --proto \"=https\" --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+            cargo binstall bpf-linker --no-confirm
+
             mkdir -p /tmp/nfm-build && cd /tmp/nfm-build
             aws s3 cp s3://${BUCKET}/${S3_PREFIX}/nfm-source.tar.gz ./nfm-source.tar.gz
             tar xzf nfm-source.tar.gz

@@ -6,7 +6,7 @@ set -o pipefail
 set -o xtrace
 
 
-TARGET_ARCH=`uname -p`
+TARGET_ARCH=`uname -m`
 
 if [ -z "$TARGET_ARCH" ]
  then
@@ -21,6 +21,12 @@ fi
 
 AGENT_VERSION=$(grep '^version' nfm-controller/Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
 echo "Detected agent version: $AGENT_VERSION"
+
+# Use cmake builder for aws-lc-sys to avoid PIE issues with GCC 16+
+GCC_MAJOR=$(gcc -dumpversion | cut -d. -f1)
+if [ "$GCC_MAJOR" -ge 16 ] 2>/dev/null; then
+    export AWS_LC_SYS_CMAKE_BUILDER=1
+fi
 
 cargo build --release
 
