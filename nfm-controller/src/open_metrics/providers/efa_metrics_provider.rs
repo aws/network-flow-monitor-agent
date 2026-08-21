@@ -452,15 +452,11 @@ impl OpenMetricProvider for EfaMetricsProvider {
 
             let label_values = self.label_values(device, port);
 
-            // Remove stale series when pod attribution changes (K8s only).
-            if matches!(
-                self.compute_platform,
-                ComputePlatform::Ec2K8sEks | ComputePlatform::Ec2K8sVanilla
-            ) {
-                if let Some(old_labels) = self.previous_labels.get(&key) {
-                    if *old_labels != label_values {
-                        self.remove_series_for_labels(old_labels);
-                    }
+            // Remove stale series when pod attribution changes. No-op on EC2-only
+            // platforms, where label_values for a given device/port never changes.
+            if let Some(old_labels) = self.previous_labels.get(&key) {
+                if *old_labels != label_values {
+                    self.remove_series_for_labels(old_labels);
                 }
             }
 
