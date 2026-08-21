@@ -2,14 +2,13 @@ FROM public.ecr.aws/amazonlinux/amazonlinux:2023 AS builder
 WORKDIR /build
 
 # Install Rust and build tools
-RUN yum install -y gcc openssl-devel && \
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && \
-    source $HOME/.cargo/env && \
-    cargo install bpf-linker
+RUN yum install -y gcc openssl-devel tar gzip && \
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 
 ENV PATH="/root/.cargo/bin:${PATH}"
 
 COPY . .
+RUN ./.ci/common/scripts/install-bpf-linker.sh
 RUN cargo build --release --features open-metrics
 
 FROM public.ecr.aws/amazonlinux/amazonlinux:2023-minimal
