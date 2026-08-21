@@ -28,9 +28,7 @@ jobs:
           override: true
 
       - name: Install bpf-linker
-        run: |
-          curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
-          cargo binstall bpf-linker --no-confirm
+        run: .ci/common/scripts/install-bpf-linker.sh
 
       - name: Run clippy
         run: cargo clippy -- -D warnings
@@ -73,9 +71,7 @@ jobs:
           override: true
 
       - name: Install bpf-linker
-        run: |
-          curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
-          cargo binstall bpf-linker --no-confirm
+        run: .ci/common/scripts/install-bpf-linker.sh
 
       - name: Run tests
         run: cargo test --release
@@ -95,9 +91,7 @@ jobs:
           override: true
 
       - name: Install bpf-linker
-        run: |
-          curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
-          cargo binstall bpf-linker --no-confirm
+        run: .ci/common/scripts/install-bpf-linker.sh
 
       - name: Install tarpaulin
         run: cargo install cargo-tarpaulin
@@ -139,9 +133,7 @@ jobs:
           override: true
 
       - name: Install bpf-linker
-        run: |
-          curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
-          cargo binstall bpf-linker --no-confirm
+        run: .ci/common/scripts/install-bpf-linker.sh
 
       - name: Check environment
         run: |
