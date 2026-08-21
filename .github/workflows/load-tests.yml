@@ -67,8 +67,12 @@ jobs:
           toolchain: stable
           override: true
 
+      # Inlined rather than calling .ci/common/scripts/install-bpf-linker.sh: this job also
+      # builds against the main-branch ref, which won't have that script until this merges.
       - name: Install bpf-linker
-        run: .ci/common/scripts/install-bpf-linker.sh
+        run: |
+          curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+          cargo binstall bpf-linker --no-confirm
 
       - name: Cache Rust build artifacts
         uses: actions/cache@v4
