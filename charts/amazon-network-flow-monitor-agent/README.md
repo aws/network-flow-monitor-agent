@@ -77,6 +77,7 @@ Key values (override with `--set`):
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `tolerations` | `[{operator: Exists}]` | Pod tolerations; default tolerates all taints |
+| `nodeSelector` | `{kubernetes.io/os: linux}` | Node labels a node must have for agent pods to be scheduled on it |
 | `affinity` | excludes Fargate/Hybrid, amd64+arm64 only | Node affinity rules |
 | `priorityClassName` | `""` | Pod priority class name |
 | `podLabels` | `{}` | Additional labels on DaemonSet pods |

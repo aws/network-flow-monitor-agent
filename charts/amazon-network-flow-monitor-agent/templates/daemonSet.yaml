@@ -173,8 +173,9 @@ spec:
                 path: {{ .Values.caCerts.fileName }}
             {{- end }}
       {{- end }}
-      nodeSelector:
-        kubernetes.io/os: linux
+      {{- if .Values.nodeSelector }}
+      nodeSelector: {{- .Values.nodeSelector | toYaml | nindent 8 }}
+      {{- end }}
       terminationGracePeriodSeconds: 30
       serviceAccountName: {{ .Values.serviceAccount.name }}
       {{- with .Values.priorityClassName }}

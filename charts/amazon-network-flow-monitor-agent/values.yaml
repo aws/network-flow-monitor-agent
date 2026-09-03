@@ -1,6 +1,6 @@
 image:
   override: '' # if defined, this value is used as the canonical image name ("{image_repo}{image_name}:{tag}")
-  tag: v1.1.7-eksbuild.1  # this is the default image tag. It might be overwritten at runtime
+  tag: v1.1.8-eksbuild.1  # this is the default image tag. It might be overwritten at runtime
   containerRegistry: '' # this gets overriden at runtime with the correct Docker Image Registry
   name: aws-network-sonar-agent # this determines the ecr folder to look for in the target ecr registry
 
@@ -66,6 +66,10 @@ resources:
   requests:
     cpu: 50m
     memory: 100Mi
+
+# Node labels a node must have for agent pods to be scheduled on it. By default we target linux, however it is customizable to whatever
+nodeSelector:
+  kubernetes.io/os: linux
 
 affinity:
   nodeAffinity:
