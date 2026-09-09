@@ -28,20 +28,23 @@ getent passwd networkflowmonitor >/dev/null 2>&1 || useradd -r -g networkflowmon
 # --replacepkgs makes this idempotent across CADS retries of a partially-failed install)
 rpm -U --replacepkgs --noscripts "${WORKING_DIR}/artifacts/network-flow-monitor-agent.rpm" 2>&1
 
-systemctl daemon-reload
+# Step 6: Set eBPF capabilities on the NFM Agent binary
+if ! setcap cap_sys_admin,cap_bpf=eip /opt/aws/network-flow-monitor/network-flow-monitor-agent 2>/dev/null; then
+    setcap cap_sys_admin,39=eip /opt/aws/network-flow-monitor/network-flow-monitor-agent
+fi
 
-# Step 6: Create cgroupv2 mount at /mnt/cgroup-nfm if not already mounted
+# Step 7: Create cgroupv2 mount at /mnt/cgroup-nfm if not already mounted
 if ! mountpoint -q /mnt/cgroup-nfm 2>/dev/null; then
     mkdir -p /mnt/cgroup-nfm
     chown networkflowmonitor:networkflowmonitor-group /mnt/cgroup-nfm
     mount -t cgroup2 networkflowmonitor-cgroup /mnt/cgroup-nfm
 fi
 
-# Step 7: Add fstab entry if not already present
+# Step 8: Add fstab entry if not already present
 grep -q "networkflowmonitor-cgroup" /etc/fstab 2>/dev/null || \
     echo "networkflowmonitor-cgroup /mnt/cgroup-nfm cgroup2 defaults 0 0" >> /etc/fstab
 
-# Step 8: Disable systemd service to prevent auto-start on boot (SSM Agent v4 manages lifecycle)
+# Step 9: Disable systemd service to prevent auto-start on boot (SSM Agent v4 manages lifecycle)
 systemctl disable network-flow-monitor.service 2>/dev/null || true
 
 echo "Installation complete"
