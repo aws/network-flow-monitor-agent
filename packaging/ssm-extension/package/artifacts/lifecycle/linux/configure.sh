@@ -11,9 +11,9 @@ cgroup="default"
 endpoint="default"
 region="default"
 
-if [ -n "${AWS_AGENT_CONFIG_FILENAME}" ]; then
-    CONFIG_FILE="${WORKING_DIR}/agent_configuration.json"
+CONFIG_FILE="${WORKING_DIR}/agent_configuration"
 
+if [ -f "$CONFIG_FILE" ]; then
     val=$(extract_json_value "region" "$CONFIG_FILE")   && [ -n "$val" ] && region="$val"
     val=$(extract_json_value "endpoint" "$CONFIG_FILE") && [ -n "$val" ] && endpoint="$val"
     val=$(extract_json_value "cgroup" "$CONFIG_FILE")   && [ -n "$val" ] && cgroup="$val"
