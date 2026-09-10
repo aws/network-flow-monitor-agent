@@ -25,11 +25,9 @@ if [ -z "$RECENT_LOGS" ]; then
     done
 fi
 
-if [ -n "$RECENT_LOGS" ]; then
-    if ! echo "$RECENT_LOGS" | grep -q '"status":200'; then
-        echo "NFM Agent is unhealthy: no successful publish in the last 2 minutes" >&2
-        exit 1
-    fi
+if [ -z "$RECENT_LOGS" ] || ! echo "$RECENT_LOGS" | grep -q '"status":200'; then
+    echo "NFM Agent is unhealthy: no successful publish in the last 2 minutes" >&2
+    exit 1
 fi
 
 echo "NFM Agent is healthy"

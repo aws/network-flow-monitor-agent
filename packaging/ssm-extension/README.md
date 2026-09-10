@@ -25,18 +25,6 @@ The script:
 - Bundles the pre-built NFM RPM as an artifact inside the extension
 - Produces a single RPM that installs all extension files
 
-## Installation
-
-```bash
-# Install SSM Agent v4 first
-sudo rpm -i aws-core-agent.rpm
-
-# Install the NFM extension
-sudo rpm -i aws-ssm-networkflowmonitor.rpm
-```
-
-The extension RPM's `%post` script triggers the SSM Agent to drive the lifecycle automatically.
-
 ## Directory Layout (on target host)
 
 | Path | Contents |
@@ -56,6 +44,6 @@ The extension RPM's `%post` script triggers the SSM Agent to drive the lifecycle
 | `configure.sh` | Maps SSM Agent config to NFM INI format, sets up credentials per identity type |
 | `start.sh` | Starts the `network-flow-monitor.service` systemd unit |
 | `stop.sh` | Stops the systemd service |
-| `health_check.sh` | Checks `systemctl is-active` for the service |
+| `health_check.sh` | Checks `systemctl is-active` for the service and the agent is sending reports |
 | `status.sh` | Returns JSON with service state, start time, and timestamp |
 | `uninstall.sh` | Full teardown: stops service, removes RPM, cleans cgroup/user/group |
