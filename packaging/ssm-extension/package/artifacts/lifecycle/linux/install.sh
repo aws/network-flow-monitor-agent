@@ -25,8 +25,22 @@ getent group networkflowmonitor-group >/dev/null 2>&1 || groupadd -r networkflow
 getent passwd networkflowmonitor >/dev/null 2>&1 || useradd -r -g networkflowmonitor-group -d /opt/aws/network-flow-monitor -s /sbin/nologin networkflowmonitor
 
 # Step 5: Install/upgrade bundled NFM RPM (--noscripts skips NFM RPM's own scriptlets;
-# --replacepkgs makes this idempotent across CADS retries of a partially-failed install)
-rpm -U --replacepkgs --noscripts "${WORKING_DIR}/artifacts/network-flow-monitor-agent.rpm" 2>&1
+# --replacepkgs makes this idempotent across CADS retries of a partially-failed install;
+# --oldpackage allows the bundled RPM to be older than what's installed, e.g. a version rollback)
+NFM_RPM_PREINSTALLED=false
+rpm -q network-flow-monitor-agent >/dev/null 2>&1 && NFM_RPM_PREINSTALLED=true
+
+INSTALLED_NEW_RPM=false
+cleanup() {
+    echo "Install failed, cleaning up..." >&2
+    if [ "$INSTALLED_NEW_RPM" = true ]; then
+        rpm -e --noscripts network-flow-monitor-agent 2>/dev/null || true
+    fi
+}
+trap cleanup EXIT
+
+rpm -U --replacepkgs --oldpackage --noscripts "${WORKING_DIR}/artifacts/network-flow-monitor-agent.rpm" 2>&1
+[ "$NFM_RPM_PREINSTALLED" = true ] || INSTALLED_NEW_RPM=true
 
 # Step 6: Set eBPF capabilities on the NFM Agent binary
 if ! setcap cap_sys_admin,cap_bpf=eip /opt/aws/network-flow-monitor/network-flow-monitor-agent 2>/dev/null; then
@@ -47,5 +61,6 @@ grep -q "networkflowmonitor-cgroup" /etc/fstab 2>/dev/null || \
 # Step 9: Disable systemd service to prevent auto-start on boot (SSM Agent v4 manages lifecycle)
 systemctl disable network-flow-monitor.service 2>/dev/null || true
 
+trap - EXIT
 echo "Installation complete"
 exit 0
