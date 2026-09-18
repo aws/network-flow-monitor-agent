@@ -39,7 +39,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-rpm -U --replacepkgs --oldpackage --noscripts "${WORKING_DIR}/artifacts/network-flow-monitor-agent.rpm" 2>&1
+rpm -U --replacepkgs --oldpackage --noscripts "${EXTENSION_DIR}/artifacts/network-flow-monitor-agent.rpm" 2>&1
 [ "$NFM_RPM_PREINSTALLED" = true ] || INSTALLED_NEW_RPM=true
 
 # Step 6: Set eBPF capabilities on the NFM Agent binary
