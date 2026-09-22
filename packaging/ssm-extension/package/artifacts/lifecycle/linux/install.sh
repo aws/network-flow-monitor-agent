@@ -39,7 +39,28 @@ cleanup() {
 }
 trap cleanup EXIT
 
-rpm -U --replacepkgs --oldpackage --noscripts "${EXTENSION_DIR}/artifacts/network-flow-monitor-agent.rpm" 2>&1
+# Run an rpm install/upgrade, retrying on transaction-lock contention.
+run_rpm() {
+    local out rc
+    for _ in {1..6}; do
+        if out="$(LC_ALL=C rpm "$@" 2>&1)"; then
+            [ -n "$out" ] && printf '%s\n' "$out"
+            return 0
+        fi
+        rc=$?
+        if printf '%s' "$out" | grep -qE "can't create transaction lock|Resource temporarily unavailable.*\.rpm\.lock|\.rpm\.lock.*Resource temporarily unavailable"; then
+            echo "rpm transaction lock held by another process, retrying in 5s..."
+            sleep 5
+            continue
+        fi
+        [ -n "$out" ] && printf '%s\n' "$out" >&2
+        return "$rc"
+    done
+    echo "ERROR: rpm transaction lock not released after retries"
+    return 1
+}
+
+run_rpm -U --replacepkgs --oldpackage --noscripts "${EXTENSION_DIR}/artifacts/network-flow-monitor-agent.rpm"
 [ "$NFM_RPM_PREINSTALLED" = true ] || INSTALLED_NEW_RPM=true
 
 # Step 6: Set eBPF capabilities on the NFM Agent binary
