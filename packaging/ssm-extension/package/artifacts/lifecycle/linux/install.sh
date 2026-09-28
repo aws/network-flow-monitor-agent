@@ -24,44 +24,102 @@ getent group networkflowmonitor-group >/dev/null 2>&1 || groupadd -r networkflow
 # Step 4: Create NFM_User idempotently
 getent passwd networkflowmonitor >/dev/null 2>&1 || useradd -r -g networkflowmonitor-group -d /opt/aws/network-flow-monitor -s /sbin/nologin networkflowmonitor
 
-# Step 5: Install/upgrade bundled NFM RPM (--noscripts skips NFM RPM's own scriptlets;
-# --replacepkgs makes this idempotent across CADS retries of a partially-failed install;
-# --oldpackage allows the bundled RPM to be older than what's installed, e.g. a version rollback)
-NFM_RPM_PREINSTALLED=false
-rpm -q network-flow-monitor-agent >/dev/null 2>&1 && NFM_RPM_PREINSTALLED=true
+# Step 5: Install/upgrade the bundled NFM package. EXTENSION_DIR/artifacts/ only
+# ever ships the ONE package format matching this host's package manager (the
+# publishing pipeline filters artifacts/ down to a single format per build), so
+# pick whichever is actually present rather than assuming rpm.
+RPM_PKG="${EXTENSION_DIR}/artifacts/network-flow-monitor-agent.rpm"
+DEB_PKG="${EXTENSION_DIR}/artifacts/network-flow-monitor-agent.deb"
 
-INSTALLED_NEW_RPM=false
+# Skip (re)install if the agent is already installed and no bundled package
+# is present (e.g. a re-add after WORKING_DIR was wiped).
+NFM_INSTALLED=false
+if command -v dpkg >/dev/null 2>&1 && dpkg -l network-flow-monitor-agent 2>/dev/null | grep -q '^ii'; then
+    NFM_INSTALLED=true
+elif command -v rpm >/dev/null 2>&1 && rpm -q network-flow-monitor-agent >/dev/null 2>&1; then
+    NFM_INSTALLED=true
+fi
+
+if [ -f "${RPM_PKG}" ]; then
+    PKG_FORMAT=rpm
+elif [ -f "${DEB_PKG}" ]; then
+    PKG_FORMAT=deb
+elif [ "${NFM_INSTALLED}" = true ]; then
+    PKG_FORMAT=none
+    echo "NFM Agent already installed and no bundled package present; skipping (re)install"
+else
+    echo "Error: no bundled package found at ${RPM_PKG} or ${DEB_PKG}" >&2
+    exit 1
+fi
+
+NFM_PREINSTALLED="${NFM_INSTALLED}"
+INSTALLED_NEW_PKG=false
 cleanup() {
     echo "Install failed, cleaning up..." >&2
-    if [ "$INSTALLED_NEW_RPM" = true ]; then
-        rpm -e --noscripts network-flow-monitor-agent 2>/dev/null || true
+    if [ "$INSTALLED_NEW_PKG" = true ]; then
+        if [ "$PKG_FORMAT" = rpm ]; then
+            rpm -e --noscripts network-flow-monitor-agent 2>/dev/null || true
+        elif [ "$PKG_FORMAT" = deb ]; then
+            dpkg --purge network-flow-monitor-agent 2>/dev/null || true
+        fi
     fi
 }
 trap cleanup EXIT
 
-# Run an rpm install/upgrade, retrying on transaction-lock contention.
-run_rpm() {
-    local out rc
-    for _ in {1..6}; do
-        if out="$(LC_ALL=C rpm "$@" 2>&1)"; then
-            [ -n "$out" ] && printf '%s\n' "$out"
-            return 0
-        fi
-        rc=$?
-        if printf '%s' "$out" | grep -qE "can't create transaction lock|Resource temporarily unavailable.*\.rpm\.lock|\.rpm\.lock.*Resource temporarily unavailable"; then
-            echo "rpm transaction lock held by another process, retrying in 5s..."
-            sleep 5
-            continue
-        fi
-        [ -n "$out" ] && printf '%s\n' "$out" >&2
-        return "$rc"
-    done
-    echo "ERROR: rpm transaction lock not released after retries"
-    return 1
-}
+if [ "$PKG_FORMAT" = rpm ]; then
+    # Run an rpm install/upgrade, retrying on transaction-lock contention.
+    run_rpm() {
+        local out rc
+        for _ in {1..6}; do
+            if out="$(LC_ALL=C rpm "$@" 2>&1)"; then
+                [ -n "$out" ] && printf '%s\n' "$out"
+                return 0
+            fi
+            rc=$?
+            if printf '%s' "$out" | grep -qE "can't create transaction lock|Resource temporarily unavailable.*\.rpm\.lock|\.rpm\.lock.*Resource temporarily unavailable"; then
+                echo "rpm transaction lock held by another process, retrying in 5s..."
+                sleep 5
+                continue
+            fi
+            [ -n "$out" ] && printf '%s\n' "$out" >&2
+            return "$rc"
+        done
+        echo "ERROR: rpm transaction lock not released after retries"
+        return 1
+    }
 
-run_rpm -U --replacepkgs --oldpackage --noscripts "${EXTENSION_DIR}/artifacts/network-flow-monitor-agent.rpm"
-[ "$NFM_RPM_PREINSTALLED" = true ] || INSTALLED_NEW_RPM=true
+    # --noscripts skips the bundled RPM's own scriptlets; --replacepkgs makes this
+    # idempotent across CADS retries of a partially-failed install; --oldpackage
+    # allows the bundled RPM to be older than what's installed (e.g. a rollback).
+    run_rpm -U --replacepkgs --oldpackage --noscripts "${RPM_PKG}"
+elif [ "$PKG_FORMAT" = deb ]; then
+    # Run a dpkg install/upgrade, retrying on dpkg-lock contention.
+    run_dpkg() {
+        local rc
+        for _ in 1 2 3; do
+            if dpkg "$@"; then
+                return 0
+            fi
+            rc=$?
+            if fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 \
+               || fuser /var/lib/dpkg/lock >/dev/null 2>&1; then
+                echo "dpkg lock held by another process, retrying in 5s..."
+                sleep 5
+                continue
+            fi
+            return "$rc"
+        done
+        echo "ERROR: dpkg lock not released after retries"
+        return 1
+    }
+
+    # -E (--skip-same-version) makes this idempotent on a same-version re-add.
+    # dpkg -i always installs/overwrites regardless of version, so there is no
+    # --oldpackage equivalent needed. Unlike rpm's --noscripts above, this does
+    # not suppress the bundled .deb's own maintainer scripts.
+    run_dpkg -i -E "${DEB_PKG}"
+fi
+[ "$NFM_PREINSTALLED" = true ] || INSTALLED_NEW_PKG=true
 
 # Step 6: Set eBPF capabilities on the NFM Agent binary
 if ! setcap cap_sys_admin,cap_bpf=eip /opt/aws/network-flow-monitor/network-flow-monitor-agent 2>/dev/null; then

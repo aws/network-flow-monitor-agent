@@ -10,8 +10,12 @@ systemctl stop network-flow-monitor.service 2>/dev/null || echo "Warning: Failed
 # Step 2: Disable the systemd service
 systemctl disable network-flow-monitor.service 2>/dev/null || echo "Warning: Failed to disable service" >&2
 
-# Step 3: Remove the NFM RPM
-rpm -e --noscripts network-flow-monitor-agent 2>/dev/null || echo "Warning: Failed to remove NFM RPM (may not be installed)" >&2
+# Step 3: Remove the NFM package, whichever format it was installed as.
+if command -v dpkg >/dev/null 2>&1 && dpkg -s network-flow-monitor-agent >/dev/null 2>&1; then
+    dpkg --purge network-flow-monitor-agent 2>/dev/null || echo "Warning: Failed to remove NFM package (may not be installed)" >&2
+else
+    rpm -e --noscripts network-flow-monitor-agent 2>/dev/null || echo "Warning: Failed to remove NFM package (may not be installed)" >&2
+fi
 
 # Step 4: Unmount cgroupv2
 if mountpoint -q /mnt/cgroup-nfm 2>/dev/null; then
