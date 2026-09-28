@@ -31,23 +31,37 @@ getent passwd networkflowmonitor >/dev/null 2>&1 || useradd -r -g networkflowmon
 RPM_PKG="${EXTENSION_DIR}/artifacts/network-flow-monitor-agent.rpm"
 DEB_PKG="${EXTENSION_DIR}/artifacts/network-flow-monitor-agent.deb"
 
+# Idempotency guard (mirrors CWSupervisedAgent's install.sh): if the agent is
+# already installed and no bundled package is present -- e.g. a re-add after
+# WORKING_DIR was wiped by uninstall.sh -- there is nothing to (re)install.
+# Without this, install would fail even though the agent is present and healthy.
+NFM_INSTALLED=false
+if command -v dpkg >/dev/null 2>&1 && dpkg -l network-flow-monitor-agent 2>/dev/null | grep -q '^ii'; then
+    NFM_INSTALLED=true
+elif command -v rpm >/dev/null 2>&1 && rpm -q network-flow-monitor-agent >/dev/null 2>&1; then
+    NFM_INSTALLED=true
+fi
+
 if [ -f "${RPM_PKG}" ]; then
     PKG_FORMAT=rpm
 elif [ -f "${DEB_PKG}" ]; then
     PKG_FORMAT=deb
+elif [ "${NFM_INSTALLED}" = true ]; then
+    PKG_FORMAT=none
+    echo "NFM Agent already installed and no bundled package present; skipping (re)install"
 else
     echo "Error: no bundled package found at ${RPM_PKG} or ${DEB_PKG}" >&2
     exit 1
 fi
 
-NFM_PREINSTALLED=false
+NFM_PREINSTALLED="${NFM_INSTALLED}"
 INSTALLED_NEW_PKG=false
 cleanup() {
     echo "Install failed, cleaning up..." >&2
     if [ "$INSTALLED_NEW_PKG" = true ]; then
         if [ "$PKG_FORMAT" = rpm ]; then
             rpm -e --noscripts network-flow-monitor-agent 2>/dev/null || true
-        else
+        elif [ "$PKG_FORMAT" = deb ]; then
             dpkg --purge network-flow-monitor-agent 2>/dev/null || true
         fi
     fi
@@ -55,8 +69,6 @@ cleanup() {
 trap cleanup EXIT
 
 if [ "$PKG_FORMAT" = rpm ]; then
-    rpm -q network-flow-monitor-agent >/dev/null 2>&1 && NFM_PREINSTALLED=true
-
     # Run an rpm install/upgrade, retrying on transaction-lock contention.
     run_rpm() {
         local out rc
@@ -82,37 +94,38 @@ if [ "$PKG_FORMAT" = rpm ]; then
     # idempotent across CADS retries of a partially-failed install; --oldpackage
     # allows the bundled RPM to be older than what's installed (e.g. a rollback).
     run_rpm -U --replacepkgs --oldpackage --noscripts "${RPM_PKG}"
-else
-    dpkg -s network-flow-monitor-agent >/dev/null 2>&1 && NFM_PREINSTALLED=true
-
-    # Run a dpkg install/upgrade, retrying on dpkg-lock contention -- mirrors
-    # run_rpm's retry-on-transaction-lock loop above.
+elif [ "$PKG_FORMAT" = deb ]; then
+    # Run a dpkg install/upgrade, retrying on dpkg-lock contention. Checks the
+    # lock files directly with fuser (mirrors CWSupervisedAgent's install.sh)
+    # rather than grepping dpkg's stderr text.
     run_dpkg() {
-        local out rc
-        for _ in {1..6}; do
-            if out="$(LC_ALL=C dpkg "$@" 2>&1)"; then
-                [ -n "$out" ] && printf '%s\n' "$out"
+        local rc
+        for _ in 1 2 3; do
+            if dpkg "$@"; then
                 return 0
             fi
             rc=$?
-            if printf '%s' "$out" | grep -qiE "dpkg.*lock|resource temporarily unavailable"; then
+            if fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 \
+               || fuser /var/lib/dpkg/lock >/dev/null 2>&1; then
                 echo "dpkg lock held by another process, retrying in 5s..."
                 sleep 5
                 continue
             fi
-            [ -n "$out" ] && printf '%s\n' "$out" >&2
             return "$rc"
         done
         echo "ERROR: dpkg lock not released after retries"
         return 1
     }
 
-    # dpkg -i always installs/overwrites regardless of version, so there is no
-    # --oldpackage equivalent to pass. NOTE: unlike rpm's --noscripts above, this
-    # does NOT suppress the bundled .deb's own maintainer scripts -- confirm the
-    # built .deb's preinst/postinst are no-ops (or add --no-triggers /
-    # DPKG_MAINTSCRIPT_* handling here) before relying on this in production.
-    run_dpkg -i "${DEB_PKG}"
+    # -E (--skip-same-version) makes this idempotent on a same-version re-add.
+    # There is no --oldpackage equivalent to pass -- dpkg -i always
+    # installs/overwrites regardless of version. Unlike rpm's --noscripts above,
+    # this does not suppress the bundled .deb's own maintainer scripts:
+    # CWSupervisedAgent's install.sh does the same for its bundled
+    # amazon-cloudwatch-agent.deb (plain `dpkg -i -E`, no --noscripts equivalent),
+    # so this matches established precedent for this exact bundled-installer
+    # pattern rather than an open risk.
+    run_dpkg -i -E "${DEB_PKG}"
 fi
 [ "$NFM_PREINSTALLED" = true ] || INSTALLED_NEW_PKG=true
 
