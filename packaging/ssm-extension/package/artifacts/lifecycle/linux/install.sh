@@ -31,10 +31,8 @@ getent passwd networkflowmonitor >/dev/null 2>&1 || useradd -r -g networkflowmon
 RPM_PKG="${EXTENSION_DIR}/artifacts/network-flow-monitor-agent.rpm"
 DEB_PKG="${EXTENSION_DIR}/artifacts/network-flow-monitor-agent.deb"
 
-# Idempotency guard (mirrors CWSupervisedAgent's install.sh): if the agent is
-# already installed and no bundled package is present -- e.g. a re-add after
-# WORKING_DIR was wiped by uninstall.sh -- there is nothing to (re)install.
-# Without this, install would fail even though the agent is present and healthy.
+# Skip (re)install if the agent is already installed and no bundled package
+# is present (e.g. a re-add after WORKING_DIR was wiped).
 NFM_INSTALLED=false
 if command -v dpkg >/dev/null 2>&1 && dpkg -l network-flow-monitor-agent 2>/dev/null | grep -q '^ii'; then
     NFM_INSTALLED=true
@@ -95,9 +93,7 @@ if [ "$PKG_FORMAT" = rpm ]; then
     # allows the bundled RPM to be older than what's installed (e.g. a rollback).
     run_rpm -U --replacepkgs --oldpackage --noscripts "${RPM_PKG}"
 elif [ "$PKG_FORMAT" = deb ]; then
-    # Run a dpkg install/upgrade, retrying on dpkg-lock contention. Checks the
-    # lock files directly with fuser (mirrors CWSupervisedAgent's install.sh)
-    # rather than grepping dpkg's stderr text.
+    # Run a dpkg install/upgrade, retrying on dpkg-lock contention.
     run_dpkg() {
         local rc
         for _ in 1 2 3; do
@@ -118,13 +114,9 @@ elif [ "$PKG_FORMAT" = deb ]; then
     }
 
     # -E (--skip-same-version) makes this idempotent on a same-version re-add.
-    # There is no --oldpackage equivalent to pass -- dpkg -i always
-    # installs/overwrites regardless of version. Unlike rpm's --noscripts above,
-    # this does not suppress the bundled .deb's own maintainer scripts:
-    # CWSupervisedAgent's install.sh does the same for its bundled
-    # amazon-cloudwatch-agent.deb (plain `dpkg -i -E`, no --noscripts equivalent),
-    # so this matches established precedent for this exact bundled-installer
-    # pattern rather than an open risk.
+    # dpkg -i always installs/overwrites regardless of version, so there is no
+    # --oldpackage equivalent needed. Unlike rpm's --noscripts above, this does
+    # not suppress the bundled .deb's own maintainer scripts.
     run_dpkg -i -E "${DEB_PKG}"
 fi
 [ "$NFM_PREINSTALLED" = true ] || INSTALLED_NEW_PKG=true
