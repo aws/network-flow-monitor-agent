@@ -233,23 +233,5 @@ else
   exit 1
 fi
 
-# Verify 4: Init container (rmem_max setup) ran successfully
-INIT_STATUS=$(kubectl get pod "$AGENT_POD" -n "$NAMESPACE" \
-  -o jsonpath='{.status.initContainerStatuses[0].state.terminated.reason}' 2>/dev/null || echo "")
-if [ "$INIT_STATUS" = "Completed" ]; then
-  echo "[PASS] Init container (rmem_max setup) completed successfully"
-else
-  echo "[WARN] Init container status: ${INIT_STATUS:-unknown}"
-fi
-
-# Verify 5: Cleanup sidecar is running
-CLEANUP_RUNNING=$(kubectl get pod "$AGENT_POD" -n "$NAMESPACE" \
-  -o jsonpath='{.status.containerStatuses[?(@.name=="cleanup")].ready}' 2>/dev/null || echo "false")
-if [ "$CLEANUP_RUNNING" = "true" ]; then
-  echo "[PASS] Cleanup sidecar is running"
-else
-  echo "[WARN] Cleanup sidecar status: ${CLEANUP_RUNNING}"
-fi
-
 echo ""
 echo "=== All K8s integration tests passed ==="

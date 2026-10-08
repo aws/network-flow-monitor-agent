@@ -11,6 +11,7 @@ use netlink_packet_netfilter::{
 use netlink_sys::{constants::NETLINK_NETFILTER, Socket};
 use std::convert::TryFrom;
 use std::io::ErrorKind;
+use std::os::fd::AsRawFd;
 
 use super::vpc_cidr_checker::VpcCidrChecker;
 
@@ -18,6 +19,27 @@ use super::vpc_cidr_checker::VpcCidrChecker;
 // Targeting to handle up to 100k new connections per second, we need a storage for 10k * 1280 = 12_800_000, i.e. 12.8MBytes (assuming 100msec agg period).
 // Cost of reading, parsing and storing each entry is around 4us (host variant), so 100k entries will cost 400ms per second (40% load for a single core)
 const SOCKET_RX_BUF_DESIRED_SIZE: usize = 12_800_000;
+
+/// Sets the receive buffer via SO_RCVBUFFORCE, which bypasses net.core.rmem_max but needs CAP_NET_ADMIN.
+/// Returns false if the kernel refused, so the caller can fall back to SO_RCVBUF.
+fn set_rx_buf_sz_force(socket: &Socket, size: usize) -> bool {
+    let value = libc::c_int::try_from(size).unwrap_or(libc::c_int::MAX);
+    let ret = unsafe {
+        libc::setsockopt(
+            socket.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_RCVBUFFORCE,
+            &value as *const libc::c_int as *const libc::c_void,
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        )
+    };
+    if ret != 0 {
+        let err = std::io::Error::last_os_error();
+        info!(error:% = err; "SO_RCVBUFFORCE refused, falling back to SO_RCVBUF.");
+        return false;
+    }
+    true
+}
 
 #[derive(Clone, Debug)]
 pub struct ConntrackEntry {
@@ -65,21 +87,24 @@ impl ConntrackListener {
             .set_non_blocking(true)
             .expect("Failed to set netlink socket properties");
 
-        // Attempt to increase the receive buffer, but take what the kernel clamps us to.
         let initial_rx_buf_size = socket
             .get_rx_buf_sz()
             .expect("Failed to get buf size of netlink socket");
         let desired_rx_buf_size = SOCKET_RX_BUF_DESIRED_SIZE;
 
-        socket
-            .set_rx_buf_sz(desired_rx_buf_size)
-            .expect("Failed to set netlink socket buf size");
+        let forced = set_rx_buf_sz_force(&socket, desired_rx_buf_size);
+        if !forced {
+            // Without CAP_NET_ADMIN, take what net.core.rmem_max clamps us to.
+            socket
+                .set_rx_buf_sz(desired_rx_buf_size)
+                .expect("Failed to set netlink socket buf size");
+        }
         let actual_rx_buf_size = socket
             .get_rx_buf_sz()
             .expect("Failed to get buf size of netlink socket");
 
         let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
-        info!(page_size, initial_rx_buf_size, desired_rx_buf_size, actual_rx_buf_size; "Configured conntrack socket buffer.");
+        info!(page_size, initial_rx_buf_size, desired_rx_buf_size, actual_rx_buf_size, forced; "Configured conntrack socket buffer.");
 
         let rx_buf: Vec<u8> = vec![0; 2048]; // each netlink message consumes less than 256 bytes. But reserving more for possible future changes
 
@@ -246,6 +271,47 @@ impl ConntrackProvider for ConntrackListener {
 mod test {
     use super::*;
     use crate::utils::vpc_cidr_checker::VpcCidrChecker;
+
+    fn rmem_max() -> usize {
+        std::fs::read_to_string("/proc/sys/net/core/rmem_max")
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap()
+    }
+
+    // Kernel stores double the requested size.
+    #[test]
+    #[cfg_attr(not(feature = "privileged"), ignore)]
+    fn test_rx_buf_force_bypasses_rmem_max() {
+        assert!(
+            rmem_max() < SOCKET_RX_BUF_DESIRED_SIZE,
+            "test needs rmem_max below the desired size"
+        );
+        let socket = Socket::new(NETLINK_NETFILTER).unwrap();
+        assert!(set_rx_buf_sz_force(&socket, SOCKET_RX_BUF_DESIRED_SIZE));
+        assert_eq!(
+            socket.get_rx_buf_sz().unwrap(),
+            2 * SOCKET_RX_BUF_DESIRED_SIZE
+        );
+    }
+
+    #[test]
+    fn test_rx_buf_force_refused_without_net_admin() {
+        if caps::has_cap(
+            None,
+            caps::CapSet::Effective,
+            caps::Capability::CAP_NET_ADMIN,
+        )
+        .unwrap()
+        {
+            return;
+        }
+        let socket = Socket::new(NETLINK_NETFILTER).unwrap();
+        let before = socket.get_rx_buf_sz().unwrap();
+        assert!(!set_rx_buf_sz_force(&socket, SOCKET_RX_BUF_DESIRED_SIZE));
+        assert_eq!(socket.get_rx_buf_sz().unwrap(), before);
+    }
 
     use netlink_packet_core::NetlinkMessage;
     use netlink_packet_netfilter::{nfconntrack::nlas::ConnectionProperties, NetfilterMessage};

@@ -70,7 +70,6 @@ Key values (override with `--set`):
 | `env.OPEN_METRICS_ADDRESS` | `"0.0.0.0"` | Bind address for the metrics endpoint |
 | `env.DISABLE_PUBLISHING` | unset | Set to `"true"` to disable publishing to CloudWatch |
 | `env.LOG_REPORTS` | unset | Set to `"on"` to log agent reports to stdout |
-| `rmemMax` | `12800000` | Host `net.core.rmem_max` value; buffers conntrack messages. Lower values may reduce NAT resolution precision on high-throughput (>50k conn/s) hosts |
 
 ### Kubernetes Scheduling
 
