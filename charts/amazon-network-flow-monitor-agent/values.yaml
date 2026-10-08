@@ -53,12 +53,6 @@ caCerts:
   # File name in the container for the CA certificate bundle
   fileName: "ca-bundle.crt"
 
-# Used to set maximum possible receive buffer allowed for all networking protocols.
-# Value of 12800000 will provide room for 10k NetFilter Conntrack event messages
-# Lesser values are also acceptable but might reduce NFM Agent NAT resolution precision, especially on very high throughput (>50k new tcp conn persec) hosts.
-# Which might result in Kubernetes internal IPs (such as cluster-ip of services) to appear in flow reports (because of them not being un-NATed).
-rmemMax: 12800000
-
 resources:
   limits:
     cpu: 500m
