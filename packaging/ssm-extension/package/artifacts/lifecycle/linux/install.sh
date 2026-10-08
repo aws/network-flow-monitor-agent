@@ -88,10 +88,16 @@ if [ "$PKG_FORMAT" = rpm ]; then
         return 1
     }
 
+    # Import the published NFM Agent signing key.
+    # https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch-NetworkFlowMonitor-agents-download-agent-commandline.html
+    rpm --import "${SCRIPT_DIR}/nfm-agent.gpg"
+
     # --noscripts skips the bundled RPM's own scriptlets; --replacepkgs makes this
     # idempotent across CADS retries of a partially-failed install; --oldpackage
     # allows the bundled RPM to be older than what's installed (e.g. a rollback).
-    run_rpm -U --replacepkgs --oldpackage --noscripts "${RPM_PKG}"
+    # --nodigest: TEMPORARY. The published RPM is built on amazonlinux:2
+    run_rpm -U --replacepkgs --oldpackage --noscripts --nodigest "${RPM_PKG}"
+
 elif [ "$PKG_FORMAT" = deb ]; then
     # Run a dpkg install/upgrade, retrying on dpkg-lock contention.
     run_dpkg() {
