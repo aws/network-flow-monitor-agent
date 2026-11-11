@@ -1,27 +1,31 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Simple Prometheus metrics server for testing integration.
+//! Prometheus metrics server.
 //!
-//! This module provides a basic HTTP server that returns a fixed dummy metric
-//! in Prometheus format on the /metrics endpoint.
+//! In delta mode, connections are served one at a time, since every scrape resets the baseline
+//! used to compute deltas. In absolute mode, connections are served concurrently from a cached
+//! snapshot that is refreshed at most once per refresh interval.
 
+use std::future::Future;
 use std::io::{Error, ErrorKind, Result};
 use std::net::{IpAddr, SocketAddr};
 use std::rc::Rc;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use hyper::http::StatusCode;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response};
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioIo, TokioTimer};
 use log::{debug, error, info, warn};
 use prometheus::{Encoder, Registry, TextEncoder};
 use tokio::net::TcpListener;
+use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
+use tokio::task::LocalSet;
 use tokio_util::sync::CancellationToken;
 
 #[cfg(test)]
@@ -31,12 +35,24 @@ use crate::kubernetes::kubernetes_metadata_collector::KubernetesMetadataCollecto
 use crate::metadata::runtime_environment_metadata::RuntimeEnvironmentMetadataProvider;
 use crate::open_metrics::provider::get_open_metric_providers;
 use crate::open_metrics::types::MetricProviders;
+use crate::open_metrics::OpenMetricsMode;
+
+const DEFAULT_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+const DEFAULT_MAX_CONNECTIONS: usize = 10;
+const DEFAULT_HEADER_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Configuration options for the OpenMetricsServer
 pub struct OpenMetricsServerConfig {
     /// Address to bind the server to
     pub addr: SocketAddr,
     pub k8s_metadata: Option<Arc<KubernetesMetadataCollector>>,
+    pub mode: OpenMetricsMode,
+    /// Absolute mode: minimum time between metric refreshes.
+    pub refresh_interval: Duration,
+    /// Absolute mode: maximum concurrent connections. Extra connections get a 503.
+    pub max_connections: usize,
+    /// Absolute mode: connections that don't send full request headers in time are closed.
+    pub header_read_timeout: Duration,
 }
 
 impl Default for OpenMetricsServerConfig {
@@ -44,6 +60,10 @@ impl Default for OpenMetricsServerConfig {
         Self {
             addr: "127.0.0.1:80".parse().unwrap(),
             k8s_metadata: None,
+            mode: OpenMetricsMode::Delta,
+            refresh_interval: DEFAULT_REFRESH_INTERVAL,
+            max_connections: DEFAULT_MAX_CONNECTIONS,
+            header_read_timeout: DEFAULT_HEADER_READ_TIMEOUT,
         }
     }
 }
@@ -59,6 +79,37 @@ impl OpenMetricsServerConfig {
         Self {
             addr: SocketAddr::new(ip, port),
             k8s_metadata,
+            ..Default::default()
+        }
+    }
+
+    pub fn with_mode(
+        mut self,
+        mode: OpenMetricsMode,
+        refresh_interval: Duration,
+        max_connections: usize,
+    ) -> Self {
+        self.mode = mode;
+        self.refresh_interval = refresh_interval;
+        self.max_connections = max_connections;
+        self
+    }
+}
+
+/// Settings used by the absolute mode server.
+#[derive(Clone, Copy)]
+struct AbsoluteModeSettings {
+    refresh_interval: Duration,
+    max_connections: usize,
+    header_read_timeout: Duration,
+}
+
+impl From<&OpenMetricsServerConfig> for AbsoluteModeSettings {
+    fn from(config: &OpenMetricsServerConfig) -> Self {
+        Self {
+            refresh_interval: config.refresh_interval,
+            max_connections: config.max_connections,
+            header_read_timeout: config.header_read_timeout,
         }
     }
 }
@@ -105,13 +156,16 @@ impl OpenMetricsServer {
 
         info!(
             open_metric = "starting",
-            bind_addr = self.config.addr.to_string();
+            bind_addr = self.config.addr.to_string(),
+            mode = self.config.mode.to_string();
             "Simple Prometheus metrics server starting"
         );
 
         let cancel_token = self.cancel_token.clone();
         let addr = self.config.addr;
         let k8s_metadata = self.config.k8s_metadata.clone();
+        let mode = self.config.mode;
+        let settings = AbsoluteModeSettings::from(&self.config);
 
         let handle = thread::spawn(move || {
             // Runtime with 2 threads to allow usage of metadata providers, since it needs to
@@ -124,7 +178,13 @@ impl OpenMetricsServer {
                 .expect("Failed to create Tokio runtime");
 
             rt.block_on(async {
-                if let Err(e) = run_server(addr, cancel_token, k8s_metadata).await {
+                let result = match mode {
+                    OpenMetricsMode::Delta => run_server(addr, cancel_token, k8s_metadata).await,
+                    OpenMetricsMode::Absolute => {
+                        run_server_absolute(addr, cancel_token, k8s_metadata, settings).await
+                    }
+                };
+                if let Err(e) = result {
                     error!(error = e.to_string(); "Metrics server error");
                 }
             });
@@ -183,24 +243,24 @@ impl Drop for OpenMetricsServer {
     }
 }
 
-/// Handle HTTP request and return appropriate response
-async fn handle_request(
+/// Handle HTTP request and return appropriate response. `metrics` produces the /metrics body.
+async fn handle_request<F, Fut>(
     req: Request<hyper::body::Incoming>,
-    registry: Arc<Registry>,
-    providers: MetricProviders,
-) -> Result<Response<String>> {
+    metrics: F,
+) -> Result<Response<String>>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = (StatusCode, String)>,
+{
     let start_time = Instant::now();
-    let path = req.uri().path();
+    let path = req.uri().path().to_string();
     debug!(open_metric = "incoming_request", path = path; "Received request");
 
-    let (status, content_type, body) = match path {
+    let (status, content_type, body) = match path.as_str() {
         "/metrics" => {
             debug!(endpoint = "metrics"; "Serving metrics endpoint");
-            (
-                StatusCode::OK,
-                "text/plain",
-                generate_metrics_text(registry, providers),
-            )
+            let (status, body) = metrics().await;
+            (status, "text/plain", body)
         }
         "/" => {
             let body = "Network Flow Monitor Agent Metrics Server\n\nAvailable endpoints:\n- /metrics - Prometheus metrics\n";
@@ -251,10 +311,11 @@ fn generate_metrics_text(registry: Arc<Registry>, providers: MetricProviders) ->
 /// Initialize the metrics registry and providers
 fn initialize_metrics_registry(
     k8s_collector: Option<Arc<KubernetesMetadataCollector>>,
+    mode: OpenMetricsMode,
 ) -> (Arc<Registry>, MetricProviders) {
     let mut registry = Arc::new(Registry::new());
     let compute_platform = RuntimeEnvironmentMetadataProvider::get_compute_platform();
-    let providers = get_open_metric_providers(compute_platform, k8s_collector);
+    let providers = get_open_metric_providers(compute_platform, k8s_collector, mode);
 
     providers
         .iter()
@@ -274,13 +335,15 @@ async fn handle_connection(
 ) {
     let io = TokioIo::new(stream);
 
-    // Clone the Arc to use in the closure
-    let registry_clone = registry.clone();
-    let providers_clone = providers.clone();
-
     let connection = http1::Builder::new().serve_connection(
         io,
-        service_fn(move |req| handle_request(req, registry_clone.clone(), providers_clone.clone())),
+        service_fn(move |req| {
+            let registry = registry.clone();
+            let providers = providers.clone();
+            handle_request(req, move || async move {
+                (StatusCode::OK, generate_metrics_text(registry, providers))
+            })
+        }),
     );
 
     // Listen to the cancellation token while processing the request. Prometheus
@@ -359,8 +422,216 @@ async fn run_server(
         "Metrics server listening"
     );
 
-    let (registry, providers) = initialize_metrics_registry(k8s_collector);
+    let (registry, providers) = initialize_metrics_registry(k8s_collector, OpenMetricsMode::Delta);
     accept_connections(listener, registry, providers, cancel_token, bind_addr).await
+}
+
+/// A request for the latest metrics text, answered by the collector.
+type SnapshotRequest = oneshot::Sender<Arc<String>>;
+
+/// Run the absolute mode HTTP server - will terminate when cancellation token is triggered
+async fn run_server_absolute(
+    bind_addr: SocketAddr,
+    cancel_token: CancellationToken,
+    k8s_collector: Option<Arc<KubernetesMetadataCollector>>,
+    settings: AbsoluteModeSettings,
+) -> Result<()> {
+    let listener = TcpListener::bind(bind_addr).await?;
+
+    info!(
+        open_metric = "server_starting",
+        bind_addr = bind_addr.to_string(),
+        refresh_secs = settings.refresh_interval.as_secs(),
+        max_connections = settings.max_connections;
+        "Metrics server listening"
+    );
+
+    let (registry, providers) =
+        initialize_metrics_registry(k8s_collector, OpenMetricsMode::Absolute);
+    serve_absolute(listener, registry, providers, cancel_token, settings).await
+}
+
+/// Serves connections concurrently. Providers aren't thread safe, so they stay in a single
+/// collector task on this thread, while connections are handled by the runtime workers.
+async fn serve_absolute(
+    listener: TcpListener,
+    registry: Arc<Registry>,
+    providers: MetricProviders,
+    cancel_token: CancellationToken,
+    settings: AbsoluteModeSettings,
+) -> Result<()> {
+    let bind_addr = listener.local_addr()?;
+    let (snapshot_tx, snapshot_rx) = mpsc::channel::<SnapshotRequest>(settings.max_connections);
+
+    let local = LocalSet::new();
+    local.spawn_local(run_collector(
+        registry,
+        providers,
+        snapshot_rx,
+        settings.refresh_interval,
+    ));
+
+    let accept_loop = tokio::spawn(accept_connections_concurrent(
+        listener,
+        snapshot_tx,
+        cancel_token,
+        bind_addr,
+        settings,
+    ));
+
+    match local.run_until(accept_loop).await {
+        Ok(result) => result,
+        Err(e) => Err(Error::other(e)),
+    }
+}
+
+/// Answers snapshot requests in order. The snapshot is refreshed only when it is older than
+/// the refresh interval, so concurrent scrapers share a single refresh.
+async fn run_collector(
+    registry: Arc<Registry>,
+    providers: MetricProviders,
+    mut requests: mpsc::Receiver<SnapshotRequest>,
+    refresh_interval: Duration,
+) {
+    let mut snapshot: Option<(Instant, Arc<String>)> = None;
+
+    while let Some(reply) = requests.recv().await {
+        let text = match &snapshot {
+            Some((refreshed_at, text)) if refreshed_at.elapsed() < refresh_interval => text.clone(),
+            _ => {
+                let text = Arc::new(generate_metrics_text(registry.clone(), providers.clone()));
+                snapshot = Some((Instant::now(), text.clone()));
+                text
+            }
+        };
+        let _ = reply.send(text);
+    }
+}
+
+/// Asks the collector for the latest metrics text.
+async fn request_snapshot(snapshots: mpsc::Sender<SnapshotRequest>) -> (StatusCode, String) {
+    let (reply_tx, reply_rx) = oneshot::channel();
+    if snapshots.send(reply_tx).await.is_ok() {
+        if let Ok(text) = reply_rx.await {
+            return (StatusCode::OK, text.as_ref().clone());
+        }
+    }
+
+    error!(open_metric = "snapshot_unavailable"; "Metrics collector is not running");
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Metrics unavailable".to_string(),
+    )
+}
+
+/// Accepts connections and serves each one in its own task, up to the connection limit.
+async fn accept_connections_concurrent(
+    listener: TcpListener,
+    snapshots: mpsc::Sender<SnapshotRequest>,
+    cancel_token: CancellationToken,
+    bind_addr: SocketAddr,
+    settings: AbsoluteModeSettings,
+) -> Result<()> {
+    let connection_slots = Arc::new(Semaphore::new(settings.max_connections));
+
+    loop {
+        tokio::select! {
+            accept_result = listener.accept() => {
+                match accept_result {
+                    Ok((stream, peer)) => {
+                        let permit = connection_slots.clone().try_acquire_owned().ok();
+                        if permit.is_none() {
+                            warn!(
+                                open_metric = "connection_limit_reached",
+                                peer = peer.to_string(),
+                                max_connections = settings.max_connections;
+                                "Rejecting metrics connection"
+                            );
+                        }
+                        tokio::spawn(handle_connection_concurrent(
+                            stream,
+                            snapshots.clone(),
+                            cancel_token.clone(),
+                            bind_addr,
+                            settings.header_read_timeout,
+                            permit,
+                        ));
+                    }
+                    Err(e) => {
+                        error!(
+                            error = e.to_string(),
+                            addr = bind_addr.to_string();
+                            "Failed to accept connection on metrics server"
+                        );
+                    }
+                }
+            }
+            _ = cancel_token.cancelled() => {
+                info!(
+                    bind_addr = bind_addr.to_string();
+                    "Metrics server shutting down due to cancellation"
+                );
+                break;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Serves a single connection. Without a connection slot, it replies 503 and closes.
+async fn handle_connection_concurrent(
+    stream: tokio::net::TcpStream,
+    snapshots: mpsc::Sender<SnapshotRequest>,
+    cancel_token: CancellationToken,
+    bind_addr: SocketAddr,
+    header_read_timeout: Duration,
+    permit: Option<OwnedSemaphorePermit>,
+) {
+    let io = TokioIo::new(stream);
+    let has_slot = permit.is_some();
+
+    let mut builder = http1::Builder::new();
+    builder
+        .timer(TokioTimer::new())
+        .header_read_timeout(header_read_timeout)
+        .keep_alive(has_slot);
+
+    let connection = builder.serve_connection(
+        io,
+        service_fn(move |req| {
+            let snapshots = snapshots.clone();
+            async move {
+                if !has_slot {
+                    return Ok(too_many_connections_response());
+                }
+                handle_request(req, move || request_snapshot(snapshots)).await
+            }
+        }),
+    );
+
+    tokio::select! {
+        result = connection => {
+            if let Err(e) = result {
+                debug!(
+                    error = e.to_string(),
+                    addr = bind_addr.to_string();
+                    "Metrics connection closed with error"
+                );
+            }
+        }
+        _ = cancel_token.cancelled() => {}
+    }
+
+    drop(permit);
+}
+
+fn too_many_connections_response() -> Response<String> {
+    Response::builder()
+        .status(StatusCode::SERVICE_UNAVAILABLE)
+        .header("Content-Type", "text/plain")
+        .body("Too many connections".to_string())
+        .unwrap()
 }
 
 #[cfg(test)]
@@ -386,7 +657,7 @@ mod tests {
             let addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), port).into();
             let config = OpenMetricsServerConfig {
                 addr,
-                k8s_metadata: None,
+                ..Default::default()
             };
 
             let mut server = OpenMetricsServer::with_config(config);
@@ -582,5 +853,211 @@ mod tests {
 
         server.stop().expect("Failed to stop server");
         assert!(!server.is_running());
+    }
+
+    mod absolute_mode {
+        use super::*;
+        use crate::open_metrics::provider::OpenMetricProvider;
+        use crate::open_metrics::providers::register_metric;
+        use prometheus::{IntGaugeVec, Opts};
+        use std::io::{Read, Write};
+        use std::net::TcpStream;
+        use std::sync::atomic::AtomicUsize;
+
+        /// Provider that counts refreshes and blocks for `delay`, like the real providers do.
+        struct CountingProvider {
+            refreshes: Arc<AtomicUsize>,
+            delay: Duration,
+            gauge: IntGaugeVec,
+        }
+
+        impl OpenMetricProvider for CountingProvider {
+            fn register_to(&self, registry: &mut Registry) {
+                register_metric(registry, &self.gauge, OpenMetricsMode::Absolute);
+            }
+
+            fn update_metrics(&mut self) -> std::result::Result<(), anyhow::Error> {
+                thread::sleep(self.delay);
+                let refreshes = self.refreshes.fetch_add(1, Ordering::SeqCst) + 1;
+                self.gauge
+                    .with_label_values(&["eth0"])
+                    .set(refreshes as i64);
+                Ok(())
+            }
+        }
+
+        struct AbsoluteTestServer {
+            port: u16,
+            refreshes: Arc<AtomicUsize>,
+            cancel_token: CancellationToken,
+            handle: Option<thread::JoinHandle<()>>,
+        }
+
+        impl AbsoluteTestServer {
+            fn start(delay: Duration, settings: AbsoluteModeSettings) -> Self {
+                let std_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+                std_listener.set_nonblocking(true).unwrap();
+                let port = std_listener.local_addr().unwrap().port();
+                let refreshes = Arc::new(AtomicUsize::new(0));
+                let cancel_token = CancellationToken::new();
+
+                let thread_refreshes = refreshes.clone();
+                let thread_cancel = cancel_token.clone();
+                let handle = thread::spawn(move || {
+                    let rt = tokio::runtime::Builder::new_multi_thread()
+                        .worker_threads(2)
+                        .enable_all()
+                        .build()
+                        .unwrap();
+                    rt.block_on(async move {
+                        let listener = TcpListener::from_std(std_listener).unwrap();
+                        let provider = CountingProvider {
+                            refreshes: thread_refreshes,
+                            delay,
+                            gauge: IntGaugeVec::new(Opts::new("rx_bytes", "help"), &["iface"])
+                                .unwrap(),
+                        };
+                        let mut registry = Registry::new();
+                        provider.register_to(&mut registry);
+                        let providers: MetricProviders =
+                            Rc::new(Mutex::new(vec![Box::new(provider)]));
+                        serve_absolute(
+                            listener,
+                            Arc::new(registry),
+                            providers,
+                            thread_cancel,
+                            settings,
+                        )
+                        .await
+                        .unwrap();
+                    });
+                });
+
+                Self {
+                    port,
+                    refreshes,
+                    cancel_token,
+                    handle: Some(handle),
+                }
+            }
+
+            fn get(&self, path: &str) -> (u16, String) {
+                let client = reqwest::blocking::Client::builder()
+                    .timeout(Duration::from_secs(5))
+                    .build()
+                    .unwrap();
+                let response = client
+                    .get(format!("http://127.0.0.1:{}{}", self.port, path))
+                    .send()
+                    .expect("request failed");
+                let status = response.status().as_u16();
+                (status, response.text().unwrap())
+            }
+
+            fn refreshes(&self) -> usize {
+                self.refreshes.load(Ordering::SeqCst)
+            }
+        }
+
+        impl Drop for AbsoluteTestServer {
+            fn drop(&mut self) {
+                self.cancel_token.cancel();
+                if let Some(handle) = self.handle.take() {
+                    let _ = handle.join();
+                }
+            }
+        }
+
+        fn settings(refresh_interval: Duration, max_connections: usize) -> AbsoluteModeSettings {
+            AbsoluteModeSettings {
+                refresh_interval,
+                max_connections,
+                header_read_timeout: Duration::from_secs(5),
+            }
+        }
+
+        #[test]
+        fn test_serves_counters() {
+            let server =
+                AbsoluteTestServer::start(Duration::ZERO, settings(Duration::from_secs(30), 10));
+            let (status, body) = server.get("/metrics");
+
+            assert_eq!(status, 200);
+            assert!(body.contains("# TYPE rx_bytes_total counter"), "{body}");
+            assert!(body.contains("rx_bytes_total{iface=\"eth0\"} 1"), "{body}");
+        }
+
+        #[test]
+        fn test_concurrent_scrapes_share_one_refresh() {
+            let server = Arc::new(AbsoluteTestServer::start(
+                Duration::from_millis(300),
+                settings(Duration::from_secs(30), 10),
+            ));
+
+            let clients: Vec<_> = (0..5)
+                .map(|_| {
+                    let server = server.clone();
+                    thread::spawn(move || server.get("/metrics"))
+                })
+                .collect();
+            let responses: Vec<(u16, String)> =
+                clients.into_iter().map(|c| c.join().unwrap()).collect();
+
+            assert_eq!(server.refreshes(), 1);
+            for (status, body) in &responses {
+                assert_eq!(*status, 200);
+                assert_eq!(body, &responses[0].1);
+            }
+        }
+
+        #[test]
+        fn test_refreshes_after_interval() {
+            let server =
+                AbsoluteTestServer::start(Duration::ZERO, settings(Duration::from_millis(200), 10));
+
+            server.get("/metrics");
+            server.get("/metrics");
+            assert_eq!(server.refreshes(), 1);
+
+            thread::sleep(Duration::from_millis(300));
+            server.get("/metrics");
+            assert_eq!(server.refreshes(), 2);
+        }
+
+        #[test]
+        fn test_keep_alive_connection_does_not_block_other_clients() {
+            let server =
+                AbsoluteTestServer::start(Duration::ZERO, settings(Duration::from_secs(30), 10));
+
+            // Scrape once and keep the connection open, like Prometheus does.
+            let mut keep_alive = TcpStream::connect(("127.0.0.1", server.port)).unwrap();
+            keep_alive
+                .write_all(b"GET /metrics HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                .unwrap();
+            let mut buf = [0u8; 1024];
+            let read = keep_alive.read(&mut buf).unwrap();
+            assert!(String::from_utf8_lossy(&buf[..read]).starts_with("HTTP/1.1 200"));
+
+            let (status, _) = server.get("/metrics");
+            assert_eq!(status, 200);
+        }
+
+        #[test]
+        fn test_connection_limit_rejects_extra_connections() {
+            let mut limited = settings(Duration::from_secs(30), 1);
+            limited.header_read_timeout = Duration::from_millis(300);
+            let server = AbsoluteTestServer::start(Duration::ZERO, limited);
+
+            // An idle connection takes the only slot.
+            let _idle = TcpStream::connect(("127.0.0.1", server.port)).unwrap();
+            thread::sleep(Duration::from_millis(100));
+            let (status, _) = server.get("/metrics");
+            assert_eq!(status, 503);
+
+            // The idle connection is closed by the header read timeout, freeing the slot.
+            thread::sleep(Duration::from_millis(500));
+            let (status, _) = server.get("/metrics");
+            assert_eq!(status, 200);
+        }
     }
 }

@@ -25,9 +25,10 @@ use crate::{
         provider::OpenMetricProvider,
         providers::{
             build_gauge_metric, interface_metrics_provider::discovery::InterfaceDiscoveryImpl,
-            MetricLabel,
+            register_metric, MetricLabel,
         },
         types::{IpToPodMapping, NamespaceMapping},
+        OpenMetricsMode,
     },
     reports::report::ReportValue,
     utils::RealCommandRunner,
@@ -140,6 +141,7 @@ pub struct InterfaceMetricsProvider {
 
     // State for delta calculations
     current_metrics: HashMap<InterfaceMetricKey, InterfaceMetricValues>,
+    mode: OpenMetricsMode,
 }
 
 impl InterfaceMetricsProvider {
@@ -206,11 +208,33 @@ impl InterfaceMetricsProvider {
                 "Egress TCP flow count",
             ),
             current_metrics: HashMap::new(),
+            mode: OpenMetricsMode::Delta,
         };
 
         // Initialize baseline metrics
         provider.get_metrics();
         provider
+    }
+
+    pub fn with_mode(mut self, mode: OpenMetricsMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    /// Returns the value to report: the delta since the previous reading, or the raw value.
+    fn reported_value(
+        &self,
+        key: &InterfaceMetricKey,
+        current: &InterfaceMetricValues,
+    ) -> InterfaceMetricValues {
+        match self.mode {
+            OpenMetricsMode::Delta => current.calculate_delta(
+                self.current_metrics
+                    .get(key)
+                    .unwrap_or(&InterfaceMetricValues::default()),
+            ),
+            OpenMetricsMode::Absolute => current.clone(),
+        }
     }
 
     /// Get current interface metrics
@@ -265,13 +289,9 @@ impl InterfaceMetricsProvider {
                 netns: stats,
             };
 
-            let delta = host_metrics.calculate_delta(
-                self.current_metrics
-                    .get(&host_key)
-                    .unwrap_or(&InterfaceMetricValues::default()),
-            );
+            let value = self.reported_value(&host_key, &host_metrics);
             new_current_metrics.insert(host_key.clone(), host_metrics);
-            result.insert(host_key, delta);
+            result.insert(host_key, value);
         }
 
         for (iface, device_status) in interface_stats {
@@ -314,16 +334,12 @@ impl InterfaceMetricsProvider {
                 netns: netns_metrics,
             };
 
-            // Calculate deltas before inserting into new_current_metrics
-            let delta_metric = iface_metrics.calculate_delta(
-                self.current_metrics
-                    .get(&key)
-                    .unwrap_or(&InterfaceMetricValues::default()),
-            );
+            // Calculate the value before inserting into new_current_metrics
+            let value = self.reported_value(&key, &iface_metrics);
 
-            // We return the delta but keep the real value to calculate the next iteration's delta.
+            // We return the reported value but keep the real value to calculate the next iteration's delta.
             new_current_metrics.insert(key.clone(), iface_metrics);
-            result.insert(key, delta_metric);
+            result.insert(key, value);
         }
 
         self.current_metrics = new_current_metrics;
@@ -393,24 +409,16 @@ impl OpenMetricProvider for InterfaceMetricsProvider {
     fn register_to(&self, registry: &mut Registry) {
         info!(platform = self.compute_platform.to_string(); "Registering Interface Metrics");
 
-        registry
-            .register(Box::new(self.ingress_bytes_count.clone()))
-            .unwrap();
-        registry
-            .register(Box::new(self.ingress_pkt_count.clone()))
-            .unwrap();
-        registry
-            .register(Box::new(self.egress_bytes_count.clone()))
-            .unwrap();
-        registry
-            .register(Box::new(self.egress_pkt_count.clone()))
-            .unwrap();
-        registry
-            .register(Box::new(self.ingress_flow_count.clone()))
-            .unwrap();
-        registry
-            .register(Box::new(self.egress_flow_count.clone()))
-            .unwrap();
+        for metric in [
+            &self.ingress_bytes_count,
+            &self.ingress_pkt_count,
+            &self.egress_bytes_count,
+            &self.egress_pkt_count,
+            &self.ingress_flow_count,
+            &self.egress_flow_count,
+        ] {
+            register_metric(registry, metric, self.mode);
+        }
     }
 
     fn update_metrics(&mut self) -> Result<(), anyhow::Error> {
@@ -947,6 +955,7 @@ mod tests {
                 "Egress TCP flow count",
             ),
             current_metrics: HashMap::new(),
+            mode: OpenMetricsMode::Delta,
             compute_platform,
         }
     }
@@ -1230,6 +1239,7 @@ mod tests {
                 "Egress TCP flow count",
             ),
             current_metrics: HashMap::new(),
+            mode: OpenMetricsMode::Delta,
             compute_platform,
         }
     }
@@ -1286,6 +1296,40 @@ mod tests {
             .collect();
         assert!(iface_names.contains("eth0"));
         assert!(iface_names.contains("eth1"));
+    }
+
+    #[test]
+    fn test_update_metrics_absolute_reports_cumulative_counters() {
+        use prometheus::proto::MetricType;
+
+        let mut metric_provider =
+            create_mocked_ec2_plain_metric_provider().with_mode(OpenMetricsMode::Absolute);
+        let mut registry = Registry::new();
+        metric_provider.register_to(&mut registry);
+
+        // Delta mode would report 0 on the second call, since the counters did not change.
+        metric_provider.update_metrics().unwrap();
+        metric_provider.update_metrics().unwrap();
+
+        let metric_families = registry.gather();
+        let ingress_bytes_family = metric_families
+            .iter()
+            .find(|mf| mf.name() == "ingress_bytes_total")
+            .unwrap();
+        assert_eq!(ingress_bytes_family.get_field_type(), MetricType::COUNTER);
+
+        let eth0_value = ingress_bytes_family
+            .get_metric()
+            .iter()
+            .find(|m| {
+                m.get_label()
+                    .iter()
+                    .any(|l| l.get_name() == "iface" && l.get_value() == "eth0")
+            })
+            .unwrap()
+            .get_counter()
+            .value();
+        assert_eq!(eth0_value, 1000.0);
     }
 
     #[test]

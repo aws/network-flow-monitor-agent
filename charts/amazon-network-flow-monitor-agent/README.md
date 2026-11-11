@@ -68,6 +68,9 @@ Key values (override with `--set`):
 | `env.OPEN_METRICS` | `"off"` | Enable OpenMetrics endpoint (`"on"` / `"off"`) |
 | `env.OPEN_METRICS_PORT` | `"9109"` | Port for the metrics endpoint |
 | `env.OPEN_METRICS_ADDRESS` | `"0.0.0.0"` | Bind address for the metrics endpoint |
+| `env.OPEN_METRICS_MODE` | unset (`delta`) | `delta` or `absolute`. See [OpenMetrics modes](#openmetrics-modes) |
+| `env.OPEN_METRICS_REFRESH_SECS` | unset (`30`) | Absolute mode: minimum seconds between metric refreshes |
+| `env.OPEN_METRICS_MAX_CONNECTIONS` | unset (`10`) | Absolute mode: maximum concurrent connections. Extra connections get a `503` |
 | `env.DISABLE_PUBLISHING` | unset | Set to `"true"` to disable publishing to CloudWatch |
 | `env.LOG_REPORTS` | unset | Set to `"on"` to log agent reports to stdout |
 
@@ -112,6 +115,16 @@ helm install amazon-network-flow-monitor-release charts/amazon-network-flow-moni
   --set image.containerRegistry=602401143452.dkr.ecr.us-west-2.amazonaws.com \
   --set image.tag=v1.1.4-eksbuild.1 \
   --set env.OPEN_METRICS=on
+```
+
+#### OpenMetrics modes
+
+- `delta` (default): metrics are gauges with the change since the previous scrape. Each scrape resets the baseline, so only one scraper is supported, and connections are served one at a time.
+- `absolute`: metrics are counters with cumulative values, named with a `_total` suffix (for example `ingress_bytes_total`). Connections are served concurrently, so multiple scrapers are supported. Values are refreshed at most once every `OPEN_METRICS_REFRESH_SECS`, and concurrent scrapes share the same refresh. Use `rate()` or `increase()` in queries.
+
+```bash
+  --set env.OPEN_METRICS=on \
+  --set env.OPEN_METRICS_MODE=absolute
 ```
 
 ## CA Certificate Bundle

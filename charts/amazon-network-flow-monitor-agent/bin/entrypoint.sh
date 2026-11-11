@@ -45,6 +45,15 @@ if [[ "${OPEN_METRICS:-}" == "on" ]]; then
     if [[ -n "${OPEN_METRICS_ADDRESS:-}" ]]; then
         OPEN_METRICS_ARGS+=("--open-metrics-address" "$OPEN_METRICS_ADDRESS")
     fi
+    if [[ -n "${OPEN_METRICS_MODE:-}" ]]; then
+        OPEN_METRICS_ARGS+=("--open-metrics-mode" "$OPEN_METRICS_MODE")
+    fi
+    if [[ -n "${OPEN_METRICS_REFRESH_SECS:-}" ]]; then
+        OPEN_METRICS_ARGS+=("--open-metrics-refresh-secs" "$OPEN_METRICS_REFRESH_SECS")
+    fi
+    if [[ -n "${OPEN_METRICS_MAX_CONNECTIONS:-}" ]]; then
+        OPEN_METRICS_ARGS+=("--open-metrics-max-connections" "$OPEN_METRICS_MAX_CONNECTIONS")
+    fi
 fi
 
 # Publishing parameters

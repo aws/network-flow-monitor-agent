@@ -148,6 +148,13 @@ impl HostStatsProviderImpl {
         }
     }
 
+    /// Returns the cumulative interface stats as read from the host, without computing deltas.
+    pub fn get_cumulative_stats(&mut self) -> HostStats {
+        let latest_iface_stats = self.load_all_iface_stats();
+        self.network_interface_stats = latest_iface_stats.clone();
+        self.build_host_stats(latest_iface_stats)
+    }
+
     // Loads stats for all configured network interfaces.
     fn load_all_iface_stats(&mut self) -> HashMap<NetworkDevice, NetworkInterfaceStats> {
         let mut latest_iface_stats = HashMap::<NetworkDevice, NetworkInterfaceStats>::new();

@@ -19,18 +19,19 @@ use crate::{
         interface_metrics_provider::InterfaceMetricsProvider,
         system_metrics_provider::SystemMetricsProvider,
     },
+    OpenMetricsMode,
 };
 
 pub fn get_open_metric_providers(
     compute_platform: ComputePlatform,
     k8s_collector: Option<Arc<KubernetesMetadataCollector>>,
+    mode: OpenMetricsMode,
 ) -> Vec<Box<dyn OpenMetricProvider>> {
     let mut providers: Vec<Box<dyn OpenMetricProvider>> = vec![
-        Box::new(SystemMetricsProvider::new(&compute_platform)),
-        Box::new(InterfaceMetricsProvider::new(
-            &compute_platform,
-            k8s_collector.clone(),
-        )),
+        Box::new(SystemMetricsProvider::new(&compute_platform).with_mode(mode)),
+        Box::new(
+            InterfaceMetricsProvider::new(&compute_platform, k8s_collector.clone()).with_mode(mode),
+        ),
     ];
 
     if EfaMetricsProvider::efa_devices_present() {
@@ -46,10 +47,9 @@ pub fn get_open_metric_providers(
             ComputePlatform::Ec2Plain => None,
         };
 
-        providers.push(Box::new(EfaMetricsProvider::new(
-            &compute_platform,
-            device_to_pod_map,
-        )));
+        providers.push(Box::new(
+            EfaMetricsProvider::new(&compute_platform, device_to_pod_map).with_mode(mode),
+        ));
     }
 
     providers
@@ -77,7 +77,8 @@ mod tests {
         ];
 
         for platform in platforms {
-            let providers = get_open_metric_providers(platform.clone(), None);
+            let providers =
+                get_open_metric_providers(platform.clone(), None, OpenMetricsMode::Delta);
             // 2 base providers (System + Interface), plus EFA if devices are present.
             assert!(
                 providers.len() >= 2 && providers.len() <= 3,
@@ -94,7 +95,11 @@ mod tests {
 
         let compute_platform = ComputePlatform::Ec2K8sEks;
         let k8s_collector = Arc::new(KubernetesMetadataCollector::new());
-        let providers = get_open_metric_providers(compute_platform, Some(k8s_collector));
+        let providers = get_open_metric_providers(
+            compute_platform,
+            Some(k8s_collector),
+            OpenMetricsMode::Delta,
+        );
 
         assert!(providers.len() >= 2 && providers.len() <= 3);
     }
@@ -102,7 +107,8 @@ mod tests {
     #[test]
     fn test_providers_implement_trait() {
         let compute_platform = ComputePlatform::Ec2Plain;
-        let mut providers = get_open_metric_providers(compute_platform, None);
+        let mut providers =
+            get_open_metric_providers(compute_platform, None, OpenMetricsMode::Delta);
 
         // Test that providers implement the trait methods
         let mut registry = Registry::new();

@@ -108,6 +108,8 @@ tokio = { version = "1.45.1", features = [
     "rt-multi-thread",
     "net",
     "signal",
+    "sync",
+    "time",
 ] }
 url = "2.5"
 hyper = { version = "1.0", features = ["server", "http1"], optional = true }

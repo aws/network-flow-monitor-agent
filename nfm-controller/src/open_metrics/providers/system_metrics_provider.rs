@@ -9,7 +9,8 @@ use crate::{
     },
     open_metrics::{
         provider::OpenMetricProvider,
-        providers::{build_gauge_metric, MetricLabel},
+        providers::{build_gauge_metric, register_metric, MetricLabel},
+        OpenMetricsMode,
     },
     reports::report::ReportValue,
 };
@@ -44,6 +45,7 @@ pub struct SystemMetricsProvider {
     host_stats_provider: HostStatsProviderImpl,
     instance_id: String,
     node_name: String,
+    mode: OpenMetricsMode,
 
     bw_in_allowance_exceeded: IntGaugeVec,
     bw_out_allowance_exceeded: IntGaugeVec,
@@ -65,6 +67,7 @@ impl SystemMetricsProvider {
             host_stats_provider: HostStatsProviderImpl::new(),
             instance_id: retrieve_instance_id(&aws_config::imds::Client::builder().build()),
             node_name,
+            mode: OpenMetricsMode::Delta,
 
             bw_in_allowance_exceeded: build_gauge_metric::<SystemMetric>(
                 compute_platform,
@@ -90,11 +93,20 @@ impl SystemMetricsProvider {
         }
     }
 
+    pub fn with_mode(mut self, mode: OpenMetricsMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
     fn get_metrics(&mut self) -> Vec<SystemMetric> {
         self.host_stats_provider
             .set_network_devices(&self.eni_metadata_provider.get_network_devices());
+        let host_stats = match self.mode {
+            OpenMetricsMode::Delta => self.host_stats_provider.get_stats(),
+            OpenMetricsMode::Absolute => self.host_stats_provider.get_cumulative_stats(),
+        };
         let mut metrics = vec![];
-        for host_stat in self.host_stats_provider.get_stats().interface_stats {
+        for host_stat in host_stats.interface_stats {
             metrics.push(SystemMetric {
                 key: SystemMetricKey {
                     eni: host_stat.interface_id,
@@ -149,21 +161,15 @@ impl OpenMetricProvider for SystemMetricsProvider {
     fn register_to(&self, registry: &mut Registry) {
         info!(platform = self.compute_platform.to_string(); "Registering System Metrics");
 
-        registry
-            .register(Box::new(self.bw_in_allowance_exceeded.clone()))
-            .unwrap();
-        registry
-            .register(Box::new(self.bw_out_allowance_exceeded.clone()))
-            .unwrap();
-        registry
-            .register(Box::new(self.pps_allowance_exceeded.clone()))
-            .unwrap();
-        registry
-            .register(Box::new(self.conntrack_allowance_exceeded.clone()))
-            .unwrap();
-        registry
-            .register(Box::new(self.linklocal_allowance_exceeded.clone()))
-            .unwrap();
+        for metric in [
+            &self.bw_in_allowance_exceeded,
+            &self.bw_out_allowance_exceeded,
+            &self.pps_allowance_exceeded,
+            &self.conntrack_allowance_exceeded,
+            &self.linklocal_allowance_exceeded,
+        ] {
+            register_metric(registry, metric, self.mode);
+        }
     }
 
     fn update_metrics(&mut self) -> Result<(), anyhow::Error> {
@@ -553,6 +559,7 @@ mod tests {
             },
             instance_id: "inst-id1".to_string(),
             node_name,
+            mode: OpenMetricsMode::Delta,
             bw_in_allowance_exceeded: build_gauge_metric::<SystemMetric>(
                 &compute_platform,
                 "bw_in_allowance_exceeded",
@@ -590,5 +597,29 @@ mod tests {
         let metrics = provider.get_metrics();
         // 2 interfaces
         assert_eq!(metrics.len(), 2);
+    }
+
+    #[test]
+    fn test_get_metrics_delta_vs_absolute() {
+        for (mode, expected) in [(OpenMetricsMode::Delta, 2), (OpenMetricsMode::Absolute, 5)] {
+            let mut provider = create_mocked_provider().with_mode(mode);
+            // Previous reading of bw_in_allowance_exceeded is 3, the host now reports 5.
+            for stats in provider
+                .host_stats_provider
+                .network_interface_stats
+                .values_mut()
+            {
+                stats.bw_in_allowance_exceeded = 3;
+            }
+
+            let metrics = provider.get_metrics();
+            assert_eq!(metrics.len(), 2);
+            for metric in metrics {
+                assert_eq!(
+                    metric.value.bw_in_allowance_exceeded, expected,
+                    "mode {mode}"
+                );
+            }
+        }
     }
 }
