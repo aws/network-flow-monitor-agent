@@ -17,6 +17,9 @@ on:
     paths:
       - 'nfm-controller/**'
       - 'nfm-bpf/**'
+      - 'nfm-common/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
       - 'charts/**'
       - 'Dockerfile.k8s'
       - '.ci/common/**'

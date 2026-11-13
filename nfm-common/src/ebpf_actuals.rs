@@ -138,6 +138,28 @@ pub fn nfm_get_sock_state(ctx: &SockOpsContext) -> u32 {
     unsafe { (*ctx.ops).state }
 }
 
+// Reads one u32 at a time: the verifier rejects the 8-byte context loads that newer compilers
+// emit when the whole array is copied.
+fn nfm_read_ip6(field: &[u32; 4]) -> [u32; 4] {
+    let words = field.as_ptr();
+    unsafe {
+        [
+            core::ptr::read_volatile(words),
+            core::ptr::read_volatile(words.add(1)),
+            core::ptr::read_volatile(words.add(2)),
+            core::ptr::read_volatile(words.add(3)),
+        ]
+    }
+}
+
+pub fn nfm_get_local_ip6(ctx: &SockOpsContext) -> [u32; 4] {
+    nfm_read_ip6(unsafe { &(*ctx.ops).local_ip6 })
+}
+
+pub fn nfm_get_remote_ip6(ctx: &SockOpsContext) -> [u32; 4] {
+    nfm_read_ip6(unsafe { &(*ctx.ops).remote_ip6 })
+}
+
 pub fn nfm_get_sock_ops_stats(ctx: &SockOpsContext) -> SockOpsStats {
     unsafe {
         SockOpsStats {

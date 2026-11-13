@@ -16,6 +16,9 @@ on:
     paths:
       - 'nfm-controller/**'
       - 'nfm-bpf/**'
+      - 'nfm-common/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
       - 'packaging/**'
       - '.ci/common/**'
       - '.ci/integration-tests/ec2-scripts/**'

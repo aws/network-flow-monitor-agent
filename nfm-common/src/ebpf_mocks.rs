@@ -349,6 +349,14 @@ pub fn nfm_get_sock_state(ctx: &SockOpsContext) -> u32 {
     ctx.sock_state
 }
 
+pub fn nfm_get_local_ip6(ctx: &SockOpsContext) -> [u32; 4] {
+    ctx.local_ip6()
+}
+
+pub fn nfm_get_remote_ip6(ctx: &SockOpsContext) -> [u32; 4] {
+    ctx.remote_ip6()
+}
+
 pub fn nfm_get_sock_ops_stats(ctx: &SockOpsContext) -> SockOpsStats {
     ctx.stats
 }
