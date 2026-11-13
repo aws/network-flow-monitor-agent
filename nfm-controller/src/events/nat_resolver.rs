@@ -95,8 +95,8 @@ impl NatResolver for NatResolverImpl {
     fn get_beyond_nat_entry(&self, sock_context: &SockContext) -> Option<SockContext> {
         if sock_context.is_valid() {
             let internal_info = Self::sock_context_to_egress_cxn_info(sock_context).unwrap();
-            for i in 0..self.conntrack_ringbuf.len() {
-                if let Some(external_info) = self.conntrack_ringbuf[i].get(&internal_info) {
+            for bucket in &self.conntrack_ringbuf {
+                if let Some(external_info) = bucket.get(&internal_info) {
                     return Some(Self::ingress_cxn_info_to_sock_context(
                         external_info,
                         sock_context.is_client,
