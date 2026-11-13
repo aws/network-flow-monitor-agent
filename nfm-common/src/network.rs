@@ -1,7 +1,7 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::{utils::MinNonZero, SockOpsContext};
+use crate::{nfm_get_local_ip6, nfm_get_remote_ip6, utils::MinNonZero, SockOpsContext};
 use bitflags::bitflags;
 
 #[cfg(not(feature = "bpf"))]
@@ -239,8 +239,8 @@ impl SockContext {
             address_family: ctx.family() as u16,
             local_ipv4: u32::from_be(ctx.local_ip4()),
             remote_ipv4: u32::from_be(ctx.remote_ip4()),
-            local_ipv6: SockContext::ipv6_to_bytes(ctx.local_ip6()),
-            remote_ipv6: SockContext::ipv6_to_bytes(ctx.remote_ip6()),
+            local_ipv6: SockContext::ipv6_to_bytes(nfm_get_local_ip6(ctx)),
+            remote_ipv6: SockContext::ipv6_to_bytes(nfm_get_remote_ip6(ctx)),
             local_port: local_port.try_into().unwrap(),
             remote_port: remote_port.try_into().unwrap(),
             ..Default::default()
