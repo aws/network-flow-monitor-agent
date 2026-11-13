@@ -425,6 +425,18 @@ impl OpenMetricProvider for InterfaceMetricsProvider {
         info!(platform = self.compute_platform.to_string(); "Updating Interface Metrics");
         let metrics = self.get_metrics();
 
+        // Drop series of interfaces and pods that no longer exist.
+        for metric in [
+            &self.ingress_bytes_count,
+            &self.ingress_pkt_count,
+            &self.egress_bytes_count,
+            &self.egress_pkt_count,
+            &self.ingress_flow_count,
+            &self.egress_flow_count,
+        ] {
+            metric.reset();
+        }
+
         for (key, value) in metrics {
             let label_values =
                 key.label_values(&self.compute_platform, &self.node_name, &self.instance_id);
@@ -1296,6 +1308,36 @@ mod tests {
             .collect();
         assert!(iface_names.contains("eth0"));
         assert!(iface_names.contains("eth1"));
+    }
+
+    #[test]
+    fn test_update_metrics_removes_stale_series() {
+        let mut metric_provider = create_mocked_ec2_plain_metric_provider();
+        let mut registry = Registry::new();
+        metric_provider.register_to(&mut registry);
+
+        // A series from an interface that is no longer present.
+        metric_provider
+            .ingress_bytes_count
+            .with_label_values(&["i-ec2plain123", "eth9", "eni-gone"])
+            .set(5);
+        metric_provider.update_metrics().unwrap();
+
+        let ifaces: HashSet<String> = registry
+            .gather()
+            .iter()
+            .find(|mf| mf.name() == "ingress_bytes")
+            .unwrap()
+            .get_metric()
+            .iter()
+            .flat_map(|m| m.get_label().iter())
+            .filter(|l| l.name() == "iface")
+            .map(|l| l.value().to_string())
+            .collect();
+        assert_eq!(
+            ifaces,
+            HashSet::from(["eth0".to_string(), "eth1".to_string()])
+        );
     }
 
     #[test]

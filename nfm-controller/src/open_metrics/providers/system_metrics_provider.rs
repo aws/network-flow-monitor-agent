@@ -176,6 +176,17 @@ impl OpenMetricProvider for SystemMetricsProvider {
         info!(platform = self.compute_platform.to_string(); "Updating System Metrics");
         let metrics = self.get_metrics();
 
+        // Drop series of network interfaces that are no longer attached.
+        for metric in [
+            &self.bw_in_allowance_exceeded,
+            &self.bw_out_allowance_exceeded,
+            &self.pps_allowance_exceeded,
+            &self.conntrack_allowance_exceeded,
+            &self.linklocal_allowance_exceeded,
+        ] {
+            metric.reset();
+        }
+
         for metric in &metrics {
             let label_values =
                 metric.label_values(&self.compute_platform, &self.node_name, &self.instance_id);
@@ -597,6 +608,31 @@ mod tests {
         let metrics = provider.get_metrics();
         // 2 interfaces
         assert_eq!(metrics.len(), 2);
+    }
+
+    #[test]
+    fn test_update_metrics_removes_stale_series() {
+        let mut provider = create_mocked_provider();
+        let mut registry = Registry::new();
+        provider.register_to(&mut registry);
+
+        // A series from a network interface that is no longer attached.
+        provider
+            .bw_in_allowance_exceeded
+            .with_label_values(&["inst-id1", "ifc-gone", "eth9"])
+            .set(5);
+        provider.update_metrics().unwrap();
+
+        let family = registry
+            .gather()
+            .into_iter()
+            .find(|mf| mf.name() == "bw_in_allowance_exceeded")
+            .unwrap();
+        assert_eq!(family.get_metric().len(), 2);
+        assert!(family
+            .get_metric()
+            .iter()
+            .all(|m| m.get_label().iter().all(|l| l.value() != "eth9")));
     }
 
     #[test]

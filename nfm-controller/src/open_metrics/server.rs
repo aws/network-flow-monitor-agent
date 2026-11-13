@@ -25,7 +25,6 @@ use log::{debug, error, info, warn};
 use prometheus::{Encoder, Registry, TextEncoder};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
-use tokio::task::LocalSet;
 use tokio_util::sync::CancellationToken;
 
 #[cfg(test)]
@@ -168,16 +167,7 @@ impl OpenMetricsServer {
         let settings = AbsoluteModeSettings::from(&self.config);
 
         let handle = thread::spawn(move || {
-            // Runtime with 2 threads to allow usage of metadata providers, since it needs to
-            // block to access IMDS.
-            let rt = tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(2)
-                .enable_io()
-                .enable_time()
-                .build()
-                .expect("Failed to create Tokio runtime");
-
-            rt.block_on(async {
+            server_runtime().block_on(async {
                 let result = match mode {
                     OpenMetricsMode::Delta => run_server(addr, cancel_token, k8s_metadata).await,
                     OpenMetricsMode::Absolute => {
@@ -241,6 +231,17 @@ impl Drop for OpenMetricsServer {
             let _ = self.stop();
         }
     }
+}
+
+/// Runtime with 2 threads to allow usage of metadata providers, since they need to block to
+/// access IMDS.
+fn server_runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_io()
+        .enable_time()
+        .build()
+        .expect("Failed to create Tokio runtime")
 }
 
 /// Handle HTTP request and return appropriate response. `metrics` produces the /metrics body.
@@ -451,8 +452,9 @@ async fn run_server_absolute(
     serve_absolute(listener, registry, providers, cancel_token, settings).await
 }
 
-/// Serves connections concurrently. Providers aren't thread safe, so they stay in a single
-/// collector task on this thread, while connections are handled by the runtime workers.
+/// Serves connections concurrently. Providers aren't thread safe, so the collector runs on this
+/// (block_on) thread, where providers may block, while connections are handled by the runtime
+/// workers.
 async fn serve_absolute(
     listener: TcpListener,
     registry: Arc<Registry>,
@@ -463,23 +465,27 @@ async fn serve_absolute(
     let bind_addr = listener.local_addr()?;
     let (snapshot_tx, snapshot_rx) = mpsc::channel::<SnapshotRequest>(settings.max_connections);
 
-    let local = LocalSet::new();
-    local.spawn_local(run_collector(
-        registry,
-        providers,
-        snapshot_rx,
-        settings.refresh_interval,
-    ));
-
     let accept_loop = tokio::spawn(accept_connections_concurrent(
         listener,
         snapshot_tx,
-        cancel_token,
+        cancel_token.clone(),
         bind_addr,
         settings,
     ));
 
-    match local.run_until(accept_loop).await {
+    // Not a LocalSet: it forbids block_in_place, which providers use for IMDS lookups.
+    let (_, accept_result) = tokio::join!(
+        run_collector(
+            registry,
+            providers,
+            snapshot_rx,
+            settings.refresh_interval,
+            cancel_token,
+        ),
+        accept_loop
+    );
+
+    match accept_result {
         Ok(result) => result,
         Err(e) => Err(Error::other(e)),
     }
@@ -492,10 +498,18 @@ async fn run_collector(
     providers: MetricProviders,
     mut requests: mpsc::Receiver<SnapshotRequest>,
     refresh_interval: Duration,
+    cancel_token: CancellationToken,
 ) {
     let mut snapshot: Option<(Instant, Arc<String>)> = None;
 
-    while let Some(reply) = requests.recv().await {
+    loop {
+        let reply = tokio::select! {
+            request = requests.recv() => match request {
+                Some(reply) => reply,
+                None => break,
+            },
+            _ = cancel_token.cancelled() => break,
+        };
         let text = match &snapshot {
             Some((refreshed_at, text)) if refreshed_at.elapsed() < refresh_interval => text.clone(),
             _ => {
@@ -857,6 +871,7 @@ mod tests {
 
     mod absolute_mode {
         use super::*;
+        use crate::metadata::imds_utils::get_runtime_executor;
         use crate::open_metrics::provider::OpenMetricProvider;
         use crate::open_metrics::providers::register_metric;
         use prometheus::{IntGaugeVec, Opts};
@@ -886,6 +901,26 @@ mod tests {
             }
         }
 
+        /// Provider that blocks on a future through `RuntimeExecutor`, like the IMDS lookups in
+        /// `EniMetadataProvider` do.
+        struct RuntimeExecutorProvider {
+            gauge: IntGaugeVec,
+        }
+
+        impl OpenMetricProvider for RuntimeExecutorProvider {
+            fn register_to(&self, registry: &mut Registry) {
+                register_metric(registry, &self.gauge, OpenMetricsMode::Absolute);
+            }
+
+            fn update_metrics(&mut self) -> std::result::Result<(), anyhow::Error> {
+                let value = get_runtime_executor()
+                    .expect("runtime executor")
+                    .block_on(async { 7 });
+                self.gauge.with_label_values(&["eth0"]).set(value);
+                Ok(())
+            }
+        }
+
         struct AbsoluteTestServer {
             port: u16,
             refreshes: Arc<AtomicUsize>,
@@ -895,6 +930,19 @@ mod tests {
 
         impl AbsoluteTestServer {
             fn start(delay: Duration, settings: AbsoluteModeSettings) -> Self {
+                Self::start_with(settings, move |refreshes| {
+                    Box::new(CountingProvider {
+                        refreshes,
+                        delay,
+                        gauge: IntGaugeVec::new(Opts::new("rx_bytes", "help"), &["iface"]).unwrap(),
+                    })
+                })
+            }
+
+            fn start_with<F>(settings: AbsoluteModeSettings, make_provider: F) -> Self
+            where
+                F: FnOnce(Arc<AtomicUsize>) -> Box<dyn OpenMetricProvider> + Send + 'static,
+            {
                 let std_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
                 std_listener.set_nonblocking(true).unwrap();
                 let port = std_listener.local_addr().unwrap().port();
@@ -904,23 +952,12 @@ mod tests {
                 let thread_refreshes = refreshes.clone();
                 let thread_cancel = cancel_token.clone();
                 let handle = thread::spawn(move || {
-                    let rt = tokio::runtime::Builder::new_multi_thread()
-                        .worker_threads(2)
-                        .enable_all()
-                        .build()
-                        .unwrap();
-                    rt.block_on(async move {
+                    server_runtime().block_on(async move {
                         let listener = TcpListener::from_std(std_listener).unwrap();
-                        let provider = CountingProvider {
-                            refreshes: thread_refreshes,
-                            delay,
-                            gauge: IntGaugeVec::new(Opts::new("rx_bytes", "help"), &["iface"])
-                                .unwrap(),
-                        };
+                        let provider = make_provider(thread_refreshes);
                         let mut registry = Registry::new();
                         provider.register_to(&mut registry);
-                        let providers: MetricProviders =
-                            Rc::new(Mutex::new(vec![Box::new(provider)]));
+                        let providers: MetricProviders = Rc::new(Mutex::new(vec![provider]));
                         serve_absolute(
                             listener,
                             Arc::new(registry),
@@ -988,6 +1025,23 @@ mod tests {
         }
 
         #[test]
+        fn test_provider_can_block_on_runtime_executor() {
+            // A refresh that blocks through RuntimeExecutor (e.g. an IMDS lookup for a newly
+            // attached ENI) must not panic the collector.
+            let server = AbsoluteTestServer::start_with(settings(Duration::ZERO, 10), |_| {
+                Box::new(RuntimeExecutorProvider {
+                    gauge: IntGaugeVec::new(Opts::new("rx_bytes", "help"), &["iface"]).unwrap(),
+                })
+            });
+
+            for _ in 0..2 {
+                let (status, body) = server.get("/metrics");
+                assert_eq!(status, 200, "{body}");
+                assert!(body.contains("rx_bytes_total{iface=\"eth0\"} 7"), "{body}");
+            }
+        }
+
+        #[test]
         fn test_concurrent_scrapes_share_one_refresh() {
             let server = Arc::new(AbsoluteTestServer::start(
                 Duration::from_millis(300),
@@ -1045,7 +1099,7 @@ mod tests {
         #[test]
         fn test_connection_limit_rejects_extra_connections() {
             let mut limited = settings(Duration::from_secs(30), 1);
-            limited.header_read_timeout = Duration::from_millis(300);
+            limited.header_read_timeout = Duration::from_secs(2);
             let server = AbsoluteTestServer::start(Duration::ZERO, limited);
 
             // An idle connection takes the only slot.
@@ -1055,7 +1109,7 @@ mod tests {
             assert_eq!(status, 503);
 
             // The idle connection is closed by the header read timeout, freeing the slot.
-            thread::sleep(Duration::from_millis(500));
+            thread::sleep(Duration::from_secs(3));
             let (status, _) = server.get("/metrics");
             assert_eq!(status, 200);
         }
