@@ -25,12 +25,12 @@ Common labels
 app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- end }}
 app.kubernetes.io/managed-by: EKS
-{{ include "aws-network-flow-monitor-agent.additionalLabels" . }}
+{{- include "aws-network-flow-monitor-agent.additionalLabels" . }}
 {{- end }}
 
 {{- define "aws-network-flow-monitor-agent.additionalLabels" -}}
-{{- if .Values.additionalLabels }}
-{{- tpl (.Values.additionalLabels | toYaml) . }}
+{{- range $key, $value := .Values.additionalLabels }}
+{{ tpl $key $ | quote }}: {{ tpl (ternary $value ($value | toJson) (kindIs "string" $value)) $ | quote }}
 {{- end }}
 {{- end }}
 

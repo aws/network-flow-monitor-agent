@@ -1,0 +1,53 @@
+# Sets every option the EKS add-on configuration schema exposes, including
+# non-string values, keys YAML would otherwise read as booleans or numbers, and a podLabels
+# key that collides with the selector label.
+podLabels:
+  platform.example.com/managed-by: container-platform-team
+  platform.example.com/application-id: app-52722
+  cost-center: 12345
+  build: 12345678
+  critical: true
+  "yes": "y"
+  "1": one
+  name: ignored
+podAnnotations:
+  example.com/owner: team-a
+  example.com/revision: 7
+  example.com/build: 12345678
+  "on": "o"
+additionalLabels:
+  team: network
+  tier: 3
+  build: 12345678
+priorityClassName: "123"
+tolerations:
+  - key: dedicated
+    operator: Equal
+    value: monitoring
+    effect: NoSchedule
+resources:
+  limits:
+    memory: 400Mi
+nodeSelector:
+  kubernetes.io/os: linux
+  node-role: workers
+affinity:
+  nodeAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/arch
+              operator: In
+              values: [amd64]
+env:
+  RUST_LOG: debug
+  OPEN_METRICS: "on"
+  OPEN_METRICS_PORT: 9200
+  OPEN_METRICS_ADDRESS: 0.0.0.0
+  CUSTOM_INGESTION_ENDPOINT: https://collector.example.com/publish
+caCerts:
+  enabled: true
+  secretName: "true"
+  secretKey: ""
+  mountPath: /etc/ssl/certs
+  fileName: ca-bundle.crt
