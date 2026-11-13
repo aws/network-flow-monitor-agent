@@ -30,7 +30,7 @@ app.kubernetes.io/managed-by: EKS
 
 {{- define "aws-network-flow-monitor-agent.additionalLabels" -}}
 {{- range $key, $value := .Values.additionalLabels }}
-{{ tpl $key $ | quote }}: {{ tpl ($value | toString) $ | quote }}
+{{ tpl $key $ | quote }}: {{ tpl (ternary $value ($value | toJson) (kindIs "string" $value)) $ | quote }}
 {{- end }}
 {{- end }}
 

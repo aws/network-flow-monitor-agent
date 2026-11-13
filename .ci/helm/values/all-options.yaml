@@ -5,6 +5,7 @@ podLabels:
   platform.example.com/managed-by: container-platform-team
   platform.example.com/application-id: app-52722
   cost-center: 12345
+  build: 12345678
   critical: true
   "yes": "y"
   "1": one
@@ -12,10 +13,12 @@ podLabels:
 podAnnotations:
   example.com/owner: team-a
   example.com/revision: 7
+  example.com/build: 12345678
   "on": "o"
 additionalLabels:
   team: network
   tier: 3
+  build: 12345678
 priorityClassName: "123"
 tolerations:
   - key: dedicated

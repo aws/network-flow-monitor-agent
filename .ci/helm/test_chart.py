@@ -82,7 +82,7 @@ def string_map_sample(value_schema):
     if value_schema.get("type") == "string":
         return {k: "value" for k in TRICKY_KEYS}
     sample = {k: "value" for k in TRICKY_KEYS}
-    sample.update({"example.com/number": 12345, "example.com/flag": True})
+    sample.update({"example.com/number": 12345, "example.com/big-number": 12345678, "example.com/flag": True})
     return sample
 
 

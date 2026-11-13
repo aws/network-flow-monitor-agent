@@ -15,14 +15,14 @@ spec:
       {{- if .Values.podAnnotations }}
       annotations:
       {{- range $key, $value := .Values.podAnnotations }}
-        {{ $key | quote }}: {{ $value | toString | quote }}
+        {{ $key | quote }}: {{ ternary $value ($value | toJson) (kindIs "string" $value) | quote }}
       {{- end }}
       {{- end }}
       labels:
         name: {{ .Values.daemonSet.name }}
         {{- range $key, $value := .Values.podLabels }}
         {{- if ne $key "name" }}
-        {{ $key | quote }}: {{ $value | toString | quote }}
+        {{ $key | quote }}: {{ ternary $value ($value | toJson) (kindIs "string" $value) | quote }}
         {{- end }}
         {{- end }}
     spec:
