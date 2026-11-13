@@ -37,6 +37,9 @@ env:
   OPEN_METRICS: "off"
   OPEN_METRICS_PORT: "9109"
   OPEN_METRICS_ADDRESS: "0.0.0.0"
+  # OPEN_METRICS_MODE: "absolute"
+  # OPEN_METRICS_REFRESH_SECS: "30"
+  # OPEN_METRICS_MAX_CONNECTIONS: "10"
   # DISABLE_PUBLISHING: "true"
 
 # CA Certificate Bundle configuration

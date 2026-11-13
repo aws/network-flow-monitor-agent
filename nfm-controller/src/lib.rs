@@ -46,6 +46,8 @@ use crate::utils::{
 
 #[cfg(feature = "open-metrics")]
 use crate::open_metrics::server::{OpenMetricsServer, OpenMetricsServerConfig};
+#[cfg(feature = "open-metrics")]
+use crate::open_metrics::OpenMetricsMode;
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, ValueEnum)]
 #[serde(rename_all = "lowercase")]
@@ -145,6 +147,23 @@ pub struct Options {
     #[cfg(feature = "open-metrics")]
     #[clap(long = "open-metrics-address", default_value = "127.0.0.1")]
     open_metrics_address: String,
+
+    /// OpenMetrics value mode. `delta` reports changes since the previous scrape and serves one
+    /// connection at a time. `absolute` reports cumulative counters and serves connections
+    /// concurrently.
+    #[cfg(feature = "open-metrics")]
+    #[clap(long = "open-metrics-mode", value_enum, default_value_t = OpenMetricsMode::Delta)]
+    open_metrics_mode: OpenMetricsMode,
+
+    /// Minimum seconds between metric refreshes. Only used in absolute mode.
+    #[cfg(feature = "open-metrics")]
+    #[clap(long = "open-metrics-refresh-secs", default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..=3600))]
+    open_metrics_refresh_secs: u64,
+
+    /// Maximum concurrent connections to the OpenMetrics server. Only used in absolute mode.
+    #[cfg(feature = "open-metrics")]
+    #[clap(long = "open-metrics-max-connections", default_value_t = 10, value_parser = clap::value_parser!(u64).range(1..=1000))]
+    open_metrics_max_connections: u64,
 
     /// AWS Managed Prometheus workspace ID (e.g., ws-12345678-1234-1234-1234-123456789012)
     #[clap(long = "prometheus-workspace-id", default_value = "")]
@@ -415,6 +434,11 @@ fn start_open_metrics_server(
             opt.open_metrics_address.clone(),
             opt.open_metrics_port,
             k8s_collector,
+        )
+        .with_mode(
+            opt.open_metrics_mode,
+            Duration::from_secs(opt.open_metrics_refresh_secs),
+            opt.open_metrics_max_connections as usize,
         );
         let mut server = OpenMetricsServer::with_config(config);
         if let Err(e) = server.start() {
@@ -575,6 +599,9 @@ mod test {
             open_metrics: OnOff::Off,
             open_metrics_port: 80,
             open_metrics_address: "127.0.0.1".to_string(),
+            open_metrics_mode: OpenMetricsMode::Delta,
+            open_metrics_refresh_secs: 30,
+            open_metrics_max_connections: 10,
             prometheus_workspace_id: "".to_string(),
             prometheus_region: "".to_string(),
             max_sock_props: None,

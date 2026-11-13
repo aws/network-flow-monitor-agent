@@ -14,7 +14,8 @@ use crate::{
     },
     open_metrics::{
         provider::OpenMetricProvider,
-        providers::{build_gauge_metric, MetricLabel},
+        providers::{build_gauge_metric, register_metric, MetricLabel},
+        OpenMetricsMode,
     },
     reports::report::ReportValue,
 };
@@ -154,6 +155,8 @@ pub struct EfaMetricsProvider {
     /// Shared mapping from EFA device IDs to pod info, populated by the
     /// EfaPodResourcesWatcher when the EFA device plugin is present.
     device_to_pod_map: Option<Arc<Mutex<EfaDeviceToPodMap>>>,
+
+    mode: OpenMetricsMode,
 }
 
 impl EfaMetricsProvider {
@@ -216,12 +219,26 @@ impl EfaMetricsProvider {
             previous_values: HashMap::new(),
             previous_labels: HashMap::new(),
             device_to_pod_map,
+            mode: OpenMetricsMode::Delta,
         };
 
         // Seed the cache with current sysfs values so the first scrape produces
         // clean deltas instead of a large historical spike.
         provider.seed_cache();
         provider
+    }
+
+    pub fn with_mode(mut self, mode: OpenMetricsMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    /// Returns the value to report: the delta since the previous reading, or the raw value.
+    fn reported_value(&self, current: u64, previous: u64) -> i64 {
+        match self.mode {
+            OpenMetricsMode::Delta => compute_delta(current, previous) as i64,
+            OpenMetricsMode::Absolute => current as i64,
+        }
     }
 
     fn total_metrics_count(&self) -> usize {
@@ -409,16 +426,8 @@ impl OpenMetricProvider for EfaMetricsProvider {
             "Registering EFA Metrics"
         );
 
-        for gauge in &self.standard_gauges {
-            registry
-                .register(Box::new(gauge.clone()))
-                .expect("EFA metric registration");
-        }
-
-        for gauge in &self.srd_gauges {
-            registry
-                .register(Box::new(gauge.clone()))
-                .expect("EFA metric registration");
+        for gauge in self.standard_gauges.iter().chain(&self.srd_gauges) {
+            register_metric(registry, gauge, self.mode);
         }
     }
 
@@ -463,19 +472,18 @@ impl OpenMetricProvider for EfaMetricsProvider {
             let label_refs: Vec<&str> = label_values.iter().map(|s| s.as_str()).collect();
 
             for (i, _) in STANDARD_METRICS.iter().enumerate() {
-                let delta = compute_delta(current_values[i], previous[i]);
+                let value = self.reported_value(current_values[i], previous[i]);
                 self.standard_gauges[i]
                     .with_label_values(&label_refs)
-                    .set(delta as i64);
+                    .set(value);
             }
 
             if self.srd_available {
                 let offset = STANDARD_METRICS.len();
                 for (i, _) in SRD_METRICS.iter().enumerate() {
-                    let delta = compute_delta(current_values[offset + i], previous[offset + i]);
-                    self.srd_gauges[i]
-                        .with_label_values(&label_refs)
-                        .set(delta as i64);
+                    let value =
+                        self.reported_value(current_values[offset + i], previous[offset + i]);
+                    self.srd_gauges[i].with_label_values(&label_refs).set(value);
                 }
             }
 
@@ -560,6 +568,7 @@ mod tests {
             previous_values: HashMap::new(),
             previous_labels: HashMap::new(),
             device_to_pod_map,
+            mode: OpenMetricsMode::Delta,
         };
 
         provider.seed_cache();
@@ -709,6 +718,31 @@ mod tests {
                     "Delta should be 58 for {}",
                     mf.get_name()
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn test_absolute_reports_raw_counters_as_counter_type() {
+        use prometheus::proto::MetricType;
+
+        let tmp = create_mock_sysfs(false);
+        let mut provider = create_provider_with_mock(&tmp, ComputePlatform::Ec2Plain)
+            .with_mode(OpenMetricsMode::Absolute);
+        let mut registry = Registry::new();
+        provider.register_to(&mut registry);
+
+        let _ = provider.update_metrics();
+        write_counters(&tmp, "rdmap0s31", 100, None);
+        let _ = provider.update_metrics();
+
+        let metric_families = registry.gather();
+        assert!(!metric_families.is_empty());
+        for mf in &metric_families {
+            assert!(mf.name().ends_with("_total"), "{}", mf.name());
+            assert_eq!(mf.get_field_type(), MetricType::COUNTER);
+            for metric in mf.get_metric() {
+                assert_eq!(metric.get_counter().value(), 100.0, "{}", mf.name());
             }
         }
     }
