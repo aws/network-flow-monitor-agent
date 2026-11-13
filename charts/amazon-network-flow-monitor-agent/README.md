@@ -79,7 +79,7 @@ Key values (override with `--set`):
 | `nodeSelector` | `{kubernetes.io/os: linux}` | Node labels a node must have for agent pods to be scheduled on it |
 | `affinity` | excludes Fargate/Hybrid, amd64+arm64 only | Node affinity rules |
 | `priorityClassName` | `""` | Pod priority class name |
-| `podLabels` | `{}` | Additional labels on DaemonSet pods |
+| `podLabels` | `{}` | Additional labels on DaemonSet pods. Can be added, changed or removed after install. The `name` key is reserved for the DaemonSet selector |
 | `podAnnotations` | `{}` | Additional annotations on DaemonSet pods |
 
 ### Identity & RBAC

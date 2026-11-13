@@ -158,3 +158,24 @@ jobs:
           path: ./target/release/network-flow-monitor-agent
           retention-days: 3
           if-no-files-found: error
+
+  # Render the Helm chart with every configurable option and validate the manifests
+  helm:
+    name: Helm chart
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Helm
+        run: |
+          command -v helm || curl -sSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          helm version
+
+      - name: Install kubeconform and PyYAML
+        run: |
+          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.7.0/kubeconform-linux-amd64.tar.gz \
+            | sudo tar xz -C /usr/local/bin kubeconform
+          sudo apt-get update && sudo apt-get install -y python3-yaml
+
+      - name: Render and validate chart
+        run: .ci/helm/render-test.sh

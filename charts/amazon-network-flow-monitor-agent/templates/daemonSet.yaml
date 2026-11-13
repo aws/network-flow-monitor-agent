@@ -10,21 +10,20 @@ spec:
   selector:
     matchLabels:
       name: {{ .Values.daemonSet.name }}
-      {{- if .Values.podLabels }}
-      {{ toYaml .Values.podLabels | indent 6 }}
-      {{- end }}
   template:
     metadata:
       {{- if .Values.podAnnotations }}
       annotations:
       {{- range $key, $value := .Values.podAnnotations }}
-        {{ $key }}: {{ $value | quote }}
+        {{ $key | quote }}: {{ $value | toString | quote }}
       {{- end }}
       {{- end }}
       labels:
         name: {{ .Values.daemonSet.name }}
-        {{- if .Values.podLabels }}
-        {{ toYaml .Values.podLabels | indent 8 }}
+        {{- range $key, $value := .Values.podLabels }}
+        {{- if ne $key "name" }}
+        {{ $key | quote }}: {{ $value | toString | quote }}
+        {{- end }}
         {{- end }}
     spec:
       hostNetwork: true
@@ -76,9 +75,9 @@ spec:
                   fieldPath: metadata.name
             {{- if .Values.caCerts.enabled }}
             - name: AWS_CA_BUNDLE
-              value: {{ .Values.caCerts.mountPath }}/{{ .Values.caCerts.fileName }}
+              value: {{ printf "%s/%s" .Values.caCerts.mountPath .Values.caCerts.fileName | quote }}
             - name: SSL_CERT_FILE
-              value: {{ .Values.caCerts.mountPath }}/{{ .Values.caCerts.fileName }}
+              value: {{ printf "%s/%s" .Values.caCerts.mountPath .Values.caCerts.fileName | quote }}
             {{- end }}
           volumeMounts:
             - name: host-cgroup
@@ -91,8 +90,8 @@ spec:
           {{- end }}
           {{- if .Values.caCerts.enabled }}
             - name: ca-bundle
-              mountPath: {{ .Values.caCerts.mountPath }}/{{ .Values.caCerts.fileName }}
-              subPath: {{ .Values.caCerts.fileName }}
+              mountPath: {{ printf "%s/%s" .Values.caCerts.mountPath .Values.caCerts.fileName | quote }}
+              subPath: {{ .Values.caCerts.fileName | quote }}
               readOnly: true
           {{- end }}
       volumes:
@@ -109,11 +108,11 @@ spec:
       {{- if .Values.caCerts.enabled }}
         - name: ca-bundle
           secret:
-            secretName: {{ .Values.caCerts.secretName }}
+            secretName: {{ .Values.caCerts.secretName | quote }}
             {{- if .Values.caCerts.secretKey }}
             items:
-              - key: {{ .Values.caCerts.secretKey }}
-                path: {{ .Values.caCerts.fileName }}
+              - key: {{ .Values.caCerts.secretKey | quote }}
+                path: {{ .Values.caCerts.fileName | quote }}
             {{- end }}
       {{- end }}
       {{- if .Values.nodeSelector }}
@@ -122,7 +121,7 @@ spec:
       terminationGracePeriodSeconds: 30
       serviceAccountName: {{ .Values.serviceAccount.name }}
       {{- with .Values.priorityClassName }}
-      priorityClassName: {{ . }}
+      priorityClassName: {{ . | quote }}
       {{- end }}
       {{- with .Values.tolerations }}
       tolerations:
