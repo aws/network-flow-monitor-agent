@@ -106,6 +106,8 @@ pub struct SockOpsStats {
     pub srtt_us: u32,
 }
 
+// Padding is explicit: older verifiers (e.g. kernel 5.10/5.15) reject map updates that read
+// uninitialized stack bytes, which implicit padding leaves behind.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[cfg_attr(not(feature = "bpf"), derive(serde::Serialize))]
@@ -113,6 +115,8 @@ pub struct SockStats {
     pub last_touched_us: u64,
     pub connect_start_us: u64,
     pub connect_duration_us: u32,
+    #[cfg_attr(not(feature = "bpf"), serde(skip))]
+    pub _pad0: u32,
 
     pub bytes_received: u64,
     pub bytes_delivered: u64,
@@ -124,10 +128,14 @@ pub struct SockStats {
     pub rtt_smoothed_us: u32,
 
     pub retrans_syn: u16, // potential retrans during close or syn are low in amounts.
+    #[cfg_attr(not(feature = "bpf"), serde(skip))]
+    pub _pad1: u16,
     pub retrans_est: u32,
     pub retrans_close: u16, // potential retrans during close or syn are low in amounts.
 
     pub rtos_syn: u8, // potential rtos during close or syn are low in amounts.
+    #[cfg_attr(not(feature = "bpf"), serde(skip))]
+    pub _pad2: u8,
     pub rtos_est: u32,
     pub rtos_close: u8,
 
@@ -212,6 +220,8 @@ impl SockStats {
 
             connect_attempts: self.connect_attempts.wrapping_sub(rhs.connect_attempts),
             connect_successes: self.connect_successes.wrapping_sub(rhs.connect_successes),
+
+            ..Default::default()
         }
     }
 
@@ -377,6 +387,45 @@ mod tests {
 
         sock_ctx.address_family = AF_INET6;
         assert!(sock_ctx.is_valid());
+    }
+
+    // Each field must start where the previous one ends, so no implicit padding exists.
+    #[test]
+    fn test_sock_stats_has_no_implicit_padding() {
+        use core::mem::{offset_of, size_of, size_of_val};
+
+        let s = SockStats::default();
+        let fields = [
+            (offset_of!(SockStats, last_touched_us), size_of_val(&s.last_touched_us)),
+            (offset_of!(SockStats, connect_start_us), size_of_val(&s.connect_start_us)),
+            (offset_of!(SockStats, connect_duration_us), size_of_val(&s.connect_duration_us)),
+            (offset_of!(SockStats, _pad0), size_of_val(&s._pad0)),
+            (offset_of!(SockStats, bytes_received), size_of_val(&s.bytes_received)),
+            (offset_of!(SockStats, bytes_delivered), size_of_val(&s.bytes_delivered)),
+            (offset_of!(SockStats, segments_received), size_of_val(&s.segments_received)),
+            (offset_of!(SockStats, segments_delivered), size_of_val(&s.segments_delivered)),
+            (offset_of!(SockStats, rtt_count), size_of_val(&s.rtt_count)),
+            (offset_of!(SockStats, rtt_latest_us), size_of_val(&s.rtt_latest_us)),
+            (offset_of!(SockStats, rtt_smoothed_us), size_of_val(&s.rtt_smoothed_us)),
+            (offset_of!(SockStats, retrans_syn), size_of_val(&s.retrans_syn)),
+            (offset_of!(SockStats, _pad1), size_of_val(&s._pad1)),
+            (offset_of!(SockStats, retrans_est), size_of_val(&s.retrans_est)),
+            (offset_of!(SockStats, retrans_close), size_of_val(&s.retrans_close)),
+            (offset_of!(SockStats, rtos_syn), size_of_val(&s.rtos_syn)),
+            (offset_of!(SockStats, _pad2), size_of_val(&s._pad2)),
+            (offset_of!(SockStats, rtos_est), size_of_val(&s.rtos_est)),
+            (offset_of!(SockStats, rtos_close), size_of_val(&s.rtos_close)),
+            (offset_of!(SockStats, state_flags), size_of_val(&s.state_flags)),
+            (offset_of!(SockStats, connect_attempts), size_of_val(&s.connect_attempts)),
+            (offset_of!(SockStats, connect_successes), size_of_val(&s.connect_successes)),
+        ];
+
+        let mut expected_offset = 0;
+        for (offset, size) in fields {
+            assert_eq!(offset, expected_offset);
+            expected_offset += size;
+        }
+        assert_eq!(expected_offset, size_of::<SockStats>());
     }
 
     #[test]
