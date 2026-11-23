@@ -129,7 +129,7 @@ pub struct SockStats {
     pub retrans_syn: u16, // potential retrans during close or syn are low in amounts.
 
     pub retrans_close: u8, // potential retrans during close or syn are low in amounts.
-    pub rtos_syn: u8, // potential rtos during close or syn are low in amounts.
+    pub rtos_syn: u8,      // potential rtos during close or syn are low in amounts.
     pub rtos_close: u8,
     pub state_flags: SockStateFlags,
     pub connect_attempts: u8,
@@ -384,26 +384,31 @@ mod tests {
         use core::mem::{offset_of, size_of, size_of_val};
 
         let s = SockStats::default();
+        macro_rules! field {
+            ($name:ident) => {
+                (offset_of!(SockStats, $name), size_of_val(&s.$name))
+            };
+        }
         let fields = [
-            (offset_of!(SockStats, last_touched_us), size_of_val(&s.last_touched_us)),
-            (offset_of!(SockStats, connect_start_us), size_of_val(&s.connect_start_us)),
-            (offset_of!(SockStats, bytes_received), size_of_val(&s.bytes_received)),
-            (offset_of!(SockStats, bytes_delivered), size_of_val(&s.bytes_delivered)),
-            (offset_of!(SockStats, connect_duration_us), size_of_val(&s.connect_duration_us)),
-            (offset_of!(SockStats, segments_received), size_of_val(&s.segments_received)),
-            (offset_of!(SockStats, segments_delivered), size_of_val(&s.segments_delivered)),
-            (offset_of!(SockStats, rtt_count), size_of_val(&s.rtt_count)),
-            (offset_of!(SockStats, rtt_latest_us), size_of_val(&s.rtt_latest_us)),
-            (offset_of!(SockStats, rtt_smoothed_us), size_of_val(&s.rtt_smoothed_us)),
-            (offset_of!(SockStats, retrans_est), size_of_val(&s.retrans_est)),
-            (offset_of!(SockStats, rtos_est), size_of_val(&s.rtos_est)),
-            (offset_of!(SockStats, retrans_syn), size_of_val(&s.retrans_syn)),
-            (offset_of!(SockStats, retrans_close), size_of_val(&s.retrans_close)),
-            (offset_of!(SockStats, rtos_syn), size_of_val(&s.rtos_syn)),
-            (offset_of!(SockStats, rtos_close), size_of_val(&s.rtos_close)),
-            (offset_of!(SockStats, state_flags), size_of_val(&s.state_flags)),
-            (offset_of!(SockStats, connect_attempts), size_of_val(&s.connect_attempts)),
-            (offset_of!(SockStats, connect_successes), size_of_val(&s.connect_successes)),
+            field!(last_touched_us),
+            field!(connect_start_us),
+            field!(bytes_received),
+            field!(bytes_delivered),
+            field!(connect_duration_us),
+            field!(segments_received),
+            field!(segments_delivered),
+            field!(rtt_count),
+            field!(rtt_latest_us),
+            field!(rtt_smoothed_us),
+            field!(retrans_est),
+            field!(rtos_est),
+            field!(retrans_syn),
+            field!(retrans_close),
+            field!(rtos_syn),
+            field!(rtos_close),
+            field!(state_flags),
+            field!(connect_attempts),
+            field!(connect_successes),
         ];
 
         let mut expected_offset = 0;
