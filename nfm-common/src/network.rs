@@ -106,41 +106,32 @@ pub struct SockOpsStats {
     pub srtt_us: u32,
 }
 
-// Padding is explicit: older verifiers (e.g. kernel 5.10/5.15) reject map updates that read
-// uninitialized stack bytes, which implicit padding leaves behind.
+// Fields are ordered by size (u64, u32, u16, u8) so the struct has no padding: older verifiers
+// (e.g. kernel 5.15) reject map updates that read uninitialized stack bytes, which padding leaves.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[cfg_attr(not(feature = "bpf"), derive(serde::Serialize))]
 pub struct SockStats {
     pub last_touched_us: u64,
     pub connect_start_us: u64,
-    pub connect_duration_us: u32,
-    #[cfg_attr(not(feature = "bpf"), serde(skip))]
-    pub _pad0: u32,
-
     pub bytes_received: u64,
     pub bytes_delivered: u64,
+
+    pub connect_duration_us: u32,
     pub segments_received: u32,
     pub segments_delivered: u32,
-
     pub rtt_count: u32,
     pub rtt_latest_us: u32,
     pub rtt_smoothed_us: u32,
+    pub retrans_est: u32,
+    pub rtos_est: u32,
 
     pub retrans_syn: u16, // potential retrans during close or syn are low in amounts.
-    #[cfg_attr(not(feature = "bpf"), serde(skip))]
-    pub _pad1: u16,
-    pub retrans_est: u32,
-    pub retrans_close: u16, // potential retrans during close or syn are low in amounts.
 
+    pub retrans_close: u8, // potential retrans during close or syn are low in amounts.
     pub rtos_syn: u8, // potential rtos during close or syn are low in amounts.
-    #[cfg_attr(not(feature = "bpf"), serde(skip))]
-    pub _pad2: u8,
-    pub rtos_est: u32,
     pub rtos_close: u8,
-
     pub state_flags: SockStateFlags,
-
     pub connect_attempts: u8,
     pub connect_successes: u8,
 }
@@ -220,8 +211,6 @@ impl SockStats {
 
             connect_attempts: self.connect_attempts.wrapping_sub(rhs.connect_attempts),
             connect_successes: self.connect_successes.wrapping_sub(rhs.connect_successes),
-
-            ..Default::default()
         }
     }
 
@@ -398,22 +387,19 @@ mod tests {
         let fields = [
             (offset_of!(SockStats, last_touched_us), size_of_val(&s.last_touched_us)),
             (offset_of!(SockStats, connect_start_us), size_of_val(&s.connect_start_us)),
-            (offset_of!(SockStats, connect_duration_us), size_of_val(&s.connect_duration_us)),
-            (offset_of!(SockStats, _pad0), size_of_val(&s._pad0)),
             (offset_of!(SockStats, bytes_received), size_of_val(&s.bytes_received)),
             (offset_of!(SockStats, bytes_delivered), size_of_val(&s.bytes_delivered)),
+            (offset_of!(SockStats, connect_duration_us), size_of_val(&s.connect_duration_us)),
             (offset_of!(SockStats, segments_received), size_of_val(&s.segments_received)),
             (offset_of!(SockStats, segments_delivered), size_of_val(&s.segments_delivered)),
             (offset_of!(SockStats, rtt_count), size_of_val(&s.rtt_count)),
             (offset_of!(SockStats, rtt_latest_us), size_of_val(&s.rtt_latest_us)),
             (offset_of!(SockStats, rtt_smoothed_us), size_of_val(&s.rtt_smoothed_us)),
-            (offset_of!(SockStats, retrans_syn), size_of_val(&s.retrans_syn)),
-            (offset_of!(SockStats, _pad1), size_of_val(&s._pad1)),
             (offset_of!(SockStats, retrans_est), size_of_val(&s.retrans_est)),
+            (offset_of!(SockStats, rtos_est), size_of_val(&s.rtos_est)),
+            (offset_of!(SockStats, retrans_syn), size_of_val(&s.retrans_syn)),
             (offset_of!(SockStats, retrans_close), size_of_val(&s.retrans_close)),
             (offset_of!(SockStats, rtos_syn), size_of_val(&s.rtos_syn)),
-            (offset_of!(SockStats, _pad2), size_of_val(&s._pad2)),
-            (offset_of!(SockStats, rtos_est), size_of_val(&s.rtos_est)),
             (offset_of!(SockStats, rtos_close), size_of_val(&s.rtos_close)),
             (offset_of!(SockStats, state_flags), size_of_val(&s.state_flags)),
             (offset_of!(SockStats, connect_attempts), size_of_val(&s.connect_attempts)),
@@ -802,7 +788,7 @@ mod tests {
             rtt_count: u32::MAX - expected_diff.rtt_count + 1,
             retrans_syn: u16::MAX - expected_diff.retrans_syn + 1,
             retrans_est: u32::MAX - expected_diff.retrans_est + 1,
-            retrans_close: u16::MAX - expected_diff.retrans_close + 1,
+            retrans_close: u8::MAX - expected_diff.retrans_close + 1,
             rtos_syn: u8::MAX - expected_diff.rtos_syn + 1,
             rtos_est: u32::MAX - expected_diff.rtos_est + 1,
             rtos_close: u8::MAX - expected_diff.rtos_close + 1,
@@ -880,7 +866,7 @@ mod tests {
     fn test_sock_stats_narrowed_fields_saturate_on_add() {
         let mut stats = SockStats {
             retrans_syn: u16::MAX - 1,
-            retrans_close: u16::MAX - 1,
+            retrans_close: u8::MAX - 1,
             rtos_syn: u8::MAX - 1,
             rtos_close: u8::MAX - 1,
             connect_attempts: u8::MAX - 1,
@@ -898,7 +884,7 @@ mod tests {
         stats.add_from(&other, 0);
 
         assert_eq!(stats.retrans_syn, u16::MAX);
-        assert_eq!(stats.retrans_close, u16::MAX);
+        assert_eq!(stats.retrans_close, u8::MAX);
         assert_eq!(stats.rtos_syn, u8::MAX);
         assert_eq!(stats.rtos_close, u8::MAX);
         assert_eq!(stats.connect_attempts, u8::MAX);
@@ -916,7 +902,7 @@ mod tests {
         };
         let previous = SockStats {
             retrans_syn: u16::MAX,
-            retrans_close: u16::MAX,
+            retrans_close: u8::MAX,
             rtos_syn: u8::MAX,
             rtos_close: u8::MAX,
             ..Default::default()

@@ -902,6 +902,6 @@ mod test {
     fn test_calculate_ebpf_memory_usage_max() {
         // Will deliberately break at sock struct changes and provide a manual review step
         let result = calculate_ebpf_memory_usage(MAX_ENTRIES_SK_PROPS_HI, MAX_ENTRIES_SK_STATS_HI);
-        assert_eq!(result, 6809);
+        assert_eq!(result, 6329);
     }
 }
