@@ -234,14 +234,21 @@ fi
 table_header="| Metric | TPS | Instance Type | Baseline |  Current  |  Change  |       Limit      |
 |--------|-----|---------------|----------|-----------|----------|------------------|"
 sorted_rows=$(sort -t'|' -k2,2 -k3,3n -k4,4 "$detailed_metrics_file")
-flagged_rows=$(grep -E '🔻|▲|⚠️' <<< "$sorted_rows" || true)
+# Visible rows: flagged changes plus rows whose change is N/A (main baseline missing).
+visible_rows=$(awk -F'|' '$7 ~ /🔻|▲|N\/A/ || $8 ~ /⚠️/' <<< "$sorted_rows")
+missing_count=$(awk -F'|' '$7 ~ /N\/A/' <<< "$sorted_rows" | grep -c . || true)
+total_count=$(grep -c . <<< "$sorted_rows" || true)
 
 echo "## 📊 Significant Changes"
-if [[ -n "$flagged_rows" ]]; then
+if [[ "$missing_count" -gt 0 ]]; then
+    echo "**main baseline missing for $missing_count of $total_count rows** (shown as N/A below)"
+    echo ""
+fi
+if [[ -n "$visible_rows" ]]; then
     echo "$table_header"
-    echo "$flagged_rows"
+    echo "$visible_rows"
 else
-    echo "No significant changes (all within ±10% of main and within limits)."
+    echo "No significant changes (all within ±10% of main)."
 fi
 
 # Instance types ordered by size (xlarge first).

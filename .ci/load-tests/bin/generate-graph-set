@@ -7,6 +7,7 @@ import math
 import os
 import re
 import sh
+import statistics
 
 from sh import CommandNotFound
 
@@ -52,14 +53,19 @@ def get_baseline_vals(inst_type, jquery):
 def fmt(vals):
     return ','.join('nan' if math.isnan(v) else "{:.3f}".format(v) for v in vals)
 
-def avg_change_flag(series):
-    # Flags a chart when the mean PR-vs-baseline change over all points exceeds 10%.
-    changes = [(p - b) / b * 100 for s in series for p, b in zip(s['pr'], s['base'] or [])
-               if math.isfinite(p) and math.isfinite(b) and b != 0]
+def change_flag(series):
+    # Flags a chart when the median per-point change vs baseline exceeds 10%; points that
+    # moved less than 5% of the chart's y-max count as unchanged.
+    pts = [(p, b) for s in series for p, b in zip(s['pr'], s['base'] or [])
+           if math.isfinite(p) and math.isfinite(b)]
+    if not pts:
+        return ''
+    floor = 0.05 * max(max(p, b) for p, b in pts)
+    changes = [0 if abs(p - b) <= floor else (p - b) / b * 100 for p, b in pts if b != 0]
     if not changes:
         return ''
-    avg = sum(changes) / len(changes)
-    return '🔻' if avg > 10 else '▲' if avg < -10 else ''
+    median = statistics.median(changes)
+    return '🔻' if median > 10 else '▲' if median < -10 else ''
 
 charts = []
 category = ''
@@ -102,7 +108,7 @@ def produce_graph(title, jquery, y_label='', y_suffix=''):
     )
     image_name = prefix + re.sub(r'[^\w\-]', '', title.replace(' ', '-').lower()) + '.png'
     charts.append({'title': title, 'category': category, 'file': image_name,
-                   'flag': avg_change_flag(series), 'y_label': y_label, 'y_suffix': y_suffix,
+                   'flag': change_flag(series), 'y_label': y_label, 'y_suffix': y_suffix,
                    'series': [{k: ([None if math.isnan(v) else v for v in s[k]] if s[k] else None)
                                if k != 'name' else s[k] for k in s} for s in series]})
 
