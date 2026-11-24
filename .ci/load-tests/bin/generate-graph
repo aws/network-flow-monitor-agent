@@ -7,6 +7,7 @@ import math
 import os
 import matplotlib.pyplot as plt
 import matplotlib.markers as markers
+from matplotlib.lines import Line2D
 import re
 
 parser = argparse.ArgumentParser("generate-graph")
@@ -17,6 +18,8 @@ parser.add_argument('--x-values', help='Values along the x-axis, comma separated
 parser.add_argument('--y-axis-label', required=True)
 parser.add_argument('--y-axis-suffix', required=False, default='')
 parser.add_argument('--line', help='Specify for each line plotted on the graph.  Syntax: "name:value,value,..."', required=True, action='append')
+parser.add_argument('--baseline-line', help='Baseline series drawn dashed in the color of the --line with the same name. Same syntax as --line; "nan" marks a missing point', required=False, action='append', default=[])
+parser.add_argument('--baseline-label', required=False, default='main (baseline)')
 parser.add_argument('--output-dir', help='Image output directory', required=False, default='.')
 parser.add_argument('--format', help='Output format: png or svg', required=False, default='png', choices=['png', 'svg'])
 args = parser.parse_args()
@@ -31,14 +34,20 @@ y_max = 0
 plt.figure(figsize=(8, 4.5))
 plt.style.use('default')
 
-for i, line in enumerate(args.line):
+def parse_line(line):
     parts = line.split(':')
     if len(parts) != 2:
         raise Exception('Invalid line format: ' + line)
+    return parts[0], list(map(float, parts[1].split(',')))
 
-    name = parts[0]
-    y_values = list(map(float, parts[1].split(',')))
-    y_max = max(y_max, max(y_values))
+def finite_max(values):
+    return max([v for v in values if math.isfinite(v)], default=0)
+
+baselines = dict(parse_line(line) for line in args.baseline_line)
+
+for i, line in enumerate(args.line):
+    name, y_values = parse_line(line)
+    y_max = max(y_max, finite_max(y_values))
 
     marker_idx = i % len(marker_styles)
     color_idx = i % len(colors)
@@ -48,7 +57,13 @@ for i, line in enumerate(args.line):
              color=colors[color_idx],
              linewidth=2,
              markersize=6,
+             zorder=3,
              label=name)
+
+    if name in baselines:
+        y_max = max(y_max, finite_max(baselines[name]))
+        plt.plot(x_values, baselines[name], color=colors[color_idx], linestyle='--',
+                 linewidth=2, alpha=0.35, marker=marker_styles[marker_idx], markersize=3, zorder=2)
 
 if y_max > 0:
     # Calculate nice y-axis maximum
@@ -67,7 +82,11 @@ plt.xlabel(args.x_axis_label, fontsize=11)
 plt.ylabel(args.y_axis_label, fontsize=11)
 plt.ylim(0, y_max)
 plt.grid(True, alpha=0.3)
-plt.legend(bbox_to_anchor=(1.05, 0.5), loc='center left')
+handles, labels = plt.gca().get_legend_handles_labels()
+if baselines:
+    handles.append(Line2D([], [], color='grey', linestyle='--', linewidth=2, alpha=0.6))
+    labels.append(args.baseline_label)
+plt.legend(handles, labels, bbox_to_anchor=(1.05, 0.5), loc='center left')
 plt.tight_layout()
 
 # Format y-axis ticks with suffix if provided

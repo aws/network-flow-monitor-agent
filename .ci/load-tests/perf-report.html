@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Load test report __RUN_ID__</title>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
+<style>
+  body { font-family: sans-serif; margin: 1em 2em; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(560px, 1fr)); gap: 1em; }
+  .chart { height: 420px; min-width: 0; }
+</style>
+</head>
+<body>
+<h1>Load test report __RUN_ID__</h1>
+<p>Solid lines: this PR. Dashed faded lines: main (baseline), same color per instance type.</p>
+<div id="report"></div>
+<script>
+const TPS = __TPS__;
+const CHARTS = __CHARTS__;
+const COLORS = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b'];
+const report = document.getElementById('report');
+const grids = {};
+// Lay out every chart cell before plotting so each plot sizes to its final grid column.
+const divs = CHARTS.map(chart => {
+  if (!grids[chart.category]) {
+    const h = document.createElement('h2');
+    h.textContent = chart.category;
+    grids[chart.category] = document.createElement('div');
+    grids[chart.category].className = 'grid';
+    report.append(h, grids[chart.category]);
+  }
+  const div = document.createElement('div');
+  div.className = 'chart';
+  grids[chart.category].append(div);
+  return div;
+});
+CHARTS.forEach((chart, n) => {
+  const div = divs[n];
+  const hover = '%{fullData.name} @ %{x} TPS: %{y:.3f}' + chart.y_suffix + '<extra></extra>';
+  const traces = [];
+  const hasBase = s => s.base && s.base.some(v => v !== null);
+  chart.series.forEach((s, i) => {
+    const color = COLORS[i % COLORS.length];
+    traces.push({x: TPS, y: s.pr, name: s.name, legendgroup: s.name, mode: 'lines+markers',
+                 line: {color, width: 2}, hovertemplate: hover});
+    if (hasBase(s)) {
+      traces.push({x: TPS, y: s.base, name: s.name + ' (main)', legendgroup: s.name, showlegend: false,
+                   mode: 'lines+markers', opacity: 0.35, line: {color, width: 2, dash: 'dash'},
+                   marker: {size: 4}, hovertemplate: hover});
+    }
+  });
+  if (chart.series.some(hasBase)) {
+    traces.push({x: [null], y: [null], name: 'main (baseline)', mode: 'lines', hoverinfo: 'skip',
+                 line: {color: 'grey', dash: 'dash'}});
+  }
+  Plotly.newPlot(div, traces, {
+    title: (chart.flag ? chart.flag + ' ' : '') + chart.title,
+    xaxis: {title: 'TPS'}, yaxis: {title: chart.y_label, ticksuffix: chart.y_suffix, rangemode: 'tozero'},
+    hovermode: 'x unified', margin: {t: 50},
+  }, {responsive: true});
+});
+</script>
+</body>
+</html>

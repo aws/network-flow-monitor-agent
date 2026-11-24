@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 
 import argparse
+import glob
+import json
+import math
 import os
+import re
 import sh
+import statistics
 
 from sh import CommandNotFound
 
 # This script generates PNG images from the data series across all TPS ranges
-# of a set of load tests.
+# of a set of load tests, plus charts.json and an interactive index.html.
 
 parser = argparse.ArgumentParser("generate-graph-set")
 parser.add_argument('--tps-report-dir', required=True)
@@ -15,10 +20,17 @@ parser.add_argument('--test-run-id', required=True)
 parser.add_argument('--instance-types', help='A list of instance types, comma separated', required=True)
 parser.add_argument('--tps-values', help='The TPS test values, comma separated', required=True)
 parser.add_argument('--output-dir', help='Image output directory', required=True)
+parser.add_argument('--baseline-dir', help='Directory of baseline tps reports, drawn dashed', required=False)
 args = parser.parse_args()
 
 inst_types = args.instance_types.split(',')
 tps_values = args.tps_values.split(',')
+
+def jq_value(filepath, jquery):
+    try:
+        return float(sh.jq('--monochrome-output', jquery, filepath).strip())
+    except (sh.ErrorReturnCode, ValueError):
+        return math.nan
 
 def get_y_vals(inst_type, jquery):
     y_vals = []
@@ -26,27 +38,55 @@ def get_y_vals(inst_type, jquery):
         file_prefix = str.format("results-{}", args.test_run_id)
         filename = '_'.join([file_prefix, inst_type, tps_val, 'tps-report.json'])
         filepath = os.path.join(args.tps_report_dir, filename)
-        try:
-            val = sh.jq('--monochrome-output', jquery, filepath).strip()
-            y_vals.append("{:.3f}".format(float(val)))
-        except sh.ErrorReturnCode as e:
-            print(f"Error processing {filepath} with query '{jquery}': {e}")
-            print(f"File exists: {os.path.exists(filepath)}")
-            if os.path.exists(filepath):
-                print(f"File size: {os.path.getsize(filepath)} bytes")
-            raise
-
+        if not os.path.exists(filepath):
+            print(f"Missing {filepath}")
+        y_vals.append(jq_value(filepath, jquery))
     return y_vals
 
+def get_baseline_vals(inst_type, jquery):
+    y_vals = []
+    for tps_val in tps_values:
+        matches = glob.glob(os.path.join(args.baseline_dir, f'*_{inst_type}_{tps_val}_tps-report.json'))
+        y_vals.append(jq_value(matches[0], jquery) if matches else math.nan)
+    return y_vals
+
+def fmt(vals):
+    return ','.join('nan' if math.isnan(v) else "{:.3f}".format(v) for v in vals)
+
+def change_flag(series):
+    # Flags a chart when the median per-point change vs baseline exceeds 10%; points that
+    # moved less than 5% of the chart's y-max count as unchanged.
+    pts = [(p, b) for s in series for p, b in zip(s['pr'], s['base'] or [])
+           if math.isfinite(p) and math.isfinite(b)]
+    if not pts:
+        return ''
+    floor = 0.05 * max(max(p, b) for p, b in pts)
+    changes = [0 if abs(p - b) <= floor else (p - b) / b * 100 for p, b in pts if b != 0]
+    if not changes:
+        return ''
+    median = statistics.median(changes)
+    return '🔻' if median > 10 else '▲' if median < -10 else ''
+
+charts = []
+category = ''
 graph_position = 0
 def produce_graph(title, jquery, y_label='', y_suffix=''):
     global graph_position
     graph_position += 1
 
     line_args = []
+    series = []
     for inst_type in inst_types:
         y_vals = get_y_vals(inst_type, jquery)
-        line_args.append(['--line', inst_type + ':' + ','.join(y_vals)])
+        base_vals = get_baseline_vals(inst_type, jquery) if args.baseline_dir else None
+        line_args.append(['--line', inst_type + ':' + fmt(y_vals)])
+        if base_vals and any(math.isfinite(v) for v in base_vals):
+            line_args.append(['--baseline-line', inst_type + ':' + fmt(base_vals)])
+        series.append({'name': inst_type, 'pr': y_vals, 'base': base_vals})
+
+    if not any(math.isfinite(v) for s in series for v in s['pr']):
+        print('Skipping', title, '(no data)')
+        return
 
     print('Generating', title)
     try:
@@ -55,6 +95,7 @@ def produce_graph(title, jquery, y_label='', y_suffix=''):
         # In case we are running this from the package root.
         cmd = getattr(sh, 'bin/generate-graph')
 
+    prefix = "{:02d}-".format(graph_position)
     cmd(
         '--title', title,
         '--x-values', args.tps_values,
@@ -62,14 +103,20 @@ def produce_graph(title, jquery, y_label='', y_suffix=''):
         '--y-axis-label', y_label,
         '--y-axis-suffix', y_suffix,
         '--output-dir', args.output_dir,
-        '--image-name-prefix', "{:02d}-".format(graph_position),
-        *line_args,
+        '--image-name-prefix', prefix,
+        *[a for pair in line_args for a in pair],
     )
+    image_name = prefix + re.sub(r'[^\w\-]', '', title.replace(' ', '-').lower()) + '.png'
+    charts.append({'title': title, 'category': category, 'file': image_name,
+                   'flag': change_flag(series), 'y_label': y_label, 'y_suffix': y_suffix,
+                   'series': [{k: ([None if math.isnan(v) else v for v in s[k]] if s[k] else None)
+                               if k != 'name' else s[k] for k in s} for s in series]})
 
 run_id =  args.test_run_id.upper()
 
 # Produce each graph from a given jquery.
 
+category = 'Agent CPU'
 for pct in ['max', 'p95', 'p90', 'avg']:
     produce_graph(
         title=str.format('Agent CPU Utilization {} ({})', pct.replace('max', 'p100'), run_id),
@@ -92,6 +139,7 @@ produce_graph(
     y_suffix='%',
 )
 
+category = 'BPF'
 produce_graph(
     title=str.format('Agent BPF CPU Utilization p100 ({})', run_id),
     jquery='(.tps_report.sonar_bpf_program.cpu_util_pct.max)',
@@ -106,6 +154,7 @@ produce_graph(
     y_suffix='',
 )
 
+category = 'Memory'
 produce_graph(
     title=str.format('Agent Memory Utilization p100 ({})', run_id),
     jquery='(.tps_report.sonar_bpf_program.resident_mem_kb.total + .tps_report.sonar_agent_process.resident_mem_kb.max)/1024 | round',
@@ -124,11 +173,13 @@ produce_graph(
     y_label='MB'
 )
 
+category = 'Throughput'
 produce_graph(
     title=str.format('Aggregation Event Load p100 ({})', run_id),
     jquery='(.tps_report.agent_reports.aggregation_completion_ms.max / .tps_report.agent_reports.aggregation_period_ms) | if . < 1.0 then . else 1.0 end',
 )
 
+category = 'Host'
 produce_graph(
     title=str.format('Host CPU Utilization p100 ({})', run_id),
     jquery='(.tps_report.host_stats.cpu_util_pct.max)',
@@ -156,6 +207,7 @@ produce_graph(
     y_suffix='%',
 )
 
+category = 'Throughput'
 produce_graph(
     title=str.format('Sockets processed per sec avg ({})', run_id),
     jquery='(.tps_report.agent_reports.socks_new_per_period.avg * (1000 / .tps_report.agent_reports.aggregation_period_ms))',
@@ -191,6 +243,7 @@ produce_graph(
     y_suffix='',
 )
 
+category = 'Events and errors'
 # Event counters per second
 produce_graph(
     title=str.format('Active Connect Events per sec ({})', run_id),
@@ -282,6 +335,7 @@ produce_graph(
     y_label='errors/sec',
 )
 
+category = 'Socket processing'
 # Process counters per second
 produce_graph(
     title=str.format('Sockets Added per sec ({})', run_id),
@@ -348,5 +402,13 @@ produce_graph(
     jquery='.tps_report.agent_reports.process_counters_per_sec.socket_eviction_failed',
     y_label='failures/sec',
 )
+
+with open(os.path.join(args.output_dir, 'charts.json'), 'w') as f:
+    json.dump(charts, f)
+with open(os.path.join(os.path.dirname(os.path.realpath(__file__)), '..', 'perf-report.html')) as f:
+    template = f.read()
+with open(os.path.join(args.output_dir, 'index.html'), 'w') as f:
+    f.write(template.replace('__RUN_ID__', run_id).replace('__TPS__', json.dumps(list(map(int, tps_values))))
+            .replace('__CHARTS__', json.dumps(charts).replace('</', '<\\/')))
 
 print('Done!')
