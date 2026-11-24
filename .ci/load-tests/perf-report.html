@@ -7,7 +7,7 @@
 <style>
   body { font-family: sans-serif; margin: 1em 2em; }
   .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(560px, 1fr)); gap: 1em; }
-  .chart { height: 420px; }
+  .chart { height: 420px; min-width: 0; }
 </style>
 </head>
 <body>
@@ -20,7 +20,8 @@ const CHARTS = __CHARTS__;
 const COLORS = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b'];
 const report = document.getElementById('report');
 const grids = {};
-CHARTS.forEach((chart, n) => {
+// Lay out every chart cell before plotting so each plot sizes to its final grid column.
+const divs = CHARTS.map(chart => {
   if (!grids[chart.category]) {
     const h = document.createElement('h2');
     h.textContent = chart.category;
@@ -31,6 +32,10 @@ CHARTS.forEach((chart, n) => {
   const div = document.createElement('div');
   div.className = 'chart';
   grids[chart.category].append(div);
+  return div;
+});
+CHARTS.forEach((chart, n) => {
+  const div = divs[n];
   const hover = '%{fullData.name} @ %{x} TPS: %{y:.3f}' + chart.y_suffix + '<extra></extra>';
   const traces = [];
   const hasBase = s => s.base && s.base.some(v => v !== null);
