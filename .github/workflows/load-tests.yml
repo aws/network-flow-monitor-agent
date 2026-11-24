@@ -357,7 +357,8 @@ jobs:
               --test-run-id "$PR_TEST_ID" \
               --output-dir ../../pr-results/graphs \
               --instance-types "$INSTANCE_TYPES" \
-              --tps-values "$TPS_VALUES" || true
+              --tps-values "$TPS_VALUES" \
+              --baseline-dir ../../main-results || true
           fi
 
       - name: Generate performance comparison
@@ -386,11 +387,13 @@ jobs:
           git checkout gh-perf-images
 
           mkdir -p "perf-images/pr-${PR_NUMBER}"
-          cp pr-results/graphs/*.png "perf-images/pr-${PR_NUMBER}/" 2>/dev/null || true
+          cp pr-results/graphs/*.png pr-results/graphs/index.html "perf-images/pr-${PR_NUMBER}/" 2>/dev/null || true
+          # Serve the branch on GitHub Pages as plain files.
+          touch .nojekyll
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "perf-images/pr-${PR_NUMBER}/"
+          git add .nojekyll "perf-images/pr-${PR_NUMBER}/"
           git commit -m "Add performance graphs for PR #${PR_NUMBER}" || true
           git push origin gh-perf-images || true
 
@@ -432,18 +435,38 @@ jobs:
             }
 
             const graphsDir = 'pr-results/graphs';
-            const graphs = fs.existsSync(graphsDir) ? fs.readdirSync(graphsDir).filter(f => f.endsWith('.png')) : [];
+            const repo = `${context.repo.owner}/${context.repo.repo}`;
+            const prNumber = context.issue.number;
+            const chartsFile = `${graphsDir}/charts.json`;
+            const charts = fs.existsSync(chartsFile) ? JSON.parse(fs.readFileSync(chartsFile, 'utf8'))
+              : (fs.existsSync(graphsDir) ? fs.readdirSync(graphsDir).filter(f => f.endsWith('.png')) : [])
+                  .map(file => ({ file, title: file, category: 'Charts', flag: '' }));
 
             let comment = `${PERF_MARKER}\n\n`;
+            if (fs.existsSync(`${graphsDir}/index.html`)) {
+              const pagesUrl = `https://${context.repo.owner}.github.io/${context.repo.repo}/perf-images/pr-${prNumber}/`;
+              comment += `🔎 [Interactive report](${pagesUrl}) (hover for values; dashed = main baseline)\n\n`;
+            }
             comment += comparison + '\n\n';
 
-            if (graphs.length > 0) {
-              const repo = `${context.repo.owner}/${context.repo.repo}`;
-              const prNumber = context.issue.number;
-              graphs.forEach(graph => {
-                const graphUrl = `https://raw.githubusercontent.com/${repo}/gh-perf-images/perf-images/pr-${prNumber}/${graph}`;
-                comment += `![${graph}](${graphUrl})\n\n`;
-              });
+            // One collapsible section per category, 2 charts per row; open when a chart is flagged.
+            const categories = [...new Set(charts.map(c => c.category))];
+            if (charts.length > 0) {
+              comment += '## 📉 Charts (solid = PR, dashed = main)\n\n';
+            }
+            for (const category of categories) {
+              const inCategory = charts.filter(c => c.category === category);
+              const flags = [...new Set(inCategory.map(c => c.flag).filter(f => f))].join('');
+              comment += `<details${flags ? ' open' : ''}><summary><b>${category}</b> (${inCategory.length}) ${flags}</summary>\n\n<table>\n`;
+              for (let i = 0; i < inCategory.length; i += 2) {
+                comment += '<tr>\n';
+                for (const chart of inCategory.slice(i, i + 2)) {
+                  const url = `https://raw.githubusercontent.com/${repo}/gh-perf-images/perf-images/pr-${prNumber}/${chart.file}`;
+                  comment += `<td width="50%"><a href="${url}"><img src="${url}" width="100%" alt="${chart.title}"></a>${chart.flag ? '<br>' + chart.flag + ' ' + chart.title : ''}</td>\n`;
+                }
+                comment += '</tr>\n';
+              }
+              comment += '</table>\n</details>\n\n';
             }
 
             await github.rest.issues.createComment({
