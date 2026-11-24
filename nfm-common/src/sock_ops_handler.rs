@@ -280,7 +280,7 @@ impl<'a> TcpSockOpsHandler<'a> {
                         sock_stats.connect_attempts += retrans_segments as u8;
                     }
                     BPF_TCP_SYN_RECV => sock_stats.retrans_syn += retrans_segments as u16,
-                    _ => sock_stats.retrans_close += retrans_segments as u16,
+                    _ => sock_stats.retrans_close += retrans_segments as u8,
                 };
 
                 Ok(())

@@ -106,33 +106,32 @@ pub struct SockOpsStats {
     pub srtt_us: u32,
 }
 
+// Fields are ordered by size (u64, u32, u16, u8) so the struct has no padding: older verifiers
+// (e.g. kernel 5.15) reject map updates that read uninitialized stack bytes, which padding leaves.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[cfg_attr(not(feature = "bpf"), derive(serde::Serialize))]
 pub struct SockStats {
     pub last_touched_us: u64,
     pub connect_start_us: u64,
-    pub connect_duration_us: u32,
-
     pub bytes_received: u64,
     pub bytes_delivered: u64,
+
+    pub connect_duration_us: u32,
     pub segments_received: u32,
     pub segments_delivered: u32,
-
     pub rtt_count: u32,
     pub rtt_latest_us: u32,
     pub rtt_smoothed_us: u32,
+    pub retrans_est: u32,
+    pub rtos_est: u32,
 
     pub retrans_syn: u16, // potential retrans during close or syn are low in amounts.
-    pub retrans_est: u32,
-    pub retrans_close: u16, // potential retrans during close or syn are low in amounts.
 
-    pub rtos_syn: u8, // potential rtos during close or syn are low in amounts.
-    pub rtos_est: u32,
+    pub retrans_close: u8, // potential retrans during close or syn are low in amounts.
+    pub rtos_syn: u8,      // potential rtos during close or syn are low in amounts.
     pub rtos_close: u8,
-
     pub state_flags: SockStateFlags,
-
     pub connect_attempts: u8,
     pub connect_successes: u8,
 }
@@ -377,6 +376,47 @@ mod tests {
 
         sock_ctx.address_family = AF_INET6;
         assert!(sock_ctx.is_valid());
+    }
+
+    // Each field must start where the previous one ends, so no implicit padding exists.
+    #[test]
+    fn test_sock_stats_has_no_implicit_padding() {
+        use core::mem::{offset_of, size_of, size_of_val};
+
+        let s = SockStats::default();
+        macro_rules! field {
+            ($name:ident) => {
+                (offset_of!(SockStats, $name), size_of_val(&s.$name))
+            };
+        }
+        let fields = [
+            field!(last_touched_us),
+            field!(connect_start_us),
+            field!(bytes_received),
+            field!(bytes_delivered),
+            field!(connect_duration_us),
+            field!(segments_received),
+            field!(segments_delivered),
+            field!(rtt_count),
+            field!(rtt_latest_us),
+            field!(rtt_smoothed_us),
+            field!(retrans_est),
+            field!(rtos_est),
+            field!(retrans_syn),
+            field!(retrans_close),
+            field!(rtos_syn),
+            field!(rtos_close),
+            field!(state_flags),
+            field!(connect_attempts),
+            field!(connect_successes),
+        ];
+
+        let mut expected_offset = 0;
+        for (offset, size) in fields {
+            assert_eq!(offset, expected_offset);
+            expected_offset += size;
+        }
+        assert_eq!(expected_offset, size_of::<SockStats>());
     }
 
     #[test]
@@ -753,7 +793,7 @@ mod tests {
             rtt_count: u32::MAX - expected_diff.rtt_count + 1,
             retrans_syn: u16::MAX - expected_diff.retrans_syn + 1,
             retrans_est: u32::MAX - expected_diff.retrans_est + 1,
-            retrans_close: u16::MAX - expected_diff.retrans_close + 1,
+            retrans_close: u8::MAX - expected_diff.retrans_close + 1,
             rtos_syn: u8::MAX - expected_diff.rtos_syn + 1,
             rtos_est: u32::MAX - expected_diff.rtos_est + 1,
             rtos_close: u8::MAX - expected_diff.rtos_close + 1,
@@ -831,7 +871,7 @@ mod tests {
     fn test_sock_stats_narrowed_fields_saturate_on_add() {
         let mut stats = SockStats {
             retrans_syn: u16::MAX - 1,
-            retrans_close: u16::MAX - 1,
+            retrans_close: u8::MAX - 1,
             rtos_syn: u8::MAX - 1,
             rtos_close: u8::MAX - 1,
             connect_attempts: u8::MAX - 1,
@@ -849,7 +889,7 @@ mod tests {
         stats.add_from(&other, 0);
 
         assert_eq!(stats.retrans_syn, u16::MAX);
-        assert_eq!(stats.retrans_close, u16::MAX);
+        assert_eq!(stats.retrans_close, u8::MAX);
         assert_eq!(stats.rtos_syn, u8::MAX);
         assert_eq!(stats.rtos_close, u8::MAX);
         assert_eq!(stats.connect_attempts, u8::MAX);
@@ -867,7 +907,7 @@ mod tests {
         };
         let previous = SockStats {
             retrans_syn: u16::MAX,
-            retrans_close: u16::MAX,
+            retrans_close: u8::MAX,
             rtos_syn: u8::MAX,
             rtos_close: u8::MAX,
             ..Default::default()
